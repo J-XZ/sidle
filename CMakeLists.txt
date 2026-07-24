@@ -93,7 +93,7 @@ add_test(NAME dsidle_ycsb_prepare_only_tests
 set_tests_properties(dsidle_ycsb_prepare_only_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_trace_generation_tests
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-traces.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 10 --threads-per-node 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/traces/load/worker0.txt\" && test -s \"$out/result/traces/workloada/worker0.txt\" && test -s \"$out/result/traces/workloade/worker0.txt\" && grep -q '^GET ' \"$out/result/traces/workloada/worker0.txt\" && grep -q '^PUT ' \"$out/result/traces/workloada/worker0.txt\""
+    "out=$(mktemp -d /tmp/dsidle-ycsb-traces.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 10 --threads-per-node 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/traces/load/worker0.txt\" && test -s \"$out/result/traces/workloada/worker0.txt\" && test -s \"$out/result/traces/workloade/worker0.txt\" && test -s \"$out/result/configs/experiment_config_ycsb_workloada.jsonc\" && grep -q \"$out/result/traces/workloada\" \"$out/result/configs/experiment_config_ycsb_workloada.jsonc\" && grep -q '^GET ' \"$out/result/traces/workloada/worker0.txt\" && grep -q '^PUT ' \"$out/result/traces/workloada/worker0.txt\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_trace_generation_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_rounds_script_smoke

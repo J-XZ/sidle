@@ -118,6 +118,17 @@ for phase in ['load'] + [f'workload{item}' for item in workloads]:
         raise SystemExit(f'invalid trace worker set for {directory}: expected {expected} non-empty worker files')
 PY
 fi
+python3 - "$experiment_config" "$out_dir/configs" "$out_dir/traces" "${requested[@]}" <<'PY'
+import json, sys
+from pathlib import Path
+
+base, config_dir, trace_root, *workloads = sys.argv[1:]
+config = json.loads(Path(base).read_text())
+for phase in ['load'] + [f'workload{item}' for item in workloads]:
+    phase_config = json.loads(json.dumps(config))
+    phase_config['dsidle']['trace_dir'] = str(Path(trace_root) / phase)
+    (Path(config_dir) / f'experiment_config_ycsb_{phase}.jsonc').write_text(json.dumps(phase_config, indent=2) + '\n')
+PY
 printf -v reproduce_command '%q ' "$0" --rounds "$rounds" --record-count "$record_count" --operation-count "$operation_count" --threads-per-node "$threads_per_node" --round-timeout "$round_timeout" --out-dir "$out_dir" --workloads "$workloads" --base-config "$base_config" --shared-reserve-mb "$shared_reserve_mb" --cache-flush-mb "$cache_flush_mb"
 [[ -n "$shared_numa" ]] && printf -v reproduce_command '%s--shared-numa %q ' "$reproduce_command" "$shared_numa"
 [[ -n "$shared_size_mb" ]] && printf -v reproduce_command '%s--shared-size-mb %q ' "$reproduce_command" "$shared_size_mb"
@@ -129,10 +140,13 @@ printf -v reproduce_command '%q ' "$0" --rounds "$rounds" --record-count "$recor
 ((prepare_only)) && reproduce_command+='--prepare-only '
 python3 - "$out_dir/run_meta.json" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_reserve_mb" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" <<'PY'
 import hashlib,json,subprocess,sys
+from pathlib import Path
 (path,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,reserve,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command)=sys.argv[1:]
 try: git_sha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 except Exception: git_sha='unknown'
-meta={"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":4,"total_trace_workers":int(threads)*4,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"git_sha":git_sha,"shared_numa":shared_numa.split(',') if shared_numa else None,"shared_reserve_mb":int(reserve),"shared_size_mb":int(size) if size else None,"cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
+phase_names=['load'] + [f'workload{item}' for item in workloads.split(',')]
+config_dir=Path(experiment_config).parent
+meta={"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":4,"total_trace_workers":int(threads)*4,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"git_sha":git_sha,"shared_numa":shared_numa.split(',') if shared_numa else None,"shared_reserve_mb":int(reserve),"shared_size_mb":int(size) if size else None,"cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
