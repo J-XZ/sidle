@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <regex>
@@ -165,6 +166,10 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   ExperimentConfig config;
   config.shared_size_mb = Integer(shared, "size_mb");
   config.shared_path = String(shared, "path");
+  // cxlkv's experiment contract names the shared-memory directory; the
+  // ivshmem-plain backing file under it has this fixed interoperable name.
+  if (std::filesystem::is_directory(config.shared_path))
+    config.shared_path = (std::filesystem::path(config.shared_path) / "ivshmem_shared_mem").string();
   config.device_path = String(shared, "device_path");
   config.shared_numa_nodes = NumaNodes(shared, "numa_node");
   const auto hwcc = Section(shared, "hwcc");

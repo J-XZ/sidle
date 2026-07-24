@@ -15,7 +15,7 @@
     "storage_path": "/mnt/xz_vm_storage",
     "ssh_base_port": 10022,
     "numa_node": [0],
-    "local_ssh_pub_key": "",
+    "local_ssh_pub_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDrHw+F5VoY1WowRKN5r2OEDq+gHxMHdeSgRel4UVnONICudOrXQID5zlauhI/hijpD5ErLtVjom1lw06fhJqkpY26YvjqE+D2yJLwefJBZ+amCSOWriQoJTc7EAXP+050yOqZ9dZ/m3YopwXRlq2zsJGeGWbyNnOUSkUW1frWCjvjr5VPbWw/y6/MUcvLYg/GcP2sqFMhxELkmvGyai0sHHfBFCRpRmNdeehiJKLPTeAy/d6r9KZtfpnh1i3jizd165S7mvXQQ5+DrBNkjwb2UQtnuJsGD/XW0fLD5IPiLxahKLaHIIi8+VxVqR1oiYqffVi4AzNFzaBF8mZnA930VJ0BSgtYY1+VNZu7ScMXVam3S4Z+r4BFmlgMZYoT16UNvkuBcv8b/5/ZHLGB+ibcClb0VySD2Uig5ZiMOiZiqIHS5VELQfkc3zJYQ9DERPOU/jGJmTbSFri2Q4eTd8T7r9gqmkkkycaf7fQT1sujY29xBCCQHYcHREmX6NwSCIWfI50zvkhq3fOqHgw7A9MvbSpcJnsOeYUAHAdyKJV4/bd1VfC70AuEE7McCbDGv14GKeaqFq4AANqWWBv8Sdz8ursKKMWnVUxaifVdeJbTuac6aPer2Vk3XIv4WtIP6sRJM7x3PGTuPQsIhTr/KHoB8SBux47Lh6FtOChEMEISc3Q== xuzhenjiang@hhu.edu.cn\nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDJRRfQun/GuTm3/achpoel3HeV+lMqQ43H/XE1gxJJGFJK/htv4q6wBvo7O8iNQWXJs7aJ+VhEnmC+ehu3C958RfNBYUdWTkiVvM7b9PEGwSR/ZKtH+fauMiYaV4lcmpV25rJCzOx8V0Mpqro16yh0wcyrpaWoKI9yZIURkuPvziPnofx+L/ADJjAOOxFaW8hoW4hvASTUt0Zuu4ghXN5WTiQzJXm2h49uQeJNTKC2ZwsSoa4fHdVK7EcOhEJ6VS/+tpgdcYC0aIvYr6Lahs2SWBNZ20nw7PfPIZFc1eO+SSt2Kaf3+wWaLnqB30BiPxZLUHad0j4KB5gBWsNeXK2x5ZW9CYbecakgCnrxnAcviDg5EcrTkoespGjuteHJHjqiw1cmav6yDVTq/NaY+KNhwpjIPIaBWp5byXsdRfwbVFlTNc07PUuAi3kczMtFQukJODz4K9G/vOELk+Uua+pGsdgfYHi/KQrqyzroKEU3b1F2I0+fKIviBRJGfyG5SnE= root@node1.cxl2.dpmfs-pg0.clemson.cloudlab.us",
     "first_ip": "192.168.100.2",
     "bridge_tap_ip": "192.168.100.1"
   },

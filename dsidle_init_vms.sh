@@ -101,10 +101,14 @@ if apply_tuning: print('DSIDLE_VM_HOST_TUNING requested=true (no tuning keys are
 else: print('DSIDLE_VM_HOST_TUNING requested=false (check/report only)')
 
 storage, backing = Path(vm['storage_path']), Path(shared['path'])
+if backing.is_dir(): backing /= 'ivshmem_shared_mem'
 print(f'DSIDLE_VM_PREFLIGHT_OK config={config_path} shared_numa={shared_bind} vm_numa={",".join(map(str, vm_nodes))}')
 if execute or dry:
     if not dry: backing.parent.mkdir(parents=True, exist_ok=True)
-    run(['numactl', f'--membind={shared_bind}', '--', 'dd', 'if=/dev/zero', f'of={backing}', 'bs=1M', f'count={shared["size_mb"]}', 'conv=fsync', 'status=none'])
+    # Match cxlkv's ivshmem-plain setup: a fresh sparse file reads as zero
+    # without eagerly faulting the complete PCI BAR into host memory.
+    run(['truncate', '-s', '0', str(backing)])
+    run(['truncate', '-s', f'{shared["size_mb"]}M', str(backing)])
     run([pool_tool, '--init-pool', '--config', config_path, '--node-control-capacity', '2097152', '--max-threads-per-vm', str(cores)])
 for index in range(count):
     vm_node = vm_nodes[index % len(vm_nodes)]
@@ -124,7 +128,9 @@ for index in range(count):
             try: os.kill(pid, signal.SIGTERM)
             except ProcessLookupError: pass
             time.sleep(0.2)
-        if not disk.exists(): shutil.copyfile(image, disk)
+        refresh_image = not disk.exists() or Path(image).stat().st_mtime_ns > disk.stat().st_mtime_ns
+        if refresh_image:
+            shutil.copyfile(image, disk)
         subprocess.run(qemu, check=True)
         for _ in range(50):
             if pidfile.exists(): break

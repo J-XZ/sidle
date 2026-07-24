@@ -8,6 +8,9 @@ Output=root.img
 
 [Boot]
 Bootable=yes
+KernelCommandLine=console=ttyS0
+BootProtocols=bios
+WithUnifiedKernelImages=no
 
 [Content]
 Packages=systemd
@@ -25,3 +28,6 @@ Packages=systemd
          procps
 ExtraTrees=rootfs
 PostInstallationScript=mkosi.postinst
+
+[Validation]
+Password=root
