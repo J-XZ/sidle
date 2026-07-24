@@ -96,6 +96,11 @@ add_test(NAME dsidle_ycsb_trace_generation_tests
     "out=$(mktemp -d /tmp/dsidle-ycsb-traces.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 10 --threads-per-node 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/traces/load/worker0.txt\" && test -s \"$out/result/traces/workloada/worker0.txt\" && test -s \"$out/result/traces/workloade/worker0.txt\" && grep -q '^GET ' \"$out/result/traces/workloada/worker0.txt\" && grep -q '^PUT ' \"$out/result/traces/workloada/worker0.txt\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_trace_generation_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_e2e_rounds_script_smoke
+  COMMAND /bin/sh -c
+    "out=$(mktemp -d /tmp/dsidle-e2e-rounds.XXXXXX); \"$1\" --execute --smoke --rounds 1 --config \"$2\" --phase smoke --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 1024 --max-threads-per-vm 2 && test -s \"$out/round_logs/smoke_round_1.meta\" && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' \"$out/logs/smoke_round_1_run_node1.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
+set_tests_properties(dsidle_e2e_rounds_script_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
