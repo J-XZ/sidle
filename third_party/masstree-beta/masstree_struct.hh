@@ -381,14 +381,17 @@ class leafvalue {
     value_type value() const {
         auto* value = dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
         if (value) {
+            latency_sim::RecordSwccRead(value, value->size());
             dsidle::InvalidateSwccRange(value, dsidle::kSwccCacheLineBytes);
             dsidle::InvalidateSwccRange(value, value->size());
         }
         return value;
     }
     void set_value(value_type value) {
-        if (value)
+        if (value) {
+            latency_sim::RecordSwccWrite(value, value->size());
             dsidle::FlushSwccRange(value, value->size());
+        }
         raw_ = value ? dsidle::SwccOffset<value_element_type>(
             reinterpret_cast<std::byte*>(value) - static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
     }

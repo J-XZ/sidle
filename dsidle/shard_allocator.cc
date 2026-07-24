@@ -1,4 +1,5 @@
 #include "dsidle/shard_allocator.h"
+#include "dsidle/latency_simulator.h"
 
 #include <cstring>
 #include <immintrin.h>
@@ -82,6 +83,7 @@ ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
 
 void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation) {
   auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
+  latency_sim::RecordSwccWrite(item, sizeof(*item));
   auto old = head.load(std::memory_order_acquire);
   do {
     item->next_offset = old;
@@ -95,6 +97,7 @@ std::uint64_t FixedBlockShardAllocator::Pop(std::atomic<std::uint64_t>& head) {
   auto old = head.load(std::memory_order_acquire);
   while (old) {
     auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + old);
+    latency_sim::RecordSwccRead(item, sizeof(*item));
     FlushSwccLine(item);
     _mm_mfence();
     const auto next = item->next_offset;
@@ -125,6 +128,8 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
                              " offset=" + std::to_string(offset) +
                              " limit=" + std::to_string(entry->limit));
   std::memset(static_cast<std::byte*>(pool_.base()) + offset, 0, block_size_);
+  latency_sim::RecordSwccWrite(static_cast<std::byte*>(pool_.base()) + offset,
+                               block_size_);
   return SwccOffset<std::byte>(offset);
 }
 
