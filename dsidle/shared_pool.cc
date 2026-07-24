@@ -193,8 +193,8 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     Fail("sync initialized metadata", "shared pool");
 }
 
-NodeRef NodeControlSlab::Acquire(std::uint64_t canonical_swcc_offset, std::uint32_t node_type) {
-  if (!canonical_swcc_offset) throw std::runtime_error("cannot publish a null canonical node offset");
+NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type) {
+  if (!canonical_swcc_offset) throw std::runtime_error("cannot reserve a null canonical node offset");
   auto* metadata = pool_.static_layout();
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   while (head) {
@@ -208,12 +208,32 @@ NodeRef NodeControlSlab::Acquire(std::uint64_t canonical_swcc_offset, std::uint3
     ++control->generation;
     control->retire_epoch = 0;
     control->node_type = node_type;
-    std::atomic_thread_fence(std::memory_order_release);
-    control->version_and_state.store(0, std::memory_order_release);
-    control->allocation_state = NodeAllocationState::kPublished;
+    control->version_and_state.store(0, std::memory_order_relaxed);
     return NodeRef(head);
   }
   throw std::runtime_error("D-SIDLE NodeControl slab OOM");
+}
+
+void NodeControlSlab::Publish(NodeRef ref, std::uint64_t initial_version) {
+  if (!ref) throw std::runtime_error("cannot publish null NodeControl");
+  auto* control = ref.get(pool_.base());
+  if (!control || control->allocation_state != NodeAllocationState::kAllocating)
+    throw std::runtime_error("NodeControl must be ALLOCATING before publish");
+  // The caller has initialized and flushed the canonical SWCC object before
+  // this release store makes its control line readable by other VMs.
+  std::atomic_thread_fence(std::memory_order_release);
+  control->version_and_state.store(initial_version, std::memory_order_release);
+  control->allocation_state = NodeAllocationState::kPublished;
+}
+
+void NodeControlSlab::Retire(NodeRef ref, std::uint64_t retire_epoch) {
+  if (!ref) throw std::runtime_error("cannot retire null NodeControl");
+  auto* control = ref.get(pool_.base());
+  if (!control || control->allocation_state != NodeAllocationState::kPublished)
+    throw std::runtime_error("NodeControl must be PUBLISHED before retire");
+  control->retire_epoch = retire_epoch;
+  control->allocation_state = NodeAllocationState::kRetiring;
+  std::atomic_thread_fence(std::memory_order_release);
 }
 
 void NodeControlSlab::Release(NodeRef ref) {

@@ -10,11 +10,13 @@ int main() {
   auto pool = dsidle::SharedPool::Create(path, {kPoolBytes, 0, 32ULL<<20, 32ULL<<20, 96ULL<<20});
   dsidle::InitializePoolMetadata(pool, {2, 2, 64});
   dsidle::NodeControlSlab controls(pool);
-  const auto node = controls.Acquire(2ULL << 20, 7);
+  const auto node = controls.Reserve(2ULL << 20, 7);
+  controls.Publish(node, 0);
   assert(node && node.get(pool.base())->generation == 1);
-  node.get(pool.base())->allocation_state = dsidle::NodeAllocationState::kRetiring;
+  controls.Retire(node, 1);
   controls.Release(node);
-  const auto reused_node = controls.Acquire((2ULL << 20) + 64, 8);
+  const auto reused_node = controls.Reserve((2ULL << 20) + 64, 8);
+  controls.Publish(reused_node, 0);
   assert(reused_node == node && reused_node.get(pool.base())->generation == 2);
   dsidle::FixedBlockShardAllocator::InitializeAll(pool, 2);
   dsidle::FixedBlockShardAllocator alloc(pool, 2, 64);

@@ -126,6 +126,8 @@ class NodeVersionAccessor {
   NodeControl* Control() const {
     auto* control = ref_.get(pool_base_);
     if (!control) throw std::runtime_error("null NodeRef");
+    if (control->allocation_state != NodeAllocationState::kPublished)
+      throw std::runtime_error("NodeRef does not name a published canonical node");
     return control;
   }
   void* pool_base_;
@@ -178,7 +180,12 @@ class RootControlAccessor {
 class NodeControlSlab {
  public:
   explicit NodeControlSlab(SharedPool& pool) : pool_(pool) {}
-  NodeRef Acquire(std::uint64_t canonical_swcc_offset, std::uint32_t node_type);
+  // Reserve only claims an HWCC control line.  It intentionally remains
+  // ALLOCATING until the caller has constructed and flushed the paired SWCC
+  // body, so an incomplete NodeRef can never be published into the tree.
+  NodeRef Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type);
+  void Publish(NodeRef ref, std::uint64_t initial_version);
+  void Retire(NodeRef ref, std::uint64_t retire_epoch);
   void Release(NodeRef ref);
 
  private:
