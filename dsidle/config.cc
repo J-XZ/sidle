@@ -123,6 +123,7 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   config.replica_budget_mb = Integer(local, "replica_budget_mb");
   config.fixed_key_size = static_cast<std::uint32_t>(Integer(local, "fixed_key_size"));
   config.fixed_value_size = static_cast<std::uint32_t>(Integer(local, "fixed_value_size"));
+  config.trace_dir = String(local, "trace_dir");
   const auto latency = Section(local, "latency_inject");
   auto& l = config.latency_inject;
   l.enabled=Boolean(latency,"enabled"); l.foreground_enabled=Boolean(latency,"foreground_enabled"); l.merge_enabled=Boolean(latency,"merge_enabled"); l.stats_enabled=Boolean(latency,"stats_enabled"); l.cache_line_bytes=Integer(latency,"cache_line_bytes");

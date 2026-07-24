@@ -26,6 +26,7 @@ struct ExperimentConfig {
   std::uint64_t replica_budget_mb{};
   std::uint32_t fixed_key_size{};
   std::uint32_t fixed_value_size{};
+  std::string trace_dir;
   latency_sim::Config latency_inject{};
 };
 

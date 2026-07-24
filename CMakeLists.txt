@@ -68,6 +68,10 @@ target_link_libraries(dsidle_masstree PUBLIC dsidle pthread)
 add_executable(dsidle_shared_pool dsidle/shared_pool_main.cc)
 target_link_libraries(dsidle_shared_pool PRIVATE dsidle)
 
+add_executable(dsidle_e2e_trace_runner dsidle/e2e_trace_runner.cc)
+target_link_libraries(dsidle_e2e_trace_runner PRIVATE dsidle_masstree)
+target_compile_options(dsidle_e2e_trace_runner PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h)
+
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
 target_compile_options(dsidle_config_tests PRIVATE -UNDEBUG)
