@@ -70,7 +70,7 @@ cfg = load_jsonc(config_path)
 shared, vm, cpu = cfg['shared_memory'], cfg['vm'], cfg['host_cpu']
 shared_nodes, vm_nodes = list(map(int, as_list(shared['numa_node']))), list(map(int, as_list(vm['numa_node'])))
 count, cores, mem_mb = int(vm['count']), int(vm['core_count_per_vm']), int(vm['mem_size_mb_per_vm'])
-if count != 4: raise SystemExit('dsidle_init_vms is intentionally fixed to 4 VM')
+if count not in (1, 2, 4): raise SystemExit('vm.count must be 1, 2, or 4')
 if not vm_nodes or not shared_nodes: raise SystemExit('NUMA node lists must not be empty')
 if int(shared['size_mb']) < 2048 or int(shared['size_mb']) & (int(shared['size_mb']) - 1): raise SystemExit('shared size_mb must be a power of two and at least 2048MB')
 hwcc, swcc = shared['hwcc'], shared['swcc']

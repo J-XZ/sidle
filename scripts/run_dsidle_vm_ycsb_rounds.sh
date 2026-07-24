@@ -25,8 +25,9 @@ import json,sys
 c=json.load(open(sys.argv[1])); print(c['vm']['count']); print(c['vm']['ssh_base_port']); print(c['vm']['core_count_per_vm'])
 PY
 )
-[[ ${topology[0]} == 4 ]] || { echo "requires 4 VMs" >&2; exit 2; }
-ports=("${topology[1]}" "$((topology[1]+1))" "$((topology[1]+2))" "$((topology[1]+3))")
+vm_count=${topology[0]}
+[[ "$vm_count" =~ ^(1|2|4)$ ]] || { echo "requires 1, 2, or 4 VMs" >&2; exit 2; }
+ports=(); for ((node=0; node<vm_count; ++node)); do ports+=("$((topology[1]+node))"); done
 mkdir -p "$prepared_dir/guest_configs"
 mapfile -t phases < <(python3 - "$prepared_dir/run_meta.json" <<'PY'
 import json,sys
@@ -56,7 +57,7 @@ for ((round=1; round<=rounds; ++round)); do
       rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$prepared_dir/traces/$phase/" "root@127.0.0.1:/root/dsidle-ycsb/traces/$phase/"
     done
     pids=(); stage=run; [[ "$phase" == load ]] && stage=load
-    for node in 0 1 2 3; do
+    for ((node=0; node<vm_count; ++node)); do
       flag=(); [[ "$phase" == load && $node == 0 ]] && flag=(--bootstrap)
       ssh "${ssh_opts[@]}" -p "${ports[$node]}" root@127.0.0.1 "timeout $timeout_sec /root/dsidle-ycsb/dsidle_e2e_trace_runner --config /root/dsidle-ycsb/${phase}.jsonc --phase $phase --node $node ${flag[*]}" >"$prepared_dir/logs/${phase}_round_${round}_${stage}_node${node}.log" 2>&1 & pids+=("$!")
     done

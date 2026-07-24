@@ -7,6 +7,7 @@ rounds=1
 record_count=100000
 operation_count=100000
 threads_per_node=4
+vm_count=4
 round_timeout=7200
 out_dir=""
 workloads="a,b,c,d"
@@ -22,13 +23,13 @@ skip_vm_init=0
 skip_trace_gen=0
 skip_standalone_load=0
 
-usage() { echo "usage: $0 [--rounds N] [--record-count N] [--operation-count N] [--threads-per-node N] [--round-timeout SEC] [--out-dir DIR] [--workloads a,b,c,d,e] [--base-config PATH] [--shared-numa N[,N...]] [--shared-reserve-mb MB] [--shared-size-mb MB] [--cache-flush-mb MB] [--no-latency] [--skip-build] [--skip-vm-init] [--skip-trace-gen] [--skip-standalone-load] [--prepare-only]" >&2; }
+usage() { echo "usage: $0 [--vm-count 1|2|4] [--rounds N] [--record-count N] [--operation-count N] [--threads-per-node N] ..." >&2; }
 while (($#)); do
   case "$1" in
-    --rounds|--record-count|--operation-count|--threads-per-node|--round-timeout|--out-dir|--workloads|--base-config|--shared-numa|--shared-reserve-mb|--shared-size-mb|--cache-flush-mb)
+    --vm-count|--rounds|--record-count|--operation-count|--threads-per-node|--round-timeout|--out-dir|--workloads|--base-config|--shared-numa|--shared-reserve-mb|--shared-size-mb|--cache-flush-mb)
       (($# >= 2)) || { usage; exit 2; }
       case "$1" in
-        --rounds) rounds=$2;; --record-count) record_count=$2;;
+        --vm-count) vm_count=$2;; --rounds) rounds=$2;; --record-count) record_count=$2;;
         --operation-count) operation_count=$2;; --threads-per-node) threads_per_node=$2;;
         --round-timeout) round_timeout=$2;; --out-dir) out_dir=$2;; --workloads) workloads=$2;;
         --base-config) base_config=$2;; --shared-numa) shared_numa=$2;;
@@ -43,6 +44,7 @@ while (($#)); do
   esac
 done
 for value in "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$shared_reserve_mb" "$cache_flush_mb"; do [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer required" >&2; exit 2; }; done
+[[ "$vm_count" =~ ^(1|2|4)$ ]] || { echo "--vm-count must be 1, 2, or 4" >&2; exit 2; }
 [[ -z "$shared_size_mb" || "$shared_size_mb" =~ ^[1-9][0-9]*$ ]] || { echo "--shared-size-mb must be a positive integer" >&2; exit 2; }
 [[ -f "$base_config" ]] || { echo "missing base config: $base_config" >&2; exit 2; }
 if [[ -n "$shared_numa" ]]; then
@@ -62,13 +64,15 @@ done
 if [[ -z "$out_dir" ]]; then out_dir="exp_data/ycsb_dsidle_$(date -u +%Y%m%dT%H%M%SZ)"; fi
 mkdir -p "$out_dir"/{configs,traces,logs,round_logs}
 experiment_config="$out_dir/configs/experiment_config_ycsb_4vm.jsonc"
-python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" "$no_latency" <<'PY'
+python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" "$no_latency" "$vm_count" "$threads_per_node" <<'PY'
 import json, re, sys
 
-source, output, numa_csv, size_mb, no_latency = sys.argv[1:]
+source, output, numa_csv, size_mb, no_latency, vm_count, workers = sys.argv[1:]
 text = open(source).read()
 text = re.sub(r'//[^\n]*', '', text)
 config = json.loads(text)
+config['vm']['count'] = int(vm_count)
+config['e2e']['foreground_worker_count_per_vm'] = int(workers)
 shared = config['shared_memory']
 if numa_csv:
     shared['numa_node'] = [int(value) for value in numa_csv.split(',')]
@@ -94,21 +98,21 @@ if (( ! skip_trace_gen )); then
   [[ -x "$generator" ]] || { echo "missing executable YCSB trace generator: $generator (initialize submodules)" >&2; exit 1; }
   generator_root="$script_dir/third_party/YCSB-cpp"
   "$generator" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workloada" \
-    --phase load --nodes 4 --threads-per-node "$threads_per_node" --record-count "$record_count" \
+    --phase load --nodes "$vm_count" --threads-per-node "$threads_per_node" --record-count "$record_count" \
     --operation-count "$operation_count" --field-length 32
   for workload in "${requested[@]}"; do
     generator_args=(--output-dir "$out_dir/traces" --workload "$generator_root/workloads/workload$workload" \
-      --run-name "workload$workload" --phase run --nodes 4 --threads-per-node "$threads_per_node" \
+      --run-name "workload$workload" --phase run --nodes "$vm_count" --threads-per-node "$threads_per_node" \
       --record-count "$record_count" --operation-count "$operation_count" --field-length 32)
     [[ "$workload" == a ]] && generator_args+=(--update-read-before-write)
     "$generator" "${generator_args[@]}"
   done
-  python3 - "$out_dir/traces" "$threads_per_node" "${requested[@]}" <<'PY'
+  python3 - "$out_dir/traces" "$threads_per_node" "$vm_count" "${requested[@]}" <<'PY'
 import sys
 from pathlib import Path
 
-root, threads, *workloads = sys.argv[1:]
-expected = 4 * int(threads)
+root, threads, nodes, *workloads = sys.argv[1:]
+expected = int(nodes) * int(threads)
 for phase in ['load'] + [f'workload{item}' for item in workloads]:
     directory = Path(root) / phase
     files = sorted(directory.glob('worker*.txt'))
@@ -138,15 +142,15 @@ printf -v reproduce_command '%q ' "$0" --rounds "$rounds" --record-count "$recor
 ((skip_trace_gen)) && reproduce_command+='--skip-trace-gen '
 ((skip_standalone_load)) && reproduce_command+='--skip-standalone-load '
 ((prepare_only)) && reproduce_command+='--prepare-only '
-python3 - "$out_dir/run_meta.json" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_reserve_mb" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" <<'PY'
+python3 - "$out_dir/run_meta.json" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_reserve_mb" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-(path,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,reserve,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command)=sys.argv[1:]
+(path,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,reserve,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes)=sys.argv[1:]
 try: git_sha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 except Exception: git_sha='unknown'
 phase_names=['load'] + [f'workload{item}' for item in workloads.split(',')]
 config_dir=Path(experiment_config).parent
-meta={"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":4,"total_trace_workers":int(threads)*4,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"git_sha":git_sha,"shared_numa":shared_numa.split(',') if shared_numa else None,"shared_reserve_mb":int(reserve),"shared_size_mb":int(size) if size else None,"cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
+meta={"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":int(nodes),"total_trace_workers":int(threads)*int(nodes),"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"git_sha":git_sha,"shared_numa":shared_numa.split(',') if shared_numa else None,"shared_reserve_mb":int(reserve),"shared_size_mb":int(size) if size else None,"cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
