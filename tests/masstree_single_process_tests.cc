@@ -11,6 +11,7 @@
 #include "masstree_scan.hh"
 #include "masstree_replica.hh"
 #include "masstree_internal_replica.hh"
+#include "masstree_root_replica.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -155,6 +156,9 @@ int main() {
   assert(root_replica_cursor.find_unlocked(*ti));
   assert(replicas.InternalHits() > 0);
   std::free(replicas.Invalidate(canonical_root->control_ref()));
+  Masstree::root_replica_pin<replica_params> root_pin(pool, replicas);
+  assert(root_pin.Refresh());
+  assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
 
   // Encode a stable canonical leaf into local DRAM and read its copied row
   // without following its canonical ValueRef or suffix pointer.
@@ -422,6 +426,8 @@ int main() {
     assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
     assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
   }
+  assert(root_pin.Refresh());
+  assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
 
   int scan_started[2];
   assert(pipe(scan_started) == 0);
