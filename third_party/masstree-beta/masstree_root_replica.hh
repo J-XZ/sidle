@@ -16,7 +16,11 @@ class root_replica_pin {
  public:
   root_replica_pin(dsidle::SharedPool& pool, dsidle::ReplicaDirectory& directory)
       : pool_(pool), directory_(directory) {}
-  ~root_replica_pin() { std::free(directory_.Invalidate(ref_)); }
+  ~root_replica_pin() {
+    // A short runner can stop before Refresh() wins a promotion race, leaving
+    // this per-VM pin empty. ReplicaDirectory only accepts real NodeRefs.
+    if (ref_) std::free(directory_.Invalidate(ref_));
+  }
 
   bool Refresh() {
     const auto root = dsidle::RootControlAccessor(pool_.root_control()).stable();

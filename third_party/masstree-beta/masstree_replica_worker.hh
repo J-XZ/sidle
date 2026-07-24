@@ -36,12 +36,18 @@ class replica_executor {
     node_base<P>* node = Resolve(candidate);
     if (!node) return false;
     bool published = false;
-    // Preserve SIDLE's leaf-to-ancestor promotion direction.  Stop once this
-    // VM already has a valid ancestor replica, including the pinned root.
+    // A queued candidate is a process-independent NodeRef.  Its `parent()`
+    // link, however, is a SWCC raw pointer and is not valid in another VM's
+    // mapping.  Promote this one canonical node only; RootReplicaPin handles
+    // the root independently without following raw parent pointers.
     while (node) {
       const auto version = node->stable();
       if (version.deleted() || version.locked()) return published;
       const auto ref = node->control_ref();
+      // Some Masstree ancestors (notably temporary/root plumbing in the
+      // lightweight runners) are not D-SIDLE allocations and therefore have
+      // no NodeControl slot.  They are not eligible for a local replica.
+      if (!ref) return published;
       const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
       if (directory_.Acquire(ref, generation, version.version_value())) break;
       const bool one = node->isleaf()
@@ -49,7 +55,7 @@ class replica_executor {
           : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_);
       if (!one) return published;
       published = true;
-      node = node->parent();
+      return published;
     }
     return published;
   }
