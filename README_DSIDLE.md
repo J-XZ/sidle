@@ -40,7 +40,7 @@ scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 09 --rounds 10 \
 YCSB 的 load 也是并发写入：4 VM、每 VM 4 worker 同时回放；没有串行 load 路径。
 
 ```bash
-./dsidle_run_ycsb_experiment.sh --rounds 10 \
+./dsidle_run_ycsb_experiment.sh --vm-count 4 --warmup-rounds 1 --rounds 10 \
   --record-count 100000 --operation-count 100000 \
   --threads-per-node 4 --workloads a --no-latency
 ```
@@ -56,6 +56,6 @@ cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
 
-吞吐只计入 replay，不包含 pool 初始化或相位屏障。YCSB 汇总使用每轮节点最大耗时
+吞吐只计入 replay，不包含 pool 初始化或相位屏障；默认预热轮次也不会写入汇总。YCSB 汇总使用每轮节点最大耗时
 和各轮均值；08/09 使用其各自的多轮字段。延迟注入仅在 RelWithDebInfo、关闭
 verbose 和额外检查时允许开启；正式 YCSB 使用 `--no-latency`。
