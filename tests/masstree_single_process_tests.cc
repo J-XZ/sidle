@@ -9,6 +9,7 @@
 #include "masstree_insert.hh"
 #include "masstree_remove.hh"
 #include "masstree_scan.hh"
+#include "masstree_replica.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -129,6 +130,26 @@ int main() {
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
   assert(replicas.AccessCount(table.table().root()->control_ref()) > 0);
+
+  // Encode a stable canonical leaf into local DRAM and read its copied row
+  // without following its canonical ValueRef or suffix pointer.
+  const auto& replica_key_text = expected.begin()->first;
+  using replica_params = Masstree::default_table::parameters_type;
+  using replica_key_type = Masstree::key<typename replica_params::ikey_type>;
+  using replica_node_type = Masstree::node_base<replica_params>;
+  replica_key_type replica_key(replica_key_text.data(), replica_key_text.size());
+  typename replica_node_type::nodeversion_type replica_version;
+  auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);
+  void* encoded_leaf = Masstree::leaf_replica<replica_params>::Create(
+      *canonical_leaf, canonical_leaf->permutation());
+  const row_type* replica_value = nullptr;
+  dsidle::NodeRef replica_layer;
+  assert(Masstree::leaf_replica<replica_params>::Lookup(encoded_leaf, replica_key,
+      replica_value, replica_layer) == Masstree::leaf_replica<replica_params>::result::kValue);
+  const auto replica_column = replica_value->col(0);
+  assert(replica_column.len == expected.begin()->second.size());
+  assert(std::memcmp(replica_column.s, expected.begin()->second.data(), replica_column.len) == 0);
+  std::free(encoded_leaf);
 
   const pid_t reader = fork();
   assert(reader >= 0);
