@@ -43,6 +43,14 @@ int main() {
   dsidle::ConfigureCurrentSwccAllocator(pool, 2, 0);
   const auto bound = dsidle::AllocateCurrentSwcc(129);
   assert(bound && bound.get(dsidle::SharedPoolBase()));
+  assert(dsidle::CurrentSwccOwner(bound, 129) == 0);
   dsidle::FreeCurrentSwcc(bound, 129);
+  dsidle::ConfigureCurrentSwccAllocator(pool, 2, 1);
+  const auto foreign = dsidle::AllocateCurrentSwcc(129);
+  assert(dsidle::CurrentSwccOwner(foreign, 129) == 1);
+  dsidle::ConfigureCurrentSwccAllocator(pool, 2, 0);
+  dsidle::FreeCurrentSwccToOwner(1, foreign, 129, 23);
+  assert(size_classes.HarvestRemote(1, 129) == 1);
+  assert(size_classes.Allocate(1, 129) == foreign);
   pool.Close(); unlink(path);
 }

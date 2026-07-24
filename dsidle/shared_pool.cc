@@ -53,16 +53,35 @@ SharedPool& CurrentSharedPool() {
   return *swcc_allocator_context.pool;
 }
 
+std::uint32_t CurrentSwccShard() {
+  if (!swcc_allocator_context.pool)
+    throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
+  return swcc_allocator_context.local_shard;
+}
+
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size) {
   const auto& context = swcc_allocator_context;
   if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
   return SwccShardAllocator(*context.pool, context.shard_count).Allocate(context.local_shard, size);
 }
 
+std::uint32_t CurrentSwccOwner(SwccOffset<std::byte> block, std::uint64_t size) {
+  const auto& context = swcc_allocator_context;
+  if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
+  return SwccShardAllocator(*context.pool, context.shard_count).OwnerOf(block, size);
+}
+
 void FreeCurrentSwcc(SwccOffset<std::byte> block, std::uint64_t size, std::uint64_t generation) {
   const auto& context = swcc_allocator_context;
   if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
   SwccShardAllocator(*context.pool, context.shard_count).Free(context.local_shard, block, size, generation);
+}
+
+void FreeCurrentSwccToOwner(std::uint32_t owner_shard, SwccOffset<std::byte> block,
+                            std::uint64_t size, std::uint64_t generation) {
+  const auto& context = swcc_allocator_context;
+  if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
+  SwccShardAllocator(*context.pool, context.shard_count).Free(owner_shard, block, size, generation);
 }
 
 void SharedPool::ValidateLayout(const PoolLayout& layout) {
@@ -199,6 +218,7 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
   for (std::uint64_t index = 0; index < epoch_count; ++index)
     new (base + epochs_offset + index * sizeof(EpochSlot)) EpochSlot{};
   std::memset(base + diagnostic_offset, 0, kDiagnosticBytes);
+  new (base + diagnostic_offset) SharedEpochClock{};
   layout->node_control_offset = nodes_offset;
   layout->node_control_capacity = options.node_control_capacity;
   for (std::uint64_t index = 0; index < options.node_control_capacity; ++index) {
@@ -284,6 +304,14 @@ SharedEpochTable SharedEpochSlots(SharedPool& pool) {
   return SharedEpochTable(pool.base(), layout->epoch_slots_offset,
                           static_cast<std::uint32_t>(layout->shard_count),
                           static_cast<std::uint32_t>(layout->epoch_slot_count / layout->shard_count));
+}
+
+SharedEpochClockView SharedEpochState(SharedPool& pool) {
+  const auto* layout = pool.static_layout();
+  if (!layout->diagnostic_offset)
+    throw std::runtime_error("D-SIDLE epoch clock is not initialized");
+  return SharedEpochClockView(reinterpret_cast<SharedEpochClock*>(
+      static_cast<std::byte*>(pool.base()) + layout->diagnostic_offset));
 }
 
 std::string DescribeHwccBudget(const SharedPool& pool) {

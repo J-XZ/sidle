@@ -39,6 +39,7 @@ inline threadinfo::threadinfo(int purpose, int index) {
     next_ = nullptr;
     purpose_ = purpose;
     index_ = index;
+    rcu_operations_ = 0;
 
     for (size_t i = 0; i != sizeof(pool_) / sizeof(pool_[0]); ++i) {
         pool_[i] = nullptr;
@@ -101,7 +102,8 @@ inline unsigned limbo_group::clean_until(threadinfo& ti, mrcu_epoch_type epoch_b
     epoch_type epoch = 0;
     while (head_ != tail_) {
         if (e_[head_].ref_) {
-            ti.free_rcu(e_[head_].ref_, e_[head_].u_.tag);
+            ti.free_rcu(e_[head_].ref_, e_[head_].u_.allocation.tag,
+                        e_[head_].u_.allocation.owner_shard);
             ti.mark(tc_gc);
             --count;
             if (!count) {
@@ -126,7 +128,11 @@ void threadinfo::hard_rcu_quiesce() {
     limbo_group* empty_tail = nullptr;
     unsigned count = rcu_free_count;
 
-    mrcu_epoch_type epoch_bound = active_epoch - 1;
+    // dsidle: do not reuse an object until every VM/thread slot has moved
+    // beyond its retirement epoch.
+    const auto minimum = dsidle::SharedEpochSlots(dsidle::CurrentSharedPool()).MinimumActive();
+    const auto current = dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current();
+    mrcu_epoch_type epoch_bound = (minimum == dsidle::kEpochInactive ? current : minimum) - 1;
     if (limbo_head_->head_ == limbo_head_->tail_
         || mrcu_signed_epoch_type(epoch_bound - limbo_head_->first_epoch()) < 0)
         goto done;
@@ -170,14 +176,14 @@ void threadinfo::report_rcu(void *ptr) const
                 status = 0;
                 e = 0;
             }
-            const uint64_t ref = (lg->e_[i].u_.tag != memtag(-1) &&
-                                  (lg->e_[i].u_.tag & memtag_pool_mask))
+            const uint64_t ref = (lg->e_[i].u_.allocation.tag != memtag(-1) &&
+                                  (lg->e_[i].u_.allocation.tag & memtag_pool_mask))
                 ? uint64_t(reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase()))
                 : reinterpret_cast<uint64_t>(ptr);
             if (lg->e_[i].ref_ == ref)
                 fprintf(stderr, "thread %d: rcu %p@%d: %s as %x @%" PRIu64 "\n",
                         index_, lg, i, status ? "waiting" : "freed",
-                        lg->e_[i].u_.tag, e);
+                        lg->e_[i].u_.allocation.tag, e);
             else if (!lg->e_[i].ref_)
                 e = lg->e_[i].u_.epoch;
         }

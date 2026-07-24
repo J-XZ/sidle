@@ -463,6 +463,7 @@ int basic_table<P>::scan(Str firstkey, bool emit_firstkey,
                          F& scanner,
                          threadinfo& ti) const
 {
+    typename P::threadinfo_type::rcu_scope rcu(ti);
     return scan(forward_scan_helper(), firstkey, emit_firstkey, scanner, ti);
 }
 
@@ -471,6 +472,7 @@ int basic_table<P>::rscan(Str firstkey, bool emit_firstkey,
                           F& scanner,
                           threadinfo& ti) const
 {
+    typename P::threadinfo_type::rcu_scope rcu(ti);
     return scan(reverse_scan_helper(), firstkey, emit_firstkey, scanner, ti);
 }
 

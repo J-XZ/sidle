@@ -61,6 +61,10 @@ int main() {
   dsidle::ConfigureCurrentSwccAllocator(pool, 1, 0);
 
   threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+  ti->rcu_start();
+  assert(dsidle::SharedEpochSlots(pool).MinimumActive() != dsidle::kEpochInactive);
+  ti->rcu_stop();
+  assert(dsidle::SharedEpochSlots(pool).MinimumActive() == dsidle::kEpochInactive);
   Masstree::default_table table;
   table.initialize(*ti, 80);
   const auto root_ref = table.table().root()->control_ref();
@@ -277,6 +281,10 @@ int main() {
     try {
       auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
       dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      // The parent sent the token from visit_leaf(), while the public scan
+      // wrapper's RCU scope is still live across the complete leaf walk.
+      if (dsidle::SharedEpochSlots(attached).MinimumActive() == dsidle::kEpochInactive)
+        _exit(13);
       threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
       Masstree::default_table child_table;
       child_table.table().attach();

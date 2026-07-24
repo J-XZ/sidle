@@ -64,6 +64,7 @@ class SwccShardAllocator {
   SwccShardAllocator(SharedPool& pool, std::uint32_t shard_count)
       : pool_(pool), shard_count_(shard_count) {}
   SwccOffset<std::byte> Allocate(std::uint32_t shard, std::uint64_t size);
+  std::uint32_t OwnerOf(SwccOffset<std::byte> block, std::uint64_t size) const;
   void Free(std::uint32_t owner_shard, SwccOffset<std::byte> block,
             std::uint64_t size, std::uint64_t generation);
   std::uint64_t HarvestRemote(std::uint32_t shard, std::uint64_t size,

@@ -98,6 +98,7 @@ class SharedPool {
 // prefaulted by the host launcher.  This is intentionally a one-shot command.
 void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options);
 SharedEpochTable SharedEpochSlots(SharedPool& pool);
+SharedEpochClockView SharedEpochState(SharedPool& pool);
 std::string DescribeHwccBudget(const SharedPool& pool);
 
 // The Masstree runtime binds one process-local shard before creating its
@@ -106,8 +107,12 @@ std::string DescribeHwccBudget(const SharedPool& pool);
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard);
 SharedPool& CurrentSharedPool();
+std::uint32_t CurrentSwccShard();
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size);
+std::uint32_t CurrentSwccOwner(SwccOffset<std::byte> block, std::uint64_t size);
 void FreeCurrentSwcc(SwccOffset<std::byte> block, std::uint64_t size,
                      std::uint64_t generation = 0);
+void FreeCurrentSwccToOwner(std::uint32_t owner_shard, SwccOffset<std::byte> block,
+                            std::uint64_t size, std::uint64_t generation = 0);
 
 }  // namespace dsidle

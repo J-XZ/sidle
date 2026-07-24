@@ -140,6 +140,7 @@ void query<R>::emit_fields1(const R* value, Json& req, threadinfo& ti) {
 
 template <typename R> template <typename T>
 void query<R>::run_get(T& table, Json& req, threadinfo& ti) {
+    threadinfo::rcu_scope rcu(ti);
     typename T::unlocked_cursor_type lp(table, req[2].as_s());
     bool found = lp.find_unlocked(ti);
     if (found && row_is_marker(lp.value()))
@@ -156,6 +157,7 @@ void query<R>::run_get(T& table, Json& req, threadinfo& ti) {
 
 template <typename R> template <typename T>
 bool query<R>::run_get1(T& table, Str key, int col, Str& value, threadinfo& ti) {
+    threadinfo::rcu_scope rcu(ti);
     typename T::unlocked_cursor_type lp(table, key);
     bool found = lp.find_unlocked(ti);
     if (found && row_is_marker(lp.value()))
@@ -183,6 +185,7 @@ template <typename R> template <typename T>
 result_t query<R>::run_put(T& table, Str key,
                            const Json* firstreq, const Json* lastreq,
                            threadinfo& ti) {
+    threadinfo::rcu_scope rcu(ti);
     typename T::cursor_type lp(table, key);
     bool found = lp.find_insert(ti);
     if (!found) {
@@ -227,6 +230,7 @@ inline bool query<R>::apply_put(R*& value, bool found, const Json* firstreq,
 
 template <typename R> template <typename T>
 result_t query<R>::run_replace(T& table, Str key, Str value, threadinfo& ti) {
+    threadinfo::rcu_scope rcu(ti);
     typename T::cursor_type lp(table, key);
     bool found = lp.find_insert(ti);
     if (!found) {
@@ -263,6 +267,7 @@ inline bool query<R>::apply_replace(R*& value, bool found, Str new_value,
 
 template <typename R> template <typename T>
 bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
+    threadinfo::rcu_scope rcu(ti);
     typename T::cursor_type lp(table, key);
     bool found = lp.find_locked(ti);
     if (found) {

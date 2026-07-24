@@ -49,7 +49,10 @@ struct limbo_group {
         // Non-pooled callback objects remain process-local addresses.
         uint64_t ref_;
         union {
-            memtag tag;
+            struct {
+                memtag tag;
+                std::uint32_t owner_shard;
+            } allocation;
             epoch_type epoch;
         } u_;
     };
@@ -67,7 +70,7 @@ struct limbo_group {
         assert(head_ != tail_);
         return e_[head_].u_.epoch;
     }
-    void push_back(void* ptr, memtag tag, mrcu_epoch_type epoch) {
+    void push_back(void* ptr, memtag tag, std::uint32_t owner_shard, mrcu_epoch_type epoch) {
         assert(tail_ + 2 <= capacity);
         if (head_ == tail_ || epoch_ != epoch) {
             e_[tail_].ref_ = 0;
@@ -78,7 +81,7 @@ struct limbo_group {
         e_[tail_].ref_ = (tag != memtag(-1) && (tag & memtag_pool_mask))
             ? uint64_t(reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase()))
             : reinterpret_cast<uint64_t>(ptr);
-        e_[tail_].u_.tag = tag;
+        e_[tail_].u_.allocation = {tag, owner_shard};
         ++tail_;
     }
     inline unsigned clean_until(threadinfo& ti, mrcu_epoch_type epoch_bound, unsigned count);
@@ -278,18 +281,36 @@ class threadinfo {
 
     // RCU
     enum { rcu_free_count = 128 }; // max # of entries to free per rcu_quiesce() call
+    class rcu_scope {
+      public:
+        explicit rcu_scope(threadinfo& ti) : ti_(ti) { ti_.rcu_start(); }
+        ~rcu_scope() { ti_.rcu_stop(); }
+      private:
+        threadinfo& ti_;
+    };
     void rcu_start() {
-        if (gc_epoch_ != globalepoch)
-            gc_epoch_ = globalepoch;
+        // dsidle: publish foreground participation in the HWCC slot assigned
+        // to this VM/shard and threadinfo index.
+        const mrcu_epoch_type epoch = dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current();
+        if (gc_epoch_ != epoch)
+            gc_epoch_ = epoch;
+        dsidle::SharedEpochSlots(dsidle::CurrentSharedPool()).Enter(
+            dsidle::CurrentSwccShard(), static_cast<std::uint32_t>(index_), gc_epoch_);
     }
     void rcu_stop() {
-        if (perform_gc_epoch_ != active_epoch)
-            hard_rcu_quiesce();
+        dsidle::SharedEpochSlots(dsidle::CurrentSharedPool()).Leave(
+            dsidle::CurrentSwccShard(), static_cast<std::uint32_t>(index_));
         gc_epoch_ = 0;
+        // dsidle: keep the global advance/minimum scan out of every API's
+        // hot path; this matches the baseline's 50-operation cadence.
+        if (++rcu_operations_ == 50) {
+            rcu_operations_ = 0;
+            rcu_quiesce();
+        }
     }
     void rcu_quiesce() {    
-        rcu_start();
-        if (perform_gc_epoch_ != active_epoch) 
+        dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Advance();
+        if (perform_gc_epoch_ != dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current())
             hard_rcu_quiesce();
     }
     typedef ::mrcu_callback mrcu_callback;
@@ -322,6 +343,7 @@ class threadinfo {
                                 // checkpoint or recover thread
 
             pthread_t pthreadid_;
+            std::uint32_t rcu_operations_;
         };
         char padding1[CACHE_LINE_SIZE];
     };
@@ -343,7 +365,7 @@ class threadinfo {
     void refill_local_pool(int nl);
     void refill_rcu();
 
-    void free_rcu(uint64_t ref, memtag tag) {
+    void free_rcu(uint64_t ref, memtag tag, std::uint32_t owner_shard) {
         void* p = (tag != memtag(-1) && (tag & memtag_pool_mask))
             ? dsidle::SwccOffset<std::byte>(ref).get(dsidle::SharedPoolBase())
             : reinterpret_cast<void*>(ref);
@@ -355,7 +377,7 @@ class threadinfo {
         else {
             p = memdebug::check_free_after_rcu(p, tag);
             int nl = tag & memtag_pool_mask;
-            dsidle::FreeCurrentSwcc(dsidle::SwccOffset<std::byte>(
+            dsidle::FreeCurrentSwccToOwner(owner_shard, dsidle::SwccOffset<std::byte>(
                 reinterpret_cast<std::byte*>(p) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
                 nl * CACHE_LINE_SIZE);
         }
@@ -364,8 +386,14 @@ class threadinfo {
     void record_rcu(void* ptr, memtag tag) {    
         if (limbo_tail_->tail_ + 2 > limbo_tail_->capacity)
             refill_rcu();
-        uint64_t epoch = globalepoch;
-        limbo_tail_->push_back(ptr, tag, epoch);
+        const uint64_t epoch = gc_epoch_ ? gc_epoch_
+            : dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current();
+        const std::uint32_t owner_shard = (tag != memtag(-1) && (tag & memtag_pool_mask))
+            ? dsidle::CurrentSwccOwner(dsidle::SwccOffset<std::byte>(
+                  reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
+                  (tag & memtag_pool_mask) * CACHE_LINE_SIZE)
+            : 0;
+        limbo_tail_->push_back(ptr, tag, owner_shard, epoch);
     }
 
 #if ENABLE_ASSERTIONS

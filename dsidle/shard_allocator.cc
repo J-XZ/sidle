@@ -146,6 +146,22 @@ SwccOffset<std::byte> SwccShardAllocator::Allocate(std::uint32_t shard, std::uin
   return FixedBlockShardAllocator(pool_, shard_count_, block).Allocate(shard);
 }
 
+std::uint32_t SwccShardAllocator::OwnerOf(SwccOffset<std::byte> block, std::uint64_t size) const {
+  if (!block) throw std::runtime_error("cannot determine owner of null SWCC offset");
+  const auto class_index = ClassIndex(SizeClassBlockSize(size));
+  const auto block_size = kSmallestSwccBlock << class_index;
+  const auto span = pool_.header()->swcc_bytes / kSwccSizeClassCount;
+  const auto raw_start = pool_.header()->swcc_offset + static_cast<std::uint64_t>(class_index) * span;
+  const auto start = AlignUp(raw_start, block_size);
+  const auto per_shard = ((span - (start - raw_start)) / shard_count_ / block_size) * block_size;
+  for (std::uint32_t shard = 0; shard < shard_count_; ++shard) {
+    const auto shard_start = start + static_cast<std::uint64_t>(shard) * per_shard;
+    if (block.value() >= shard_start && block.value() < shard_start + per_shard)
+      return shard;
+  }
+  throw std::runtime_error("SWCC offset is outside every shard range");
+}
+
 void SwccShardAllocator::Free(std::uint32_t owner_shard, SwccOffset<std::byte> block,
                               std::uint64_t size, std::uint64_t generation) {
   FixedBlockShardAllocator(pool_, shard_count_, SizeClassBlockSize(size)).Free(owner_shard, block, generation);

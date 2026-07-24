@@ -8,6 +8,25 @@ namespace dsidle {
 constexpr std::uint64_t kEpochInactive = std::numeric_limits<std::uint64_t>::max();
 struct alignas(64) EpochSlot { std::atomic<std::uint64_t> value{kEpochInactive}; std::byte padding[56]{}; };
 static_assert(sizeof(EpochSlot) == 64);
+
+// The first line of the fixed diagnostic region is the distributed RCU clock.
+// It is separate from the per-thread slots, so advancing it never modifies a
+// remote VM's foreground state.
+struct alignas(64) SharedEpochClock {
+  std::atomic<std::uint64_t> value{1};
+  std::byte padding[56]{};
+};
+static_assert(sizeof(SharedEpochClock) == 64);
+
+class SharedEpochClockView {
+ public:
+  explicit SharedEpochClockView(SharedEpochClock* clock) : clock_(clock) {}
+  std::uint64_t Current() const { return clock_->value.load(std::memory_order_acquire); }
+  std::uint64_t Advance() const { return clock_->value.fetch_add(1, std::memory_order_acq_rel) + 1; }
+ private:
+  SharedEpochClock* clock_;
+};
+
 class EpochTable {
  public:
   EpochTable(std::uint32_t vms, std::uint32_t threads) : slots_(vms * threads), threads_(threads) {}
