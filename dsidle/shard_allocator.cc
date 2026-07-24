@@ -4,6 +4,7 @@
 #include <immintrin.h>
 #include <new>
 #include <stdexcept>
+#include <string>
 
 namespace dsidle {
 namespace {
@@ -119,7 +120,10 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
   HarvestRemote(shard);
   if (const auto reused = Pop(entry->local_free_head)) return SwccOffset<std::byte>(reused);
   const auto offset = entry->bump.fetch_add(block_size_, std::memory_order_acq_rel);
-  if (offset + block_size_ > entry->limit) throw std::runtime_error("D-SIDLE SWCC shard OOM");
+  if (offset + block_size_ > entry->limit)
+    throw std::runtime_error("D-SIDLE SWCC shard OOM: block=" + std::to_string(block_size_) +
+                             " offset=" + std::to_string(offset) +
+                             " limit=" + std::to_string(entry->limit));
   std::memset(static_cast<std::byte*>(pool_.base()) + offset, 0, block_size_);
   return SwccOffset<std::byte>(offset);
 }
