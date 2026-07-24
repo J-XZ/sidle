@@ -256,7 +256,7 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint3
     if (!metadata->node_free_head.compare_exchange_weak(head, next, std::memory_order_acq_rel,
                                                          std::memory_order_acquire))
       continue;
-    control->allocation_state = NodeAllocationState::kAllocating;
+    control->allocation_state.store(NodeAllocationState::kAllocating, std::memory_order_relaxed);
     control->canonical_swcc_offset = canonical_swcc_offset;
     ++control->generation;
     control->retire_epoch = 0;
@@ -272,22 +272,22 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint3
 void NodeControlSlab::Publish(NodeRef ref, std::uint64_t initial_version) {
   if (!ref) throw std::runtime_error("cannot publish null NodeControl");
   auto* control = ref.get(pool_.base());
-  if (!control || control->allocation_state != NodeAllocationState::kAllocating)
+  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kAllocating)
     throw std::runtime_error("NodeControl must be ALLOCATING before publish");
   // The caller has initialized and flushed the canonical SWCC object before
   // this release store makes its control line readable by other VMs.
   std::atomic_thread_fence(std::memory_order_release);
   control->version_and_state.store(initial_version, std::memory_order_release);
-  control->allocation_state = NodeAllocationState::kPublished;
+  control->allocation_state.store(NodeAllocationState::kPublished, std::memory_order_release);
 }
 
 void NodeControlSlab::Retire(NodeRef ref, std::uint64_t retire_epoch) {
   if (!ref) throw std::runtime_error("cannot retire null NodeControl");
   auto* control = ref.get(pool_.base());
-  if (!control || control->allocation_state != NodeAllocationState::kPublished)
+  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished)
     throw std::runtime_error("NodeControl must be PUBLISHED before retire");
   control->retire_epoch = retire_epoch;
-  control->allocation_state = NodeAllocationState::kRetiring;
+  control->allocation_state.store(NodeAllocationState::kRetiring, std::memory_order_release);
   std::atomic_thread_fence(std::memory_order_release);
 }
 
@@ -295,14 +295,14 @@ void NodeControlSlab::Release(NodeRef ref) {
   if (!ref) throw std::runtime_error("cannot release null NodeControl");
   auto* metadata = pool_.static_layout();
   auto* control = ref.get(pool_.base());
-  if (!control || control->allocation_state != NodeAllocationState::kRetiring)
+  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kRetiring)
     throw std::runtime_error("NodeControl must be RETIRING before release");
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   do {
     control->canonical_swcc_offset = head;
     control->node_type = 0;
     control->retire_epoch = 0;
-    control->allocation_state = NodeAllocationState::kFree;
+    control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
   } while (!metadata->node_free_head.compare_exchange_weak(head, ref.value(), std::memory_order_release,
                                                             std::memory_order_acquire));

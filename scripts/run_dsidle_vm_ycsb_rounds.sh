@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+prepared_dir=""
+rounds=1
+runner="${DSIDLE_VM_TRACE_RUNNER:-$repo_root/build-jammy/dsidle_e2e_trace_runner}"
+module="${DSIDLE_IVSHMEM_MODULE:-$repo_root/build-jammy/ivshmem_driver.ko}"
+pool_tool="${DSIDLE_POOL_TOOL:-$repo_root/build/dsidle_shared_pool}"
+timeout_sec=7200
+
+usage() { echo "usage: $0 --prepared-dir DIR [--rounds N] [--runner PATH] [--ivshmem-module PATH] [--pool-tool PATH] [--round-timeout SEC]" >&2; }
+while (($#)); do case "$1" in
+  --prepared-dir|--rounds|--runner|--ivshmem-module|--pool-tool|--round-timeout)
+    (($# >= 2)) || { usage; exit 2; }
+    case "$1" in --prepared-dir) prepared_dir=$2;; --rounds) rounds=$2;; --runner) runner=$2;; --ivshmem-module) module=$2;; --pool-tool) pool_tool=$2;; --round-timeout) timeout_sec=$2;; esac; shift 2;;
+  --help) usage; exit 0;; *) usage; exit 2;; esac; done
+[[ -n "$prepared_dir" && -d "$prepared_dir" && "$rounds" =~ ^[1-9][0-9]*$ && "$timeout_sec" =~ ^[1-9][0-9]*$ ]] || { usage; exit 2; }
+[[ -x "$runner" && -f "$module" && -x "$pool_tool" ]] || { echo "missing VM artifact" >&2; exit 2; }
+base="$prepared_dir/configs/experiment_config_ycsb_4vm.jsonc"
+[[ -f "$base" ]] || { echo "missing prepared config" >&2; exit 2; }
+mapfile -t topology < <(python3 - "$base" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1])); print(c['vm']['count']); print(c['vm']['ssh_base_port']); print(c['vm']['core_count_per_vm'])
+PY
+)
+[[ ${topology[0]} == 4 ]] || { echo "requires 4 VMs" >&2; exit 2; }
+ports=("${topology[1]}" "$((topology[1]+1))" "$((topology[1]+2))" "$((topology[1]+3))")
+mkdir -p "$prepared_dir/guest_configs"
+mapfile -t phases < <(python3 - "$prepared_dir/run_meta.json" <<'PY'
+import json,sys
+m=json.load(open(sys.argv[1])); print('load'); [print('workload'+x) for x in m['workloads']]
+PY
+)
+for phase in "${phases[@]}"; do
+  python3 - "$prepared_dir/configs/experiment_config_ycsb_${phase}.jsonc" "$prepared_dir/guest_configs/${phase}.jsonc" "$phase" <<'PY'
+import json,sys
+s,t,p=sys.argv[1:]; c=json.load(open(s)); c['shared_memory']['path']=c['shared_memory']['device_path']; c['dsidle']['trace_dir']='/root/dsidle-ycsb/traces/'+p
+open(t,'w').write(json.dumps(c,separators=(',',':'))+'\n')
+PY
+done
+ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=20)
+for port in "${ports[@]}"; do
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'mkdir -p /root/dsidle-ycsb/traces'
+  rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$runner" "$module" "$prepared_dir/guest_configs/" root@127.0.0.1:/root/dsidle-ycsb/
+  rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$prepared_dir/traces/" root@127.0.0.1:/root/dsidle-ycsb/traces/
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'if ! test -c /dev/ivpci0; then dev=$(for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x1af4 ] && [ "$(cat "$d/device")" = 0x1110 ] && basename "$d"; done); [ -n "$dev" ]; [ -L "/sys/bus/pci/devices/$dev/driver" ] && printf "%s" "$dev" > "/sys/bus/pci/devices/$dev/driver/unbind" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod /root/dsidle-ycsb/ivshmem_driver.ko; fi; test -c /dev/ivpci0'
+done
+for ((round=1; round<=rounds; ++round)); do
+  "$pool_tool" --init-pool --config "$base" --node-control-capacity 2097152 --max-threads-per-vm "${topology[2]}" >"$prepared_dir/round_logs/pool_round_${round}.log" 2>&1
+  for phase in "${phases[@]}"; do
+    pids=(); stage=run; [[ "$phase" == load ]] && stage=load
+    for node in 0 1 2 3; do
+      flag=(); [[ "$phase" == load && $node == 0 ]] && flag=(--bootstrap)
+      ssh "${ssh_opts[@]}" -p "${ports[$node]}" root@127.0.0.1 "timeout $timeout_sec /root/dsidle-ycsb/dsidle_e2e_trace_runner --config /root/dsidle-ycsb/${phase}.jsonc --phase $phase --node $node ${flag[*]}" >"$prepared_dir/logs/${phase}_round_${round}_${stage}_node${node}.log" 2>&1 & pids+=("$!")
+    done
+    status=0; for pid in "${pids[@]}"; do wait "$pid" || status=1; done; ((status==0)) || { echo "VM YCSB failed: $phase round $round" >&2; exit 1; }
+  done
+done
+python3 "$script_dir/summarize_ycsb_experiment.py" --log-dir "$prepared_dir/logs" --out-dir "$prepared_dir" --metadata "$prepared_dir/run_meta.json"
+echo "DSIDLE_VM_YCSB_OK out_dir=$prepared_dir"

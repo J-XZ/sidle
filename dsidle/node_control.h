@@ -51,7 +51,7 @@ struct alignas(64) NodeControl {
   std::uint64_t generation{0};
   std::uint64_t retire_epoch{0};
   std::uint32_t node_type{0};
-  NodeAllocationState allocation_state{NodeAllocationState::kFree};
+  std::atomic<NodeAllocationState> allocation_state{NodeAllocationState::kFree};
   std::byte padding[24]{};
 };
 static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
@@ -80,7 +80,7 @@ T* ResolveCanonicalNode(NodeRef ref) {
   if (!ref) return nullptr;
   void* base = SharedPoolBase();
   auto* control = ref.get(base);
-  if (!control || control->allocation_state != NodeAllocationState::kPublished ||
+  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished ||
       !control->canonical_swcc_offset)
     throw std::runtime_error("NodeRef does not name a published canonical node");
   T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
@@ -173,7 +173,7 @@ class NodeVersionAccessor {
   NodeControl* Control() const {
     auto* control = ref_.get(pool_base_);
     if (!control) throw std::runtime_error("null NodeRef");
-    if (control->allocation_state != NodeAllocationState::kPublished)
+    if (control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished)
       throw std::runtime_error("NodeRef does not name a published canonical node");
     return control;
   }

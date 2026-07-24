@@ -150,5 +150,6 @@ meta={"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
-echo "trace generation and VM replay require the in-tree YCSB-cpp generator and prepared VM image; use --prepare-only to validate inputs" >&2
-exit 1
+if (( ! skip_build )); then "$script_dir/dsidle_build_vm_artifacts.sh"; fi
+if (( ! skip_vm_init )); then "$script_dir/dsidle_check_vms.sh"; fi
+"$script_dir/scripts/run_dsidle_vm_ycsb_rounds.sh" --prepared-dir "$out_dir" --rounds "$rounds" --round-timeout "$round_timeout"

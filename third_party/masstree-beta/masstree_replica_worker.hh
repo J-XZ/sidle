@@ -69,7 +69,7 @@ class replica_executor {
   static node_base<P>* Resolve(dsidle::QueuedNodeRef candidate) {
     if (!candidate) return nullptr;
     auto* control = candidate.ref.get(dsidle::SharedPoolBase());
-    if (!control || control->allocation_state != dsidle::NodeAllocationState::kPublished ||
+    if (!control || control->allocation_state.load(std::memory_order_acquire) != dsidle::NodeAllocationState::kPublished ||
         control->generation != candidate.generation)
       return nullptr;
     return dsidle::ResolveCanonicalNode<node_base<P>>(candidate.ref);
