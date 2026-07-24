@@ -49,7 +49,7 @@ void ckstate::insert(T& table, msgpack::parser& par, threadinfo& ti) {
     bool found = lp.find_insert(ti);
     masstree_invariant(!found); (void) found;
     ti.observe_phantoms(lp.node());
-    lp.value() = row;
+    lp.set_value(row);
     lp.finish(1, ti);
 }
 

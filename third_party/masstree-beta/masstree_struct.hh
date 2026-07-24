@@ -352,14 +352,15 @@ class leafvalue {
   public:
     typedef typename P::value_type value_type;
     typedef typename make_prefetcher<P>::type prefetcher_type;
+    typedef typename std::remove_pointer<value_type>::type value_element_type;
 
-    leafvalue() {
-    }
+    leafvalue() = default;
     leafvalue(value_type v) {
-        u_.v = v;
+        raw_ = v ? dsidle::SwccOffset<value_element_type>(
+            reinterpret_cast<std::byte*>(v) - static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
     }
     leafvalue(node_base<P>* n) {
-        u_.x = reinterpret_cast<uintptr_t>(n);
+        raw_ = n ? n->control_ref().value() : 0;
     }
 
     static leafvalue<P> make_empty() {
@@ -368,36 +369,33 @@ class leafvalue {
 
     typedef bool (leafvalue<P>::*unspecified_bool_type)() const;
     operator unspecified_bool_type() const {
-        return u_.x ? &leafvalue<P>::empty : 0;
+        return raw_ ? &leafvalue<P>::empty : 0;
     }
     bool empty() const {
-        return !u_.x;
+        return !raw_;
     }
 
     value_type value() const {
-        return u_.v;
+        return dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
     }
-    value_type& value() {
-        return u_.v;
+    void set_value(value_type value) {
+        raw_ = value ? dsidle::SwccOffset<value_element_type>(
+            reinterpret_cast<std::byte*>(value) - static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
     }
 
     node_base<P>* layer() const {
-        return reinterpret_cast<node_base<P>*>(u_.x);
+        return dsidle::ResolveCanonicalNode<node_base<P> >(dsidle::NodeRef(raw_));
     }
 
     void prefetch(int keylenx) const {
         if (!leaf<P>::keylenx_is_layer(keylenx))
-            prefetcher_type()(u_.v);
+            prefetcher_type()(value());
         else
-            u_.n->prefetch_full();
+            layer()->prefetch_full();
     }
 
   private:
-    union {
-        node_base<P>* n;
-        value_type v;
-        uintptr_t x;
-    } u_;
+    std::uint64_t raw_{};
 };
 
 template <typename P>

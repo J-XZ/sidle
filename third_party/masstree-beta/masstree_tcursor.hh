@@ -124,8 +124,11 @@ class tcursor {
     inline bool has_value() const {
         return kx_.p >= 0;
     }
-    inline value_type& value() const {
+    inline value_type value() const {
         return n_->lv_[kx_.p].value();
+    }
+    inline void set_value(value_type value) const {
+        n_->lv_[kx_.p].set_value(value);
     }
 
     inline bool is_first_layer() const {

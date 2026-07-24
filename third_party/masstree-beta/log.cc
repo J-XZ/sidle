@@ -518,7 +518,9 @@ void logrecord::run(T& table, std::vector<lcdf::Json>& jrepo, threadinfo& ti) {
     bool found = lp.find_insert(ti);
     if (!found)
         ti.observe_phantoms(lp.node());
-    apply(lp.value(), found, jrepo, ti);
+    row_type* slot = lp.value();
+    apply(slot, found, jrepo, ti);
+    lp.set_value(slot);
     lp.finish(1, ti);
 }
 
