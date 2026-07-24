@@ -11,6 +11,7 @@ build/
 image/.mkosi-*/
 image/root.img
 image/root.img.manifest
+image/rootfs/root/
 unready_script
 script
 .git_backup
