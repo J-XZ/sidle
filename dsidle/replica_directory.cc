@@ -26,6 +26,7 @@ ReplicaDirectory::ReplicaDirectory(const SharedPool& pool)
 }
 
 ReplicaDirectory::~ReplicaDirectory() {
+  if (current_replica_directory == this) current_replica_directory = nullptr;
   for (std::uint64_t index = 0; index < segment_count_; ++index)
     delete segments_[index].load(std::memory_order_relaxed);
 }
