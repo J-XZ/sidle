@@ -8,6 +8,7 @@ suite=""
 rounds=1
 out_dir=""
 runner="${DSIDLE_VM_SUITE_RUNNER:-$repo_root/build-jammy/dsidle_e2e_suite_runner}"
+ivshmem_module="${DSIDLE_IVSHMEM_MODULE:-$repo_root/build-jammy/ivshmem_driver.ko}"
 pool_tool="${DSIDLE_POOL_TOOL:-$repo_root/build/dsidle_shared_pool}"
 node_capacity=2097152
 max_threads=16
@@ -15,16 +16,16 @@ round_timeout=7200
 execute=0
 
 usage() {
-  echo "usage: $0 --suite 08|09 [--config PATH] [--rounds N] [--out-dir DIR] [--runner PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--round-timeout SEC] --execute" >&2
+  echo "usage: $0 --suite 08|09 [--config PATH] [--rounds N] [--out-dir DIR] [--runner PATH] [--ivshmem-module PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--round-timeout SEC] --execute" >&2
 }
 need_value() { (($# >= 2)) || { usage; exit 2; }; }
 while (($#)); do
   case "$1" in
-    --suite|--config|--rounds|--out-dir|--runner|--pool-tool|--node-control-capacity|--max-threads-per-vm|--round-timeout)
+    --suite|--config|--rounds|--out-dir|--runner|--ivshmem-module|--pool-tool|--node-control-capacity|--max-threads-per-vm|--round-timeout)
       need_value "$@"
       case "$1" in
         --suite) suite=$2;; --config) config=$2;; --rounds) rounds=$2;; --out-dir) out_dir=$2;;
-        --runner) runner=$2;; --pool-tool) pool_tool=$2;; --node-control-capacity) node_capacity=$2;;
+        --runner) runner=$2;; --ivshmem-module) ivshmem_module=$2;; --pool-tool) pool_tool=$2;; --node-control-capacity) node_capacity=$2;;
         --max-threads-per-vm) max_threads=$2;; --round-timeout) round_timeout=$2;;
       esac
       shift 2;;
@@ -39,6 +40,7 @@ for value in "$rounds" "$node_capacity" "$max_threads" "$round_timeout"; do
 done
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 [[ -x "$runner" ]] || { echo "missing externally built Jammy runner: $runner" >&2; exit 2; }
+[[ -f "$ivshmem_module" ]] || { echo "missing externally built ivshmem module: $ivshmem_module" >&2; exit 2; }
 [[ -x "$pool_tool" ]] || { echo "missing pool tool: $pool_tool" >&2; exit 2; }
 ((execute)) || { echo "refusing to start a VM experiment without --execute" >&2; exit 2; }
 
@@ -75,11 +77,13 @@ ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyCheck
 remote_dir=/root/dsidle-bin
 remote_runner="$remote_dir/dsidle_e2e_suite_runner"
 remote_config="$remote_dir/e2e${suite}_guest.jsonc"
+remote_module="$remote_dir/ivshmem_driver.ko"
 for ((node = 0; node < vm_count; ++node)); do
   port=$((ssh_base_port + node))
-  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir && test -c /dev/ivpci0"
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir"
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
-    "$runner" "$guest_config" "root@127.0.0.1:$remote_dir/"
+    "$runner" "$guest_config" "$ivshmem_module" "root@127.0.0.1:$remote_dir/"
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; if [ -L \"/sys/bus/pci/devices/\$dev/driver\" ]; then printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; fi; modprobe -r uio_pci_generic 2>/dev/null || true; lsmod | grep -q '^ivshmem_driver ' || insmod $remote_module; printf '%s' ivpci > \"/sys/bus/pci/devices/\$dev/driver_override\"; printf '%s' \"\$dev\" > /sys/bus/pci/drivers_probe; test -c /dev/ivpci0"
 done
 
 printf 'suite=%s rounds=%s config=%s runner=%s vm_count=%s\n' "$suite" "$rounds" "$config" "$runner" "$vm_count" >"$out_dir/run.meta"

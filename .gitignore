@@ -15,3 +15,10 @@ image/rootfs/root/
 unready_script
 script
 .git_backup
+
+third_party/ivshmem-kernel/*.ko
+third_party/ivshmem-kernel/*.o
+third_party/ivshmem-kernel/*.mod*
+third_party/ivshmem-kernel/Module.symvers
+third_party/ivshmem-kernel/modules.order
+third_party/ivshmem-kernel/.*.cmd
