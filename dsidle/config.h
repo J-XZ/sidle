@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "dsidle/latency_simulator.h"
+
 namespace dsidle {
 
 struct MemoryRegionConfig {
@@ -24,6 +26,7 @@ struct ExperimentConfig {
   std::uint64_t replica_budget_mb{};
   std::uint32_t fixed_key_size{};
   std::uint32_t fixed_value_size{};
+  latency_sim::Config latency_inject{};
 };
 
 // dsidle: The parser owns the experiment contract.  Unknown dsidle fields and

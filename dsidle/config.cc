@@ -72,6 +72,14 @@ std::string String(const std::string& object, const std::string& name) {
     throw std::runtime_error("missing string: " + name);
   return match[1];
 }
+bool Boolean(const std::string& object, const std::string& name) {
+  std::smatch m; if (!std::regex_search(object, m, std::regex("\\\"" + name + "\\\"\\s*:\\s*(true|false)"))) throw std::runtime_error("missing boolean: " + name);
+  return m[1] == "true";
+}
+double Number(const std::string& object, const std::string& name) {
+  std::smatch m; if (!std::regex_search(object, m, std::regex("\\\"" + name + "\\\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)"))) throw std::runtime_error("missing number: " + name);
+  return std::stod(m[1]);
+}
 
 std::vector<int> NumaNodes(const std::string& object, const std::string& name) {
   std::smatch match;
@@ -115,6 +123,11 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   config.replica_budget_mb = Integer(local, "replica_budget_mb");
   config.fixed_key_size = static_cast<std::uint32_t>(Integer(local, "fixed_key_size"));
   config.fixed_value_size = static_cast<std::uint32_t>(Integer(local, "fixed_value_size"));
+  const auto latency = Section(local, "latency_inject");
+  auto& l = config.latency_inject;
+  l.enabled=Boolean(latency,"enabled"); l.foreground_enabled=Boolean(latency,"foreground_enabled"); l.merge_enabled=Boolean(latency,"merge_enabled"); l.stats_enabled=Boolean(latency,"stats_enabled"); l.cache_line_bytes=Integer(latency,"cache_line_bytes");
+  l.swcc_read_ns_per_line=Number(latency,"swcc_read_ns_per_line"); l.swcc_write_ns_per_line=Number(latency,"swcc_write_ns_per_line"); l.swcc_flush_ns_per_line=Number(latency,"swcc_flush_ns_per_line"); l.hwcc_read_ns_per_line=Number(latency,"hwcc_read_ns_per_line"); l.hwcc_write_ns_per_line=Number(latency,"hwcc_write_ns_per_line"); l.hwcc_atomic_load_ns=Number(latency,"hwcc_atomic_load_ns"); l.hwcc_atomic_store_ns=Number(latency,"hwcc_atomic_store_ns"); l.hwcc_atomic_rmw_ns=Number(latency,"hwcc_atomic_rmw_ns");
+  l.cache_model=latency_sim::ParseCacheModel(String(latency,"cache_model")); l.cache_hits_enabled=Boolean(latency,"cache_hits_enabled"); l.cache_capacity_lines=Integer(latency,"cache_capacity_lines"); l.cache_associativity=Integer(latency,"cache_associativity"); l.cache_fixed_hit_rate=Number(latency,"cache_fixed_hit_rate"); l.cache_hit_extra_ns=Number(latency,"cache_hit_extra_ns");
   if (!PowerOfTwo(config.shared_size_mb) || config.hwcc.offset_mb != 0 ||
       config.swcc.offset_mb != config.hwcc.size_mb ||
       config.hwcc.size_mb + config.swcc.size_mb != config.shared_size_mb ||
