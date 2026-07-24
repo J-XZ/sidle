@@ -22,6 +22,16 @@ constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
 }
 }  // namespace
 
+namespace {
+thread_local void* shared_pool_base = nullptr;
+}
+
+void SetSharedPoolBase(void* base) { shared_pool_base = base; }
+void* SharedPoolBase() {
+  if (!shared_pool_base) throw std::runtime_error("D-SIDLE shared pool is not attached in this thread");
+  return shared_pool_base;
+}
+
 void SharedPool::ValidateLayout(const PoolLayout& layout) {
   if (!layout.total_bytes || layout.hwcc_offset != 0 || !layout.hwcc_bytes || !layout.swcc_bytes ||
       layout.swcc_offset != layout.hwcc_bytes || layout.hwcc_bytes + layout.swcc_bytes != layout.total_bytes ||
@@ -78,6 +88,7 @@ SharedPool SharedPool::InitializeExisting(const std::string& path, const PoolLay
   if (msync(base, sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout), MS_SYNC) != 0) {
     munmap(base, layout.total_bytes); close(fd); Fail("sync", path);
   }
+  SetSharedPoolBase(base);
   return SharedPool(fd, base, layout.total_bytes);
 }
 
@@ -92,6 +103,7 @@ SharedPool SharedPool::Attach(const std::string& path, std::uint64_t expected_by
   if (base == MAP_FAILED) { close(fd); Fail("map", path); }
   try { ValidateHeader(*static_cast<PoolHeader*>(base), expected_bytes); }
   catch (...) { munmap(base, bytes); close(fd); throw; }
+  SetSharedPoolBase(base);
   return SharedPool(fd, base, bytes);
 }
 
@@ -104,6 +116,7 @@ SharedPool& SharedPool::operator=(SharedPool&& other) noexcept {
   return *this;
 }
 void SharedPool::Close() {
+  if (base_ && shared_pool_base == base_) shared_pool_base = nullptr;
   if (base_) munmap(base_, bytes_);
   if (fd_ >= 0) close(fd_);
   base_ = nullptr; fd_ = -1; bytes_ = 0;

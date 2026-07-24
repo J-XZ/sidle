@@ -10,6 +10,11 @@ namespace dsidle {
 
 class SharedPool;
 
+// Process-local mapping base. It is never written to the shared backing; it
+// merely resolves persistent offsets at this process's mapping address.
+void SetSharedPoolBase(void* base);
+void* SharedPoolBase();
+
 template <typename T, typename RegionTag>
 class BasicOffset {
  public:
