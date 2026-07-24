@@ -71,6 +71,11 @@ target_link_libraries(dsidle_shared_pool PRIVATE dsidle)
 add_executable(dsidle_e2e_trace_runner dsidle/e2e_trace_runner.cc)
 target_link_libraries(dsidle_e2e_trace_runner PRIVATE dsidle_masstree)
 target_compile_options(dsidle_e2e_trace_runner PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h)
+add_test(NAME dsidle_e2e_trace_runner_smoke
+  COMMAND /bin/sh -c
+    "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 2 && \"$3\" --config \"$2\" --phase smoke --node 0 --bootstrap"
+    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
+set_tests_properties(dsidle_e2e_trace_runner_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)

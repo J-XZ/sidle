@@ -1,0 +1,5 @@
+PUT 3 0key
+GET 3 0key
+SCAN 3 1key
+DELETE 3 0key
+GET 3 0key

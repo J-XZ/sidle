@@ -1,0 +1,27 @@
+{
+  "shared_memory": {
+    "size_mb": 128, "path": "/tmp/dsidle-e2e-runner.pool",
+    "device_path": "/dev/null", "numa_node": [0],
+    "hwcc": { "offset_mb": 0, "size_mb": 32 },
+    "swcc": { "offset_mb": 32, "size_mb": 96 }
+  },
+  "vm": {
+    "count": 1, "core_count_per_vm": 1, "mem_size_mb_per_vm": 128,
+    "storage_path": "/tmp", "ssh_base_port": 10022, "numa_node": [0],
+    "local_ssh_pub_key": "", "first_ip": "127.0.0.1", "bridge_tap_ip": "127.0.0.1"
+  },
+  "host_cpu": { "reserved_cores": [0], "ivshmem_server_cores": [0], "vm_cores": [0] },
+  "e2e": { "foreground_worker_count_per_vm": 1 },
+  "dsidle": {
+    "replica_budget_mb": 8, "hot_percentage_seed": 50,
+    "fixed_key_size": 8, "fixed_value_size": 8, "trace_dir": "tests/data/e2e_trace",
+    "latency_inject": {
+      "enabled": false, "foreground_enabled": true, "merge_enabled": true, "stats_enabled": false,
+      "cache_line_bytes": 64, "swcc_read_ns_per_line": 0, "swcc_write_ns_per_line": 0,
+      "swcc_flush_ns_per_line": 0, "hwcc_read_ns_per_line": 0, "hwcc_write_ns_per_line": 0,
+      "hwcc_atomic_load_ns": 0, "hwcc_atomic_store_ns": 0, "hwcc_atomic_rmw_ns": 0,
+      "cache_model": "none", "cache_hits_enabled": true, "cache_capacity_lines": 64,
+      "cache_associativity": 2, "cache_fixed_hit_rate": 0, "cache_hit_extra_ns": 0
+    }
+  }
+}
