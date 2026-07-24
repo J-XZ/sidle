@@ -56,6 +56,20 @@ class node_link {
 };
 static_assert(sizeof(node_link<void>) == sizeof(std::uint64_t));
 
+template <typename T>
+class tagged_node_link {
+  public:
+    constexpr tagged_node_link() = default;
+    tagged_node_link& operator=(T* node) {
+        raw_ = node ? node->control_ref().value() : 0;
+        return *this;
+    }
+    operator T*() const { return dsidle::ResolveCanonicalNode<T>(dsidle::NodeRef(raw_ & ~std::uint64_t(1))); }
+    explicit operator bool() const { return raw_ != 0; }
+    std::uint64_t raw_{};
+};
+static_assert(sizeof(tagged_node_link<void>) == sizeof(std::uint64_t));
+
 template <typename P>
 struct make_nodeversion {
     typedef nodeversion_parameters<typename P::nodeversion_value_type> parameters_type;
@@ -392,11 +406,8 @@ class leaf : public node_base<P> {
     ikey_type ikey0_[width];
     leafvalue_type lv_[width];
     external_ksuf_type* ksuf_;
-    union {
-        leaf<P>* ptr;
-        uintptr_t x;
-    } next_;
-    leaf<P>* prev_;
+    tagged_node_link<leaf<P> > next_;
+    node_link<leaf<P> > prev_;
     node_link<node_base<P> > parent_;
     phantom_epoch_type phantom_epoch_[P::need_phantom_epoch];
     kvtimestamp_t created_at_[P::debug_level > 0];
@@ -462,7 +473,8 @@ class leaf : public node_base<P> {
             new_node_type = node_base<P>::strategy_manager->decide_new_node_position(parent->sidle_meta.metadata.type, depth);
         }
         n = make_with_cxl_policy(ksufsize, parent ? parent->phantom_epoch() : phantom_epoch_type(), ti, 1, new_node_type, 1, false);
-        n->next_.ptr = n->prev_ = 0;
+        n->next_ = nullptr;
+        n->prev_ = nullptr;
         n->ikey0_[0] = 0; // to avoid undefined behavior
         n->make_layer_root();
         return n;
@@ -632,7 +644,7 @@ class leaf : public node_base<P> {
     void print(FILE* f, const char* prefix, int depth, int kdepth) const;
 
     leaf<P>* safe_next() const {
-        return reinterpret_cast<leaf<P>*>(next_.x & ~(uintptr_t) 1);
+        return next_;
     }
 
     void deallocate(threadinfo& ti) {

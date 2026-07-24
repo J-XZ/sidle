@@ -74,7 +74,7 @@ int leaf<P>::split_into(leaf<P>* nr, tcursor<P>* cursor,
     if (p == 0 && !this->prev_) {
         // reverse-sequential optimization
         mid = 1;
-    } else if (p == width && !this->next_.ptr) {
+    } else if (p == width && !this->next_) {
         // sequential optimization
         mid = width;
     }

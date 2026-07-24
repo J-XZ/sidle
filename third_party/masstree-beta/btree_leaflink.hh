@@ -29,20 +29,25 @@ template <typename N, bool CONCURRENT = N::concurrent> struct btree_leaflink {};
 // operations.
 template <typename N> struct btree_leaflink<N, true> {
   private:
-    static inline N *mark(N *n) {
-        return reinterpret_cast<N *>(reinterpret_cast<uintptr_t>(n) + 1);
+    static inline uint64_t mark(N *n) {
+        return n->control_ref().value() | 1;
     }
-    static inline bool is_marked(N *n) {
-        return reinterpret_cast<uintptr_t>(n) & 1;
+    static inline bool is_marked(uint64_t raw) {
+        return raw & 1;
     }
     template <typename SF>
     static inline N *lock_next(N *n, SF spin_function) {
         while (1) {
-            N *next = n->next_.ptr;
-            if (!next
-                || (!is_marked(next)
-                    && bool_cmpxchg(&n->next_.ptr, next, mark(next))))
+            uint64_t raw = n->next_.raw_;
+            N *next = n->next_;
+            if (!next || !is_marked(raw)) {
+                // dsidle: SWCC link words are never CAS targets. M2 is
+                // single-process and callers already hold n's node lock; M4
+                // adds the cross-VM lock/flush publication protocol.
+                if (next)
+                    n->next_.raw_ = raw | 1;
                 return next;
+            }
             spin_function();
         }
     }
@@ -61,11 +66,11 @@ template <typename N> struct btree_leaflink<N, true> {
     static void link_split(N *n, N *nr, SF spin_function) {
         nr->prev_ = n;
         N *next = lock_next(n, spin_function);
-        nr->next_.ptr = next;
+        nr->next_ = next;
         if (next)
             next->prev_ = nr;
         fence();
-        n->next_.ptr = nr;
+        n->next_ = nr;
     }
 
     /** @brief Change the prev link of @a n's next node to @a nn.
@@ -80,7 +85,7 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static void change_link(N *n, N *nn, SF spin_function) {
         N *next = lock_next(n, spin_function);
-        nn->next_.ptr = next;
+        nn->next_ = next;
         if (next)
             next->prev_ = nn;
         fence();
@@ -90,12 +95,11 @@ template <typename N> struct btree_leaflink<N, true> {
             if (!prev) {
                 break;
             }
-            if (bool_cmpxchg(&prev->next_.ptr, n, mark(n)))
-                break;
-            spin_function();
+            prev->next_.raw_ = mark(n);
+            break;
         }
         if (prev) {
-            prev->next_.ptr = nn;
+            prev->next_ = nn;
             nn->prev_ = prev;
         }
     }
@@ -117,14 +121,13 @@ template <typename N> struct btree_leaflink<N, true> {
         N *prev;
         while (1) {
             prev = n->prev_;
-            if (bool_cmpxchg(&prev->next_.ptr, n, mark(n)))
-                break;
-            spin_function();
+            prev->next_.raw_ = mark(n);
+            break;
         }
         if (next)
             next->prev_ = prev;
         fence();
-        prev->next_.ptr = next;
+        prev->next_ = next;
     }
 };
 
@@ -137,19 +140,19 @@ template <typename N> struct btree_leaflink<N, false> {
     template <typename SF>
     static void link_split(N *n, N *nr, SF) {
         nr->prev_ = n;
-        nr->next_.ptr = n->next_.ptr;
-        n->next_.ptr = nr;
-        if (nr->next_.ptr)
-            nr->next_.ptr->prev_ = nr;
+        nr->next_ = static_cast<N*>(n->next_);
+        n->next_ = nr;
+        if (N* next = nr->next_)
+            next->prev_ = nr;
     }
     static void unlink(N *n) {
         unlink(n, do_nothing());
     }
     template <typename SF>
     static void unlink(N *n, SF) {
-        if (n->next_.ptr)
-            n->next_.ptr->prev_ = n->prev_;
-        n->prev_->next_.ptr = n->next_.ptr;
+        if (N* next = n->next_)
+            next->prev_ = static_cast<N*>(n->prev_);
+        static_cast<N*>(n->prev_)->next_ = static_cast<N*>(n->next_);
     }
 };
 

@@ -100,7 +100,7 @@ void leaf<P>::print(FILE *f, const char *prefix, int depth, int kdepth) const
                 (uint64_t) v.version_value(),
                 modstate_ <= 2 ? modstates[modstate_] : "??",
                 perm.unparse().c_str(),
-                parent_, prev_, next_.ptr,
+                static_cast<node_base<P>*>(parent_), static_cast<leaf<P>*>(prev_), static_cast<leaf<P>*>(next_),
                 l, buf);
     }
 
