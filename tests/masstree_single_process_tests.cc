@@ -65,6 +65,19 @@ int main() {
   assert(dsidle::SharedEpochSlots(pool).MinimumActive() != dsidle::kEpochInactive);
   ti->rcu_stop();
   assert(dsidle::SharedEpochSlots(pool).MinimumActive() == dsidle::kEpochInactive);
+
+  // A detached canonical leaf exercises the same deallocate_rcu path used by
+  // structural removal: its control line must remain RETIRING until the
+  // thread's epoch drain returns the paired SWCC body to the free path.
+  using test_leaf_type = Masstree::leaf<Masstree::default_table::parameters_type>;
+  test_leaf_type* retired_leaf = test_leaf_type::make_root(0, nullptr, *ti);
+  const auto retired_ref = retired_leaf->control_ref();
+  assert(retired_ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kPublished);
+  retired_leaf->deallocate_rcu(*ti);
+  assert(retired_ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kRetiring);
+  ti->rcu_drain();
+  assert(retired_ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kFree);
+
   Masstree::default_table table;
   table.initialize(*ti, 80);
   const auto root_ref = table.table().root()->control_ref();
