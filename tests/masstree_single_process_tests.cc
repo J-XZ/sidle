@@ -150,6 +150,18 @@ int main() {
   assert(replica_column.len == expected.begin()->second.size());
   assert(std::memcmp(replica_column.s, expected.begin()->second.data(), replica_column.len) == 0);
   std::free(encoded_leaf);
+  const auto promote_version = canonical_leaf->stable();
+  assert(Masstree::leaf_replica<replica_params>::Promote(*canonical_leaf, promote_version, replicas));
+  const auto promote_generation = canonical_leaf->control_ref().get(pool.base())->generation;
+  auto replica_handle = replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                                         promote_version.version_value());
+  assert(replica_handle);
+  replica_value = nullptr;
+  assert(Masstree::leaf_replica<replica_params>::Lookup(replica_handle.snapshot().local_ptr,
+      replica_key, replica_value, replica_layer) == Masstree::leaf_replica<replica_params>::result::kValue);
+  assert(replica_value->col(0).len == expected.begin()->second.size());
+  replica_handle = {};
+  std::free(replicas.Invalidate(canonical_leaf->control_ref()));
 
   const pid_t reader = fork();
   assert(reader >= 0);

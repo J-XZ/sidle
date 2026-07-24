@@ -2,6 +2,7 @@
 #define MASSTREE_REPLICA_HH
 
 #include "masstree_struct.hh"
+#include "dsidle/replica_directory.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -108,6 +109,29 @@ class leaf_replica {
       return result::kValue;
     }
     return result::kMiss;
+  }
+
+  // Snapshot-copy-publish protocol for a canonical leaf. The caller obtains a
+  // stable version first; publication is rejected if the leaf changed while
+  // its suffix/value bytes were copied.
+  static bool Promote(const leaf_type& source, typename leaf_type::nodeversion_type version,
+                      dsidle::ReplicaDirectory& directory) {
+    const auto ref = source.control_ref();
+    const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+    void* buffer = Create(source, source.permutation());
+    if (source.has_changed(version)) {
+      std::free(buffer);
+      return false;
+    }
+    bool has_layer = false;
+    const auto permutation = source.permutation();
+    for (int index = 0; index < permutation.size(); ++index)
+      has_layer = has_layer || source.is_layer(permutation[index]);
+    const auto bytes = static_cast<const header*>(buffer)->bytes;
+    void* old = directory.Publish(ref, {buffer, generation, version.version_value(), bytes,
+      has_layer ? dsidle::ReplicaKind::kLayerLeaf : dsidle::ReplicaKind::kValueLeaf});
+    std::free(old);
+    return true;
   }
 
  private:
