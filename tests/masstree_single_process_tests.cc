@@ -1,5 +1,6 @@
 #include "dsidle/shared_pool.h"
 #include "dsidle/shard_allocator.h"
+#include "dsidle/replica_directory.h"
 
 #include "query_masstree.hh"
 #include "masstree_struct.hh"
@@ -59,6 +60,8 @@ int main() {
   dsidle::InitializePoolMetadata(pool, {1, 2, 1024});
   dsidle::FixedBlockShardAllocator::InitializeAll(pool, 1);
   dsidle::ConfigureCurrentSwccAllocator(pool, 1, 0);
+  dsidle::ReplicaDirectory replicas(pool);
+  dsidle::ConfigureCurrentReplicaDirectory(replicas);
 
   threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
   ti->rcu_start();
@@ -125,6 +128,7 @@ int main() {
     assert(value.len == expected_value.size());
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
+  assert(replicas.AccessCount(table.table().root()->control_ref()) > 0);
 
   const pid_t reader = fork();
   assert(reader >= 0);

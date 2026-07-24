@@ -14,9 +14,13 @@ int main() {
   const auto ref = controls.Reserve(4ULL << 20, 2);
   controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
   dsidle::ReplicaDirectory directory(pool);
+  dsidle::ConfigureCurrentReplicaDirectory(directory);
 
   auto* first = static_cast<char*>(std::malloc(32)); assert(first); std::strcpy(first, "first");
   assert(directory.Publish(ref, {first, 1, 7, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
+  directory.RecordAccess(ref);
+  directory.RecordAccess(ref);
+  assert(directory.AccessCount(ref) == 2);
   {
     auto handle = directory.Acquire(ref, 1, 7);
     assert(handle && std::strcmp(static_cast<char*>(handle.snapshot().local_ptr), "first") == 0);
@@ -30,6 +34,10 @@ int main() {
   handle = {};
   std::free(directory.Invalidate(ref));
   assert(!directory.Acquire(ref, 1, 8));
+  controls.Retire(ref, 9);
+  controls.Release(ref);
+  const auto reused = controls.Reserve((4ULL << 20) + 64, 2);
+  assert(reused == ref && directory.AccessCount(reused) == 0);
   pool.Close();
   assert(unlink(path) == 0);
 }

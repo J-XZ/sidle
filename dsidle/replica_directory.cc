@@ -4,6 +4,15 @@
 #include <stdexcept>
 
 namespace dsidle {
+namespace {
+thread_local ReplicaDirectory* current_replica_directory = nullptr;
+}
+
+void ConfigureCurrentReplicaDirectory(ReplicaDirectory& directory) {
+  current_replica_directory = &directory;
+}
+
+ReplicaDirectory* CurrentReplicaDirectoryOrNull() { return current_replica_directory; }
 
 ReplicaDirectory::ReplicaDirectory(const SharedPool& pool)
     : node_control_offset_(pool.static_layout()->node_control_offset),
@@ -127,6 +136,22 @@ void* ReplicaDirectory::Invalidate(NodeRef ref) {
   slot->kind.store(0, std::memory_order_relaxed);
   slot->seq.store(sequence + 2, std::memory_order_release);
   return old;
+}
+
+void* ReplicaDirectory::ResetForReuse(NodeRef ref) {
+  Slot& slot = *Ensure(ref);
+  void* old = Invalidate(ref);
+  slot.access_count.store(0, std::memory_order_release);
+  return old;
+}
+
+void ReplicaDirectory::RecordAccess(NodeRef ref) const {
+  if (Slot* slot = Find(ref)) slot->access_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t ReplicaDirectory::AccessCount(NodeRef ref) const {
+  if (Slot* slot = Find(ref)) return slot->access_count.load(std::memory_order_relaxed);
+  return 0;
 }
 
 }  // namespace dsidle

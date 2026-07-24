@@ -22,6 +22,7 @@
 #include "mtcounters.hh"
 #include "timestamp.hh"
 #include "sidle_frontend.hh"
+#include "dsidle/replica_directory.h"
 #include <immintrin.h>
 #ifdef CAL_NODE_HOTNESS
 #include <unordered_map>
@@ -875,6 +876,8 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
  retry:
     sense = 0;
     n[sense] = this;
+    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+        replicas->RecordAccess(n[sense]->control_ref());
 #ifdef CAL_NODE_HOTNESS
     n[sense]->record_access();
 #endif
@@ -885,6 +888,8 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
         }
         ti.mark(tc_root_retry);
         n[sense] = n[sense]->maybe_parent();
+        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+            replicas->RecordAccess(n[sense]->control_ref());
 #ifdef CAL_NODE_HOTNESS
         n[sense]->record_access();
 #endif
@@ -896,6 +901,10 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
         in->prefetch();
         int kp = internode<P>::bound_type::upper(ka, *in);
         n[sense ^ 1] = in->child_[kp];
+        if (n[sense ^ 1]) {
+            if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+                replicas->RecordAccess(n[sense ^ 1]->control_ref());
+        }
 #ifdef CAL_NODE_HOTNESS
         n[sense ^ 1]->record_access();
 #endif

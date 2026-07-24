@@ -62,6 +62,11 @@ class ReplicaDirectory {
   void* Publish(NodeRef ref, ReplicaSnapshot snapshot);
   // Marks a slot invalid, waits for local readers, and returns its old buffer.
   void* Invalidate(NodeRef ref);
+  // Called when a NodeControl slot gets a new generation. This both invalidates
+  // any stale local buffer and clears the single-index local hotness counter.
+  void* ResetForReuse(NodeRef ref);
+  void RecordAccess(NodeRef ref) const;
+  std::uint64_t AccessCount(NodeRef ref) const;
 
  private:
   static constexpr std::uint64_t kSlotsPerSegment = 4096;
@@ -73,6 +78,7 @@ class ReplicaDirectory {
     std::atomic<std::uint64_t> cached_version{0};
     std::atomic<std::uint64_t> bytes{0};
     std::atomic<std::uint32_t> kind{0};
+    std::atomic<std::uint64_t> access_count{0};
   };
   struct Segment { Slot slots[kSlotsPerSegment]; };
 
@@ -87,5 +93,10 @@ class ReplicaDirectory {
   std::unique_ptr<std::atomic<Segment*>[]> segments_;
   mutable std::mutex segment_mutex_;
 };
+
+// Replica directories and buffers are process-local. Bind one per worker
+// thread before it enters Masstree; no directory address enters the pool.
+void ConfigureCurrentReplicaDirectory(ReplicaDirectory& directory);
+ReplicaDirectory* CurrentReplicaDirectoryOrNull();
 
 }  // namespace dsidle

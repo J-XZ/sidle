@@ -1,8 +1,10 @@
 #include "dsidle/shared_pool.h"
 #include "dsidle/shard_allocator.h"
+#include "dsidle/replica_directory.h"
 
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <fcntl.h>
 #include <new>
 #include <stdexcept>
@@ -252,6 +254,8 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint3
     control->retire_epoch = 0;
     control->node_type = node_type;
     control->version_and_state.store(0, std::memory_order_relaxed);
+    if (auto* directory = CurrentReplicaDirectoryOrNull())
+      std::free(directory->ResetForReuse(NodeRef(head)));
     return NodeRef(head);
   }
   throw std::runtime_error("D-SIDLE NodeControl slab OOM");
