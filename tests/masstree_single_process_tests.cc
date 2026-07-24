@@ -29,6 +29,21 @@ struct ScanCollector {
     return true;
   }
 };
+
+struct ConcurrentScanCollector {
+  int signal_fd{-1};
+  bool signaled{false};
+  template <typename S, typename K>
+  void visit_leaf(const S&, const K&, threadinfo&) {
+    if (!signaled) {
+      const char token = 's';
+      assert(write(signal_fd, &token, 1) == 1);
+      signaled = true;
+      usleep(20'000);
+    }
+  }
+  bool visit_value(lcdf::Str, row_type*, threadinfo&) { return true; }
+};
 }  // namespace
 #include <unistd.h>
 
@@ -248,6 +263,40 @@ int main() {
     assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
     assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
   }
+
+  int scan_started[2];
+  assert(pipe(scan_started) == 0);
+  const std::string scan_delete_key = split_inserts.back().first;
+  const pid_t scan_remover = fork();
+  assert(scan_remover >= 0);
+  if (scan_remover == 0) {
+    close(scan_started[1]);
+    char token = 0;
+    if (read(scan_started[0], &token, 1) != 1) _exit(10);
+    pool.Close();
+    try {
+      auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+      dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+      Masstree::default_table child_table;
+      child_table.table().attach();
+      if (!query.run_remove(child_table.table(), lcdf::Str(scan_delete_key.data(), scan_delete_key.size()), *child_ti))
+        _exit(11);
+    } catch (...) {
+      _exit(12);
+    }
+    _exit(0);
+  }
+  close(scan_started[0]);
+  ConcurrentScanCollector concurrent_scanner{scan_started[1]};
+  assert(table.table().scan(lcdf::Str("", 0), true, concurrent_scanner, *ti) >= 0);
+  close(scan_started[1]);
+  int scan_remover_status = 0;
+  assert(waitpid(scan_remover, &scan_remover_status, 0) == scan_remover);
+  assert(WIFEXITED(scan_remover_status) && WEXITSTATUS(scan_remover_status) == 0);
+  expected.erase(scan_delete_key);
+  lcdf::Str scan_deleted;
+  assert(!query.run_get1(table.table(), lcdf::Str(scan_delete_key.data(), scan_delete_key.size()), 0, scan_deleted, *ti));
 
   ScanCollector scanner;
   assert(table.table().scan(lcdf::Str("", 0), true, scanner, *ti) ==
