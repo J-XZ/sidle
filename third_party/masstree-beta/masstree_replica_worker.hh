@@ -8,6 +8,7 @@
 #include "masstree_root_replica.hh"
 #include "sidle_meta.hh"
 #include "sidle_worker.hh"
+#include "dsidle/latency_simulator.h"
 
 #include <atomic>
 #include <chrono>
@@ -113,6 +114,7 @@ class replica_workers {
   }
 
   void TriggerOnce(threadinfo& ti) {
+    latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     bool after_cooling = false;
     while (histogram_->cooling() && running_.load(std::memory_order_relaxed)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -144,12 +146,14 @@ class replica_workers {
   }
 
   void ExecuteOnce(sidle::task_type type) {
+    latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     replica_executor<P> executor(directory_);
     dsidle::QueuedNodeRef candidate;
     while (queue_.get(type, candidate)) executor.ExecuteOne(type, candidate);
   }
 
   void CoolOnce(threadinfo& ti) {
+    latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     histogram_->notify_cooling();
     ti.rcu_start();
     ForEachLeaf(table_.root(), [this](leaf<P>* leaf) {

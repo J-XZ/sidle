@@ -70,6 +70,14 @@ int main() {
   const auto hwcc_stats=hwcc_sim.TakeStatsAndReset();
   assert(hwcc_stats.swcc_delayed_ns == 0 && hwcc_stats.hwcc_delayed_ns == 7);
 
+  latency_sim::Config merge_off; merge_off.enabled=true; merge_off.stats_enabled=true;
+  merge_off.merge_enabled=false; merge_off.swcc_read_ns_per_line=11;
+  latency_sim::LatencySimulator merge_off_sim(merge_off);
+  merge_off_sim.BeginScope(latency_sim::ScopeKind::kMerge);
+  merge_off_sim.RecordLine(latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead, value);
+  merge_off_sim.EndScopeAndDelay();
+  assert(merge_off_sim.TakeStatsAndReset().TotalDelayedNs() == 0);
+
   if (latency_sim::TscSpinAvailableForTest()) {
     latency_sim::DelaySpinNsForTest(1);  // Warm the calibrated spin path.
     uint64_t best_ns=std::numeric_limits<uint64_t>::max();
