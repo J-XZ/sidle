@@ -6,7 +6,6 @@
 #include "masstree_internal_replica.hh"
 #include "masstree_replica.hh"
 #include "masstree_root_replica.hh"
-#include "masstree_sidle.hh"
 #include "sidle_meta.hh"
 #include "sidle_worker.hh"
 
@@ -122,7 +121,8 @@ class replica_workers {
     if (after_cooling) histogram_->decrease_tolerance_for_cold();
     std::uint64_t nodes = 0;
     std::uint64_t accesses = 0;
-    masstree_leaf_traverse<P, threadinfo*>(&table_, [this, &nodes, &accesses](internode<P>*, leaf<P>* leaf) {
+    ti.rcu_start();
+    ForEachLeaf(table_.root(), [this, &nodes, &accesses](leaf<P>* leaf) {
       const auto ref = leaf->control_ref();
       const auto version = leaf->stable();
       if (version.deleted() || version.locked()) return;
@@ -136,7 +136,8 @@ class replica_workers {
         queue_.add(sidle::task_type::promotion, {ref, generation});
       else if (local && hotness == sidle::sidle_histogram::type::cold)
         queue_.add(sidle::task_type::demotion, {ref, generation});
-    }, &ti);
+    });
+    ti.rcu_stop();
     histogram_->refresh(nodes, accesses);
     histogram_->adjust_threshold();
     root_pin_.Refresh();
@@ -150,13 +151,30 @@ class replica_workers {
 
   void CoolOnce(threadinfo& ti) {
     histogram_->notify_cooling();
-    masstree_leaf_traverse<P, threadinfo*>(&table_, [this](internode<P>*, leaf<P>* leaf) {
+    ti.rcu_start();
+    ForEachLeaf(table_.root(), [this](leaf<P>* leaf) {
       directory_.HalveAccess(leaf->control_ref());
-    }, &ti);
+    });
+    ti.rcu_stop();
     histogram_->adjust_for_cooling();
   }
 
  private:
+  template <typename Callback>
+  static void ForEachLeaf(node_base<P>* node, Callback&& callback) {
+    if (!node) return;
+    const auto version = node->stable();
+    if (version.deleted() || version.locked()) return;
+    if (node->isleaf()) { callback(static_cast<leaf<P>*>(node)); return; }
+    auto* internal = static_cast<internode<P>*>(node);
+    const int count = internal->size();
+    dsidle::NodeRef children[internode<P>::width + 1];
+    for (int index = 0; index <= count; ++index) children[index] = internal->child_[index].ref();
+    if (internal->has_changed(version)) return;
+    for (int index = 0; index <= count; ++index)
+      ForEachLeaf(dsidle::ResolveCanonicalNode<node_base<P>>(children[index]), callback);
+  }
+
   void TriggerLoop() { auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, -1); while (running_) { TriggerOnce(*ti); std::this_thread::sleep_for(basic_interval_ * 5); } }
   void ExecutorLoop(sidle::task_type type) { while (running_) { if (queue_.length(type) > sidle::queue_waiting_threshold) ExecuteOnce(type); std::this_thread::sleep_for(basic_interval_); ExecuteOnce(type); } }
   void CoolerLoop() { auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, -1); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
