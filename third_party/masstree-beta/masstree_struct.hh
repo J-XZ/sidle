@@ -177,7 +177,7 @@ class internode : public node_base<P> {
     uint32_t height_;
     ikey_type ikey0_[width];
     node_link<node_base<P> > child_[width + 1];
-    node_base<P>* parent_;
+    node_link<node_base<P> > parent_;
     kvtimestamp_t created_at_[P::debug_level > 0];
     
 
@@ -397,7 +397,7 @@ class leaf : public node_base<P> {
         uintptr_t x;
     } next_;
     leaf<P>* prev_;
-    node_base<P>* parent_;
+    node_link<node_base<P> > parent_;
     phantom_epoch_type phantom_epoch_[P::need_phantom_epoch];
     kvtimestamp_t created_at_[P::debug_level > 0];
     internal_ksuf_type iksuf_[0];

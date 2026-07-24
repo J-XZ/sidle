@@ -289,12 +289,12 @@ struct destroy_rcu_callback : public P::threadinfo_type::mrcu_callback {
     void operator()(threadinfo& ti);
     static void make(node_base<P>* root, Str prefix, threadinfo& ti);
   private:
-    static inline node_base<P>** link_ptr(node_base<P>* n);
-    static inline void enqueue(node_base<P>* n, node_base<P>**& tailp);
+    static inline node_link<node_base<P> >* link_ptr(node_base<P>* n);
+    static inline void enqueue(node_base<P>* n, node_link<node_base<P> >*& tailp);
 };
 
 template <typename P>
-inline node_base<P>** destroy_rcu_callback<P>::link_ptr(node_base<P>* n) {
+inline node_link<node_base<P> >* destroy_rcu_callback<P>::link_ptr(node_base<P>* n) {
     if (n->isleaf())
         return &static_cast<leaf_type*>(n)->parent_;
     else
@@ -303,7 +303,7 @@ inline node_base<P>** destroy_rcu_callback<P>::link_ptr(node_base<P>* n) {
 
 template <typename P>
 inline void destroy_rcu_callback<P>::enqueue(node_base<P>* n,
-                                             node_base<P>**& tailp) {
+                                             node_link<node_base<P> >*& tailp) {
     *tailp = n;
     tailp = link_ptr(n);
 }
@@ -321,16 +321,16 @@ void destroy_rcu_callback<P>::operator()(threadinfo& ti) {
         return;
     }
 
-    node_base<P>* workq;
-    node_base<P>** tailp = &workq;
+    node_link<node_base<P> > workq;
+    node_link<node_base<P> >* tailp = &workq;
     enqueue(root_, tailp);
 
     while (node_base<P>* n = workq) {
-        node_base<P>** linkp = link_ptr(n);
+        node_link<node_base<P> >* linkp = link_ptr(n);
         if (linkp != tailp) {
             workq = *linkp;
         } else {
-            workq = 0;
+            workq = nullptr;
             tailp = &workq;
         }
 
