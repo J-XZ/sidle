@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <mutex>
+#include <iomanip>
+#include <ostream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -124,6 +126,30 @@ CacheModel ParseCacheModel(const std::string &value) { if (value == "none") retu
 const char *CacheModelName(CacheModel model) { return model == CacheModel::kNone ? "none" : model == CacheModel::kFixedHitRate ? "fixed_hit_rate" : model == CacheModel::kPerThreadLru ? "per_thread_lru" : "unknown"; }
 LatencySimulator &GlobalLatencySimulator() { static LatencySimulator simulator; return simulator; }
 bool InstrumentationEnabledFast() { return g_instrumentation_enabled.load(std::memory_order_relaxed); }
+void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag) {
+  auto& sim = GlobalLatencySimulator();
+  const auto& config = sim.config();
+  if (!config.enabled || !config.stats_enabled) return;
+  const Stats stats = sim.TakeStatsAndReset();
+  const uint64_t swcc_total = stats.TotalLineAccesses(PoolKind::kSwcc);
+  const uint64_t hwcc_total = stats.TotalLineAccesses(PoolKind::kHwcc);
+  const double swcc_ratio = swcc_total ? static_cast<double>(stats.CacheHits(PoolKind::kSwcc)) / swcc_total : 0.0;
+  const double hwcc_ratio = hwcc_total ? static_cast<double>(stats.CacheHits(PoolKind::kHwcc)) / hwcc_total : 0.0;
+  output << std::fixed << std::setprecision(6)
+         << "LATENCY_SIM_STATS tag=" << (tag ? tag : "unknown")
+         << " swcc_raw=" << stats.RawLineAccesses(PoolKind::kSwcc)
+         << " hwcc_raw=" << stats.RawLineAccesses(PoolKind::kHwcc)
+         << " swcc_hits=" << stats.CacheHits(PoolKind::kSwcc)
+         << " hwcc_hits=" << stats.CacheHits(PoolKind::kHwcc)
+         << " swcc_misses=" << stats.CacheMisses(PoolKind::kSwcc)
+         << " hwcc_misses=" << stats.CacheMisses(PoolKind::kHwcc)
+         << " swcc_hit_ratio=" << swcc_ratio << " hwcc_hit_ratio=" << hwcc_ratio
+         << " swcc_delayed_ns=" << stats.DelayedNs(PoolKind::kSwcc)
+         << " hwcc_delayed_ns=" << stats.DelayedNs(PoolKind::kHwcc)
+         << " delayed_ns=" << stats.TotalDelayedNs()
+         << " cache_model=" << CacheModelName(config.cache_model)
+         << " cache_hits_enabled=" << (config.cache_hits_enabled ? 1 : 0) << '\n';
+}
 LatencySimulator::LatencySimulator(Config c) : config_(c), generation_(NextGeneration()) { g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed); }
 void LatencySimulator::Configure(Config c) {
   if (!c.cache_line_bytes) throw std::invalid_argument("latency simulator cache_line_bytes must be > 0");
@@ -144,4 +170,9 @@ void LatencySimulator::RecordRange(PoolKind p, AccessKind k, const void *address
 Stats LatencySimulator::SnapshotStats() const { std::lock_guard<std::mutex> lock(StatsMutex()); return stats_; }
 Stats LatencySimulator::TakeStatsAndReset() { std::lock_guard<std::mutex> lock(StatsMutex()); Stats out=stats_;stats_={};return out; }
 uint64_t LatencySimulator::PendingDelayNsForTest() const { auto it=g_tls.find(this); return it==g_tls.end()?0:it->second.pending; }
+ScopeGuard::ScopeGuard(ScopeKind scope) {
+  active_ = InstrumentationEnabledFast();
+  if (active_) GlobalLatencySimulator().BeginScope(scope);
+}
+ScopeGuard::~ScopeGuard() { if (active_) GlobalLatencySimulator().EndScopeAndDelay(); }
 } // namespace latency_sim

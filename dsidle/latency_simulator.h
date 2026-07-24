@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 
 namespace latency_sim {
@@ -86,6 +87,7 @@ CacheModel ParseCacheModel(const std::string &value);
 const char *CacheModelName(CacheModel model);
 LatencySimulator &GlobalLatencySimulator();
 bool InstrumentationEnabledFast();
+void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag);
 
 class LatencySimulator {
 public:
@@ -105,6 +107,18 @@ private:
   Config config_;
   uint64_t generation_ = 0;
   mutable Stats stats_;
+};
+
+// The owner must construct this before a logical operation and destroy it only
+// after all Masstree locks and RCU scopes have been released.
+class ScopeGuard {
+ public:
+  explicit ScopeGuard(ScopeKind scope);
+  ~ScopeGuard();
+  ScopeGuard(const ScopeGuard&) = delete;
+  ScopeGuard& operator=(const ScopeGuard&) = delete;
+ private:
+  bool active_{false};
 };
 
 inline void RecordSwccRead(const void *address, uint64_t bytes) {

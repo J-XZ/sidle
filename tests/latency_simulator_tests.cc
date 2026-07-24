@@ -1,5 +1,6 @@
 #include "dsidle/latency_simulator.h"
 #include <cassert>
+#include <sstream>
 int main() {
   latency_sim::Config c; c.enabled=true; c.stats_enabled=true; c.swcc_read_ns_per_line=3; c.hwcc_atomic_load_ns=7;
   latency_sim::LatencySimulator s(c); alignas(64) char value[80]{};
@@ -35,4 +36,16 @@ int main() {
   assert(lru_stats.swcc_raw_line_accesses==2 && lru_stats.swcc_cache_hits==1 &&
          lru_stats.swcc_cache_misses==1 && lru_stats.swcc_delayed_ns==16 &&
          lru_stats.TotalDelayedNs()==16);
+
+  latency_sim::Config global; global.enabled=true; global.stats_enabled=true;
+  global.hwcc_atomic_load_ns=1;
+  latency_sim::GlobalLatencySimulator().Configure(global);
+  { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+    latency_sim::RecordHwccAtomicLoad(value); }
+  std::ostringstream output;
+  latency_sim::PrintAndResetLatencySimulatorStats(output, "unit");
+  const auto line=output.str();
+  assert(line.find("LATENCY_SIM_STATS tag=unit") != std::string::npos);
+  assert(line.find("hwcc_raw=1") != std::string::npos);
+  assert(line.find("delayed_ns=1") != std::string::npos);
 }
