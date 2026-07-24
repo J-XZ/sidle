@@ -101,6 +101,11 @@ add_test(NAME dsidle_e2e_rounds_script_smoke
     "out=$(mktemp -d /tmp/dsidle-e2e-rounds.XXXXXX); \"$1\" --execute --smoke --rounds 1 --config \"$2\" --phase smoke --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 1024 --max-threads-per-vm 2 && test -s \"$out/round_logs/smoke_round_1.meta\" && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' \"$out/logs/smoke_round_1_run_node1.log\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e_rounds_script_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_vm_scripts_dry_run
+  COMMAND /bin/sh -c
+    "\"$1\" --dry-run --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run"
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_init_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_check_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_make_vm_img.sh)
+set_tests_properties(dsidle_vm_scripts_dry_run PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
