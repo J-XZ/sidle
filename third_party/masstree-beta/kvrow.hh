@@ -20,7 +20,9 @@
 #include "kvproto.hh"
 #include "log.hh"
 #include "json.hh"
+#include "dsidle/replica_directory.h"
 #include <algorithm>
+#include <cstdlib>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -195,6 +197,8 @@ result_t query<R>::run_put(T& table, Str key,
     bool inserted = apply_put(slot, found, firstreq, lastreq, ti);
     lp.set_value(slot);
     lp.finish(1, ti);
+    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+        std::free(replicas->Invalidate(lp.node()->control_ref()));
     return inserted ? Inserted : Updated;
 }
 
@@ -240,6 +244,8 @@ result_t query<R>::run_replace(T& table, Str key, Str value, threadinfo& ti) {
     bool inserted = apply_replace(slot, found, value, ti);
     lp.set_value(slot);
     lp.finish(1, ti);
+    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+        std::free(replicas->Invalidate(lp.node()->control_ref()));
     return inserted ? Inserted : Updated;
 }
 
@@ -276,6 +282,10 @@ bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
         lp.set_value(slot);
     }
     lp.finish(-1, ti);
+    if (found) {
+        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+            std::free(replicas->Invalidate(lp.node()->control_ref()));
+    }
     return found;
 }
 
