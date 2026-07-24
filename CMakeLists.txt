@@ -38,6 +38,33 @@ target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
 
+# dsidle: Build Masstree from this tree only. The legacy CXL allocator source
+# is deliberately excluded; allocation conversion proceeds in the original
+# Masstree files rather than through a compatibility backend.
+add_library(dsidle_masstree STATIC
+  third_party/masstree-beta/compiler.cc
+  third_party/masstree-beta/json.cc
+  third_party/masstree-beta/kvthread.cc
+  third_party/masstree-beta/log.cc
+  third_party/masstree-beta/memdebug.cc
+  third_party/masstree-beta/msgpack.cc
+  third_party/masstree-beta/query_masstree.cc
+  third_party/masstree-beta/string.cc
+  third_party/masstree-beta/string_slice.cc
+  third_party/masstree-beta/str.cc
+  third_party/masstree-beta/straccum.cc
+  third_party/masstree-beta/value_array.cc
+  third_party/masstree-beta/value_string.cc
+  third_party/masstree-beta/value_versioned_array.cc
+  third_party/sidle_utils/sidle_worker.cc)
+target_include_directories(dsidle_masstree PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sidle_utils
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/art
+  ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(dsidle_masstree PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h -Wall -Wextra -Wpedantic)
+target_link_libraries(dsidle_masstree PUBLIC dsidle pthread)
+
 add_executable(dsidle_shared_pool dsidle/shared_pool_main.cc)
 target_link_libraries(dsidle_shared_pool PRIVATE dsidle)
 
@@ -66,3 +93,8 @@ add_executable(dsidle_node_control_tests tests/node_control_tests.cc)
 target_link_libraries(dsidle_node_control_tests PRIVATE dsidle)
 target_compile_options(dsidle_node_control_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_node_control_tests COMMAND dsidle_node_control_tests)
+
+add_executable(dsidle_masstree_single_process_tests tests/masstree_single_process_tests.cc)
+target_link_libraries(dsidle_masstree_single_process_tests PRIVATE dsidle_masstree)
+target_compile_options(dsidle_masstree_single_process_tests PRIVATE -UNDEBUG -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h)
+add_test(NAME dsidle_masstree_single_process_tests COMMAND dsidle_masstree_single_process_tests)

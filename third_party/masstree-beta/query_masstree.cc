@@ -218,7 +218,7 @@ struct scan_tester {
 template <typename P>
 void query_table<P>::test(threadinfo& ti) {
     query_table<P> t;
-    t.initialize(ti);
+    t.initialize(ti, 80);
     query<row_type> q;
 
     const char * const values[] = {

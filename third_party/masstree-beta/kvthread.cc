@@ -25,6 +25,10 @@
 #endif
 
 threadinfo *threadinfo::allthreads;
+// dsidle: process-local compatibility for the pre-M4 RCU implementation.
+// M4 replaces these with the HWCC epoch table.
+volatile mrcu_epoch_type globalepoch = 1;
+volatile mrcu_epoch_type active_epoch = 1;
 #if ENABLE_ASSERTIONS
 int threadinfo::no_pool_value;
 #endif
@@ -237,7 +241,7 @@ void threadinfo::refill_pool(int nl) {
     if (superpage_size != (size_t) -1) {
         pool_size = superpage_size;
 # if MADV_HUGEPAGE
-        if ((r = posix_memalign_with_cxl(&pool, pool_size, pool_size)) != 0) {
+        if ((r = posix_memalign(&pool, pool_size, pool_size)) != 0) {
             fprintf(stderr, "posix_memalign superpage: %s\n", strerror(r));
             pool = 0;
             superpage_size = (size_t) -1;
@@ -282,10 +286,7 @@ void threadinfo::refill_remote_pool(int nl) {
     assert(!remote_pool_[nl - 1]);
 
     if (!use_pool()) {
-        bool ret = malloc_on_cxl(nl * CACHE_LINE_SIZE, &remote_pool_[nl - 1]);
-        if (!ret) {
-            fprintf(stderr, "malloc_on_cxl failed, actually malloc on local memory\n");
-        }
+        remote_pool_[nl - 1] = malloc(nl * CACHE_LINE_SIZE);
         if (remote_pool_[nl - 1])
             *reinterpret_cast<void**>(remote_pool_[nl - 1]) = 0;
     }
@@ -296,8 +297,8 @@ void threadinfo::refill_remote_pool(int nl) {
 
     if (!remote_pool) {
         pool_size = 2 << 20;
-        if ((r = posix_memalign_on_cxl(&remote_pool, CACHE_LINE_SIZE, pool_size)) != 0) {
-            fprintf(stderr, "posix_memalign on cxl: %s\n", strerror(r));
+        if ((r = posix_memalign(&remote_pool, CACHE_LINE_SIZE, pool_size)) != 0) {
+            fprintf(stderr, "posix_memalign: %s\n", strerror(r));
             abort();
         }
     }

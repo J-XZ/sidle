@@ -25,12 +25,38 @@ constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
 
 namespace {
 thread_local void* shared_pool_base = nullptr;
+struct SwccAllocatorContext {
+  SharedPool* pool{};
+  std::uint32_t shard_count{};
+  std::uint32_t local_shard{};
+};
+thread_local SwccAllocatorContext swcc_allocator_context;
 }
 
 void SetSharedPoolBase(void* base) { shared_pool_base = base; }
 void* SharedPoolBase() {
   if (!shared_pool_base) throw std::runtime_error("D-SIDLE shared pool is not attached in this thread");
   return shared_pool_base;
+}
+
+void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
+                                   std::uint32_t local_shard) {
+  if (!shard_count || local_shard >= shard_count || pool.static_layout()->shard_count != shard_count)
+    throw std::runtime_error("invalid D-SIDLE SWCC allocator binding");
+  SetSharedPoolBase(pool.base());
+  swcc_allocator_context = {&pool, shard_count, local_shard};
+}
+
+SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size) {
+  const auto& context = swcc_allocator_context;
+  if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
+  return SwccShardAllocator(*context.pool, context.shard_count).Allocate(context.local_shard, size);
+}
+
+void FreeCurrentSwcc(SwccOffset<std::byte> block, std::uint64_t size, std::uint64_t generation) {
+  const auto& context = swcc_allocator_context;
+  if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");
+  SwccShardAllocator(*context.pool, context.shard_count).Free(context.local_shard, block, size, generation);
 }
 
 void SharedPool::ValidateLayout(const PoolLayout& layout) {
@@ -118,6 +144,7 @@ SharedPool& SharedPool::operator=(SharedPool&& other) noexcept {
 }
 void SharedPool::Close() {
   if (base_ && shared_pool_base == base_) shared_pool_base = nullptr;
+  if (swcc_allocator_context.pool == this) swcc_allocator_context = {};
   if (base_) munmap(base_, bytes_);
   if (fd_ >= 0) close(fd_);
   base_ = nullptr; fd_ = -1; bytes_ = 0;

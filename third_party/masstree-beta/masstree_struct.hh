@@ -166,14 +166,12 @@ class internode : public node_base<P> {
     }
 
     static internode<P>* make_with_cxl_policy(uint32_t height, threadinfo& ti, uint8_t depth, node_mem_type_t type, bool is_migration = false) {
-        void* ptr = nullptr;
-        if (type == node_mem_type_t::local) {
-            ptr = ti.pool_allocate(sizeof(internode<P>), memtag_masstree_internode);
-        } else {
-            ptr = ti.pool_allocate(sizeof(internode<P>), memtag_masstree_internode_remote);
-        }
-        node_base<P>::strategy_manager->update_local_memory_usage(type, depth, sizeof(internode<P>), is_migration, false);
-        internode<P>* n = new(ptr) internode<P>(height, type, depth);
+        // dsidle: the canonical tree is always SWCC; SIDLE no longer decides
+        // canonical placement (it will select local replicas in M5).
+        (void) type;
+        (void) is_migration;
+        void* ptr = ti.pool_allocate(sizeof(internode<P>), memtag_masstree_internode_remote);
+        internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
@@ -392,14 +390,10 @@ class leaf : public node_base<P> {
 
     static leaf<P>* make_with_cxl_policy(int ksufsize, phantom_epoch_type phantom_epoch, threadinfo& ti, uint8_t depth, node_mem_type_t type, uint16_t access_time = 1, bool is_migration = false) {
         size_t sz = iceil(sizeof(leaf<P>) + std::min(ksufsize, 128), 64);
-        void* ptr = nullptr;
-        if (type == node_mem_type_t::local) {
-            ptr = ti.pool_allocate(sz, memtag_masstree_leaf);
-        } else {
-            ptr = ti.pool_allocate(sz, memtag_masstree_leaf_remote);
-        }
-        node_base<P>::strategy_manager->update_local_memory_usage(type, depth, sz, is_migration,true);
-        leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, type, depth, access_time);
+        (void) type;
+        (void) is_migration;
+        void* ptr = ti.pool_allocate(sz, memtag_masstree_leaf_remote);
+        leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();

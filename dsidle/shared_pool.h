@@ -96,4 +96,13 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
 SharedEpochTable SharedEpochSlots(SharedPool& pool);
 std::string DescribeHwccBudget(const SharedPool& pool);
 
+// The Masstree runtime binds one process-local shard before creating its
+// threadinfos. Persistent data allocation is then always in SWCC; no DAX or
+// memkind fallback exists.
+void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
+                                   std::uint32_t local_shard);
+SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size);
+void FreeCurrentSwcc(SwccOffset<std::byte> block, std::uint64_t size,
+                     std::uint64_t generation = 0);
+
 }  // namespace dsidle

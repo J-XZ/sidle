@@ -16,6 +16,7 @@
 #ifndef KVTHREAD_HH
 #define KVTHREAD_HH 1
 #include "cxl_cpp_allocator.hh"
+#include "dsidle/shared_pool.h"
 #include "mtcounters.hh"
 #include "compiler.hh"
 #include "circular_int.hh"
@@ -208,11 +209,9 @@ class threadinfo {
 
     // memory allocation
     void* allocate(size_t sz, memtag tag) {
-        #ifdef CXL
-        void* p = malloc_with_cxl(sz + memdebug_size);
-        #else
+        if (tag == memtag_value || tag == memtag_masstree_ksuffixes)
+            return pool_allocate(sz, tag);
         void* p = malloc(sz + memdebug_size);
-        #endif
         p = memdebug::make(p, sz, tag);
         if (p)
             mark(threadcounter(tc_alloc + (tag > memtag_value)), sz);
@@ -221,16 +220,20 @@ class threadinfo {
     void deallocate(void* p, size_t sz, memtag tag) {
         // in C++ allocators, 'p' must be nonnull
         assert(p);
+        if (tag == memtag_value || tag == memtag_masstree_ksuffixes) {
+            pool_deallocate(p, sz, tag);
+            return;
+        }
         p = memdebug::check_free(p, sz, tag);
-        #ifdef CXL
-        free_with_cxl(p);
-        #else
         free(p);
-        #endif
         mark(threadcounter(tc_alloc + (tag > memtag_value)), -sz);
     }
     void deallocate_rcu(void* p, size_t sz, memtag tag) {
         assert(p);
+        if (tag == memtag_value || tag == memtag_masstree_ksuffixes) {
+            pool_deallocate_rcu(p, sz, tag);
+            return;
+        }
         memdebug::check_rcu(p, sz, tag);
         record_rcu(p, tag);
         mark(threadcounter(tc_alloc + (tag > memtag_value)), -sz);
@@ -243,80 +246,20 @@ class threadinfo {
 #endif
         int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
         assert(nl <= pool_max_nlines);
-#ifdef TRANSPARENT_CXL
-        if (unlikely(!pool_[nl - 1]))
-            refill_pool(nl);
-        void* p = pool_[nl - 1];
-        if (p) {
-            pool_[nl - 1] = *reinterpret_cast<void **>(p);
-            p = memdebug::make(p, sz, memtag(tag + nl));
-            mark(threadcounter(tc_alloc + (tag > memtag_value)),
-                 nl * CACHE_LINE_SIZE);
-        }
+        // dsidle: canonical nodes, values, and suffixes always use SWCC.
+        void* p = dsidle::AllocateCurrentSwcc(nl * CACHE_LINE_SIZE).get(dsidle::SharedPoolBase());
+        p = memdebug::make(p, sz, memtag(tag + nl));
+        mark(threadcounter(tc_alloc + (tag > memtag_value)), nl * CACHE_LINE_SIZE);
         return p;
-#else
-        if (tag >= memtag_masstree_leaf_remote) {   // if want to allocate on remote memory
-            if (unlikely(!remote_pool_[nl - 1]))
-                refill_remote_pool(nl);
-            void* p = remote_pool_[nl - 1];
-            if (p) {
-                remote_pool_[nl - 1] = *reinterpret_cast<void **>(p);
-                p = memdebug::make(p, sz, memtag(tag + nl));
-                mark(threadcounter(tc_alloc + (tag > memtag_value)),
-                     nl * CACHE_LINE_SIZE);
-            }
-            return p;
-        } else {
-#ifdef THREAD_DEBUG
-            bool refill = false;
-#endif
-            if (unlikely(!pool_[nl - 1])) {
-#ifdef THREAD_DEBUG
-                refill = true;
-#endif
-                refill_local_pool(nl);
-            }
-            void* p = pool_[nl - 1];
-#ifdef THREAD_DEBUG
-            if (is_migration) {
-                printf("[DEBUG] allocate from local memory pool, refill: %s\n",  refill ? "true" : "false");    
-            }
-#endif
-            if (p) {
-                pool_[nl - 1] = *reinterpret_cast<void **>(p);
-                p = memdebug::make(p, sz, memtag(tag + nl));
-                mark(threadcounter(tc_alloc + (tag > memtag_value)),
-                    nl * CACHE_LINE_SIZE);
-            }
-            return p;
-        }   
-#endif
     }
 
     void pool_deallocate(void* p, size_t sz, memtag tag) {
         int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
         assert(p && nl <= pool_max_nlines);
         p = memdebug::check_free(p, sz, memtag(tag + nl));
-        if (use_pool()) {
-#ifdef TRANSPARENT_CXL
-            *reinterpret_cast<void **>(p) = pool_[nl - 1];
-            pool_[nl - 1] = p;
-#else 
-            if (tag >= memtag_masstree_leaf_remote) {
-                *reinterpret_cast<void **>(p) = remote_pool_[nl - 1];
-                remote_pool_[nl - 1] = p;
-            } else {
-                *reinterpret_cast<void **>(p) = pool_[nl - 1];
-                pool_[nl - 1] = p;
-            }
-#endif
-        } else {
-#ifdef CXL
-            free_with_cxl(p);
-#else
-            free(p);
-#endif
-        }
+        dsidle::FreeCurrentSwcc(dsidle::SwccOffset<std::byte>(
+            reinterpret_cast<std::byte*>(p) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
+            nl * CACHE_LINE_SIZE);
         mark(threadcounter(tc_alloc + (tag > memtag_value)),
              -nl * CACHE_LINE_SIZE);
     }
@@ -399,30 +342,16 @@ class threadinfo {
     void free_rcu(void *p, memtag tag) {   
         if ((tag & memtag_pool_mask) == 0) {
             p = memdebug::check_free_after_rcu(p, tag);
-            // printf("free pointer here\n");
-            #ifdef CXL
-            free_with_cxl(p);
-            #else
             ::free(p);
-            #endif
         } else if (tag == memtag(-1))
             (*static_cast<mrcu_callback*>(p))(*this);
         else {
             p = memdebug::check_free_after_rcu(p, tag);
             int nl = tag & memtag_pool_mask;
-#ifdef TRANSPARENT_CXL
-            *reinterpret_cast<void**>(p) = pool_[nl - 1];
-            pool_[nl - 1] = p;
-#else
-            if (tag >= memtag_masstree_leaf_remote) {
-                *reinterpret_cast<void**>(p) = remote_pool_[nl - 1];
-                remote_pool_[nl - 1] = p;
-            } else {
-                *reinterpret_cast<void**>(p) = pool_[nl - 1];
-                pool_[nl - 1] = p;
-            }
+            dsidle::FreeCurrentSwcc(dsidle::SwccOffset<std::byte>(
+                reinterpret_cast<std::byte*>(p) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
+                nl * CACHE_LINE_SIZE);
         }
-#endif
     }
 
     void record_rcu(void* ptr, memtag tag) {    

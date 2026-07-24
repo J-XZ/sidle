@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <type_traits>
 #include <sys/types.h>
-#include "cxl_allocator.h"
+#include "dsidle/shared_pool.h"
 #include "sidle_policy.hh"
 
 namespace sidle {
@@ -19,30 +19,20 @@ template <typename T, typename P>
 T* sidle_alloc(size_t size, P* parent, sidle::node_mem_type target_type, 
                       bool is_migration, bool is_leaf, size_t old_size = 0) {
   uint8_t cur_depth = parent == nullptr ? 1 : parent->sidle_meta.depth + 1;
-  auto new_node_type = target_type;
-  if (new_node_type == sidle::node_mem_type::unknown) {
-    sidle::node_mem_type parent_type = parent == nullptr ? 
-      sidle::node_mem_type::unknown : parent->sidle_meta.type;
-    new_node_type = strategy_manager.decide_new_node_position(
-                          parent_type, cur_depth);
-  }
-  T* an = nullptr;
-  if (new_node_type == sidle::node_mem_type::remote) {
-    malloc_on_cxl(size, reinterpret_cast<void**>(&an));
-  } else {
-    an = static_cast<T*>(malloc(size));
-  }
+  // dsidle: canonical nodes are always SWCC. SIDLE's selection logic remains
+  // for later replica promotion/demotion, never for canonical node placement.
+  (void) target_type;
+  (void) is_migration;
+  (void) old_size;
+  const auto new_node_type = sidle::node_mem_type::remote;
+  T* an = reinterpret_cast<T*>(dsidle::AllocateCurrentSwcc(size).get(dsidle::SharedPoolBase()));
   if constexpr (std::is_same_v<decltype(an->sidle_meta), sidle::node_metadata>) {
     an->sidle_meta = sidle::node_metadata(new_node_type, cur_depth);
   } else {
     an->sidle_meta = sidle::leaf_metadata(new_node_type, cur_depth, 0);
   }
 
-  if (new_node_type == sidle::node_mem_type::local || is_migration) {
-    strategy_manager.update_local_memory_usage(new_node_type, 
-                                              is_leaf ? cur_depth : LEAF_DEPTH, 
-                                        size - old_size, is_migration, is_leaf);
-  }
+  (void) is_leaf;
   return an;
 }
 
@@ -51,8 +41,8 @@ T* sidle_alloc(size_t size, P* parent, sidle::node_mem_type target_type,
 /// @param size is the size of the node
 template <typename T>
 void sidle_free(T* an, size_t size) {
-  strategy_manager.update_local_memory_usage(an->sidle_meta.type, an->sidle_meta.depth, size, false, false);
-  free_with_cxl((void*)an);
+  dsidle::FreeCurrentSwcc(dsidle::SwccOffset<std::byte>(
+      reinterpret_cast<std::byte*>(an) - static_cast<std::byte*>(dsidle::SharedPoolBase())), size);
 }
 
 /// @brief update the access count of the leaf node

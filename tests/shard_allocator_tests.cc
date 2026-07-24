@@ -38,5 +38,9 @@ int main() {
   size_classes.Free(1, medium, 17'000, 11);
   assert(size_classes.HarvestRemote(1, 17'000) == 1);
   assert(size_classes.Allocate(1, 17'000) == medium);
+  dsidle::ConfigureCurrentSwccAllocator(pool, 2, 0);
+  const auto bound = dsidle::AllocateCurrentSwcc(129);
+  assert(bound && bound.get(dsidle::SharedPoolBase()));
+  dsidle::FreeCurrentSwcc(bound, 129);
   pool.Close(); unlink(path);
 }
