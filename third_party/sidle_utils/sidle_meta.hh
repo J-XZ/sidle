@@ -2,6 +2,7 @@
 #define SIDLE_COMMON_HH
 
 #include "concurrentqueue.hh"
+#include "dsidle/node_control.h"
 
 #include <cstdint>
 #include <memory>
@@ -154,6 +155,44 @@ public:
     std::size_t get_demotion_queue_length() const {
         return std::max(demotion_queue_length_.load(std::memory_order_relaxed), 0);
     }
+};
+
+// D-SIDLE's policy queue deliberately has no virtual address payload.  It is
+// process-local like the original MoodyCamel queue, but a dequeued candidate
+// is validated against NodeControl.generation before any replica action.
+class replica_queue {
+ public:
+  replica_queue()
+      : promotion_(std::make_shared<moodycamel::ConcurrentQueue<dsidle::QueuedNodeRef>>()),
+        demotion_(std::make_shared<moodycamel::ConcurrentQueue<dsidle::QueuedNodeRef>>()) {}
+
+  void add(task_type type, dsidle::QueuedNodeRef candidate) {
+    if (!candidate) return;
+    auto& queue = type == task_type::promotion ? promotion_ : demotion_;
+    queue->enqueue(candidate);
+    (type == task_type::promotion ? promotion_length_ : demotion_length_)
+        .fetch_add(1, std::memory_order_relaxed);
+  }
+
+  bool get(task_type type, dsidle::QueuedNodeRef& candidate) {
+    auto& queue = type == task_type::promotion ? promotion_ : demotion_;
+    if (!queue->try_dequeue(candidate)) return false;
+    (type == task_type::promotion ? promotion_length_ : demotion_length_)
+        .fetch_sub(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  std::size_t length(task_type type) const {
+    const auto value = (type == task_type::promotion ? promotion_length_ : demotion_length_)
+        .load(std::memory_order_relaxed);
+    return value > 0 ? static_cast<std::size_t>(value) : 0;
+  }
+
+ private:
+  std::shared_ptr<moodycamel::ConcurrentQueue<dsidle::QueuedNodeRef>> promotion_;
+  std::shared_ptr<moodycamel::ConcurrentQueue<dsidle::QueuedNodeRef>> demotion_;
+  std::atomic_int32_t promotion_length_{0};
+  std::atomic_int32_t demotion_length_{0};
 };
 
 } // namespace sidle

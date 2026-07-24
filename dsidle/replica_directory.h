@@ -60,6 +60,10 @@ class ReplicaDirectory {
   // Publishes a fully initialized local buffer and returns the superseded
   // buffer only after all local readers have left. Caller owns/free()s it.
   void* Publish(NodeRef ref, ReplicaSnapshot snapshot);
+  // Budgeted publication used by D-SIDLE workers.  The directory is the sole
+  // owner of local-replica accounting, so an evict/publish race cannot exceed
+  // the per-VM budget.  On failure it leaves snapshot.local_ptr untouched.
+  bool TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** superseded);
   // Marks a slot invalid, waits for local readers, and returns its old buffer.
   void* Invalidate(NodeRef ref);
   // Called when a NodeControl slot gets a new generation. This both invalidates
@@ -69,6 +73,9 @@ class ReplicaDirectory {
   std::uint64_t AccessCount(NodeRef ref) const;
   void RecordInternalHit() { internal_hits_.fetch_add(1, std::memory_order_relaxed); }
   std::uint64_t InternalHits() const { return internal_hits_.load(std::memory_order_relaxed); }
+  void SetBudgetBytes(std::uint64_t bytes);
+  std::uint64_t LocalBytes() const { return local_bytes_.load(std::memory_order_acquire); }
+  std::uint64_t BudgetBytes() const { return budget_bytes_.load(std::memory_order_acquire); }
 
  private:
   static constexpr std::uint64_t kSlotsPerSegment = 4096;
@@ -87,6 +94,8 @@ class ReplicaDirectory {
   std::uint64_t Index(NodeRef ref) const;
   Slot* Ensure(NodeRef ref);
   Slot* Find(NodeRef ref) const;
+  void* PublishLocked(NodeRef ref, ReplicaSnapshot snapshot);
+  void* InvalidateLocked(NodeRef ref);
   static void WaitForReaders(Slot& slot);
 
   std::uint64_t node_control_offset_{};
@@ -94,6 +103,9 @@ class ReplicaDirectory {
   std::uint64_t segment_count_{};
   std::unique_ptr<std::atomic<Segment*>[]> segments_;
   mutable std::mutex segment_mutex_;
+  mutable std::mutex budget_mutex_;
+  std::atomic<std::uint64_t> local_bytes_{0};
+  std::atomic<std::uint64_t> budget_bytes_{UINT64_MAX};
   std::atomic<std::uint64_t> internal_hits_{0};
 };
 

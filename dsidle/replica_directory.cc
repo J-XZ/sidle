@@ -1,5 +1,6 @@
 #include "dsidle/replica_directory.h"
 
+#include <cstdlib>
 #include <immintrin.h>
 #include <stdexcept>
 
@@ -27,8 +28,12 @@ ReplicaDirectory::ReplicaDirectory(const SharedPool& pool)
 
 ReplicaDirectory::~ReplicaDirectory() {
   if (current_replica_directory == this) current_replica_directory = nullptr;
-  for (std::uint64_t index = 0; index < segment_count_; ++index)
-    delete segments_[index].load(std::memory_order_relaxed);
+  for (std::uint64_t index = 0; index < segment_count_; ++index) {
+    Segment* segment = segments_[index].load(std::memory_order_relaxed);
+    if (!segment) continue;
+    for (Slot& slot : segment->slots) std::free(slot.local_ptr.load(std::memory_order_relaxed));
+    delete segment;
+  }
 }
 
 ReplicaDirectory::ReadHandle::ReadHandle(ReadHandle&& other) noexcept
@@ -99,7 +104,7 @@ ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_
   }
 }
 
-void* ReplicaDirectory::Publish(NodeRef ref, ReplicaSnapshot snapshot) {
+void* ReplicaDirectory::PublishLocked(NodeRef ref, ReplicaSnapshot snapshot) {
   if (!snapshot.local_ptr || !snapshot.generation || !snapshot.bytes)
     throw std::runtime_error("invalid ReplicaDirectory publication");
   Slot& slot = *Ensure(ref);
@@ -120,7 +125,29 @@ void* ReplicaDirectory::Publish(NodeRef ref, ReplicaSnapshot snapshot) {
   return old;
 }
 
-void* ReplicaDirectory::Invalidate(NodeRef ref) {
+void* ReplicaDirectory::Publish(NodeRef ref, ReplicaSnapshot snapshot) {
+  std::lock_guard<std::mutex> lock(budget_mutex_);
+  Slot* prior = Find(ref);
+  const auto old_bytes = prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+  void* old = PublishLocked(ref, snapshot);
+  local_bytes_.fetch_add(snapshot.bytes - old_bytes, std::memory_order_release);
+  return old;
+}
+
+bool ReplicaDirectory::TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** superseded) {
+  if (!superseded) throw std::runtime_error("null ReplicaDirectory superseded output");
+  std::lock_guard<std::mutex> lock(budget_mutex_);
+  Slot* prior = Find(ref);
+  const auto old_bytes = prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+  const auto current = local_bytes_.load(std::memory_order_relaxed);
+  const auto budget = budget_bytes_.load(std::memory_order_relaxed);
+  if (snapshot.bytes > budget || current - old_bytes > budget - snapshot.bytes) return false;
+  *superseded = PublishLocked(ref, snapshot);
+  local_bytes_.store(current - old_bytes + snapshot.bytes, std::memory_order_release);
+  return true;
+}
+
+void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   Slot* slot = Find(ref);
   if (!slot) return nullptr;
   auto sequence = slot->seq.load(std::memory_order_acquire);
@@ -139,11 +166,25 @@ void* ReplicaDirectory::Invalidate(NodeRef ref) {
   return old;
 }
 
+void* ReplicaDirectory::Invalidate(NodeRef ref) {
+  std::lock_guard<std::mutex> lock(budget_mutex_);
+  Slot* slot = Find(ref);
+  const auto old_bytes = slot ? slot->bytes.load(std::memory_order_relaxed) : 0;
+  void* old = InvalidateLocked(ref);
+  if (old) local_bytes_.fetch_sub(old_bytes, std::memory_order_release);
+  return old;
+}
+
 void* ReplicaDirectory::ResetForReuse(NodeRef ref) {
   Slot& slot = *Ensure(ref);
   void* old = Invalidate(ref);
   slot.access_count.store(0, std::memory_order_release);
   return old;
+}
+
+void ReplicaDirectory::SetBudgetBytes(std::uint64_t bytes) {
+  if (LocalBytes() > bytes) throw std::runtime_error("replica budget below current local usage");
+  budget_bytes_.store(bytes, std::memory_order_release);
 }
 
 void ReplicaDirectory::RecordAccess(NodeRef ref) const {

@@ -53,8 +53,13 @@ class internode_replica {
     void* buffer = Create(source);
     if (source.has_changed(version)) { std::free(buffer); return false; }
     const auto bytes = static_cast<const header*>(buffer)->bytes;
-    std::free(directory.Publish(ref, {buffer, generation, version.version_value(), bytes,
-                                      dsidle::ReplicaKind::kInternal}));
+    void* old = nullptr;
+    if (!directory.TryPublish(ref, {buffer, generation, version.version_value(), bytes,
+                                    dsidle::ReplicaKind::kInternal}, &old)) {
+      std::free(buffer);
+      return false;
+    }
+    std::free(old);
     return true;
   }
 };

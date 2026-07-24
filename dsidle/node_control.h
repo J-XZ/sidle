@@ -58,6 +58,20 @@ static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
 using NodeRef = HwccOffset<NodeControl>;
 using ValueRef = SwccOffset<std::byte>;
 
+// Process-local policy queues carry a persistent control reference plus its
+// allocation generation.  A raw canonical address is neither valid across VM
+// mappings nor safe after a NodeControl slot has been reused.
+struct QueuedNodeRef {
+  NodeRef ref{};
+  std::uint64_t generation{};
+
+  explicit operator bool() const { return static_cast<bool>(ref) && generation != 0; }
+  friend bool operator==(QueuedNodeRef left, QueuedNodeRef right) {
+    return left.ref == right.ref && left.generation == right.generation;
+  }
+};
+static_assert(sizeof(QueuedNodeRef) == 16);
+
 // Resolves a canonical tree body only for the duration of the caller's stack
 // operation. Persistent structures retain the NodeRef, never this address.
 template <typename T>

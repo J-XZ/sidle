@@ -34,6 +34,16 @@ int main() {
   handle = {};
   std::free(directory.Invalidate(ref));
   assert(!directory.Acquire(ref, 1, 8));
+  directory.SetBudgetBytes(32);
+  auto* budgeted = static_cast<char*>(std::malloc(32)); assert(budgeted);
+  void* superseded = nullptr;
+  assert(directory.TryPublish(ref, {budgeted, 1, 9, 32, dsidle::ReplicaKind::kValueLeaf}, &superseded));
+  assert(superseded == nullptr && directory.LocalBytes() == 32);
+  auto* oversized = static_cast<char*>(std::malloc(64)); assert(oversized);
+  assert(!directory.TryPublish(ref, {oversized, 1, 10, 64, dsidle::ReplicaKind::kValueLeaf}, &superseded));
+  std::free(oversized);
+  std::free(directory.Invalidate(ref));
+  assert(directory.LocalBytes() == 0);
   controls.Retire(ref, 9);
   controls.Release(ref);
   const auto reused = controls.Reserve((4ULL << 20) + 64, 2);

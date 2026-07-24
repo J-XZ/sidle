@@ -128,8 +128,12 @@ class leaf_replica {
     for (int index = 0; index < permutation.size(); ++index)
       has_layer = has_layer || source.is_layer(permutation[index]);
     const auto bytes = static_cast<const header*>(buffer)->bytes;
-    void* old = directory.Publish(ref, {buffer, generation, version.version_value(), bytes,
-      has_layer ? dsidle::ReplicaKind::kLayerLeaf : dsidle::ReplicaKind::kValueLeaf});
+    void* old = nullptr;
+    if (!directory.TryPublish(ref, {buffer, generation, version.version_value(), bytes,
+      has_layer ? dsidle::ReplicaKind::kLayerLeaf : dsidle::ReplicaKind::kValueLeaf}, &old)) {
+      std::free(buffer);
+      return false;
+    }
     std::free(old);
     return true;
   }
