@@ -45,6 +45,7 @@ class nodeversion {
             spin_function();
             x = load();
         }
+        invalidate_canonical();
         acquire_fence();
         return x;
     }
@@ -55,6 +56,7 @@ class nodeversion {
             spin_function(nodeversion<P>(x));
             x = load();
         }
+        invalidate_canonical();
         acquire_fence();
         return x;
     }
@@ -248,6 +250,12 @@ class nodeversion {
         std::uint64_t observed = expected;
         return control_ref_.get(dsidle::SharedPoolBase())->version_and_state.compare_exchange_strong(
             observed, desired, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+    void invalidate_canonical() const {
+        if (!control_ref_) return;
+        const auto* control = control_ref_.get(dsidle::SharedPoolBase());
+        dsidle::InvalidateSwccRange(static_cast<const std::byte*>(dsidle::SharedPoolBase()) +
+                                        control->canonical_swcc_offset, 512);
     }
     value_type v_{};
     dsidle::NodeRef control_ref_{};

@@ -376,7 +376,12 @@ class leafvalue {
     }
 
     value_type value() const {
-        return dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
+        auto* value = dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
+        if (value) {
+            dsidle::InvalidateSwccRange(value, dsidle::kSwccCacheLineBytes);
+            dsidle::InvalidateSwccRange(value, value->size());
+        }
+        return value;
     }
     void set_value(value_type value) {
         if (value)
