@@ -83,7 +83,12 @@ T* ResolveCanonicalNode(NodeRef ref) {
   if (!control || control->allocation_state != NodeAllocationState::kPublished ||
       !control->canonical_swcc_offset)
     throw std::runtime_error("NodeRef does not name a published canonical node");
-  return SwccOffset<T>(control->canonical_swcc_offset).get(base);
+  T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
+  // Every canonical NodeRef decode starts a node-body traversal. Account the
+  // first cache line here; deeper field walks are naturally charged by their
+  // value/ksuffix and visibility wrappers.
+  latency_sim::RecordSwccRead(canonical, 64);
+  return canonical;
 }
 
 struct StableView {
