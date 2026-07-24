@@ -196,4 +196,13 @@ std::uint64_t ReplicaDirectory::AccessCount(NodeRef ref) const {
   return 0;
 }
 
+void ReplicaDirectory::HalveAccess(NodeRef ref) const {
+  Slot* slot = Find(ref);
+  if (!slot) return;
+  auto value = slot->access_count.load(std::memory_order_relaxed);
+  while (!slot->access_count.compare_exchange_weak(value, value >> 1,
+                                                    std::memory_order_relaxed,
+                                                    std::memory_order_relaxed)) {}
+}
+
 }  // namespace dsidle

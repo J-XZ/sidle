@@ -21,6 +21,8 @@ int main() {
   directory.RecordAccess(ref);
   directory.RecordAccess(ref);
   assert(directory.AccessCount(ref) == 2);
+  directory.HalveAccess(ref);
+  assert(directory.AccessCount(ref) == 1);
   {
     auto handle = directory.Acquire(ref, 1, 7);
     assert(handle && std::strcmp(static_cast<char*>(handle.snapshot().local_ptr), "first") == 0);

@@ -71,6 +71,9 @@ class ReplicaDirectory {
   void* ResetForReuse(NodeRef ref);
   void RecordAccess(NodeRef ref) const;
   std::uint64_t AccessCount(NodeRef ref) const;
+  // Cooler action: preserve the original SIDLE `access_time >>= 1` rule on
+  // the process-local dense counter instead of touching canonical SWCC data.
+  void HalveAccess(NodeRef ref) const;
   void RecordInternalHit() { internal_hits_.fetch_add(1, std::memory_order_relaxed); }
   std::uint64_t InternalHits() const { return internal_hits_.load(std::memory_order_relaxed); }
   void SetBudgetBytes(std::uint64_t bytes);
