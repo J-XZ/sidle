@@ -756,6 +756,18 @@ void basic_table<P>::initialize(threadinfo& ti, const int cxl_percentage) {
     dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).publish(root_ref_, stable.gen);
 }
 
+template <typename P>
+void basic_table<P>::attach() {
+    masstree_precondition(!root_ref_);
+    const auto root = dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).stable();
+    if (!root.ref)
+        throw std::runtime_error("D-SIDLE pool has no published Masstree root");
+    const auto node = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root.ref).stable();
+    if (node.gen != root.generation)
+        throw std::runtime_error("D-SIDLE RootControl generation does not match NodeControl");
+    root_ref_ = root.ref;
+}
+
 
 /** @brief Return this node's parent in locked state.
     @pre this->locked()

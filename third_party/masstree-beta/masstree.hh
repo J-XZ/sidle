@@ -127,6 +127,7 @@ public:
   inline basic_table();
 
   void initialize(threadinfo &ti, const int cxl_percentage);
+  void attach();
   void destroy(threadinfo &ti);
 
   inline node_type *root() const;

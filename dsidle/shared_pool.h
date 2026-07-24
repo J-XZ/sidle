@@ -70,6 +70,10 @@ class SharedPool {
   // --init-pool setup. It never resizes the file.
   static SharedPool InitializeExisting(const std::string& path, const PoolLayout& layout);
   static SharedPool Attach(const std::string& path, std::uint64_t expected_bytes);
+  // Test/bootstrap-only explicit mapping address.  The requested address must
+  // be free; this proves no persistent field depends on a prior VA.
+  static SharedPool AttachAt(const std::string& path, std::uint64_t expected_bytes,
+                             void* requested_base);
 
   void* base() const { return base_; }
   std::uint64_t size() const { return bytes_; }

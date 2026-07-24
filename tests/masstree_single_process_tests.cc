@@ -12,6 +12,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <sys/mman.h>
 #include <unistd.h>
 
 int main() {
@@ -76,6 +77,29 @@ int main() {
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
 
+  const auto original_base = pool.base();
   pool.Close();
+  void* guard = mmap(original_base, kPoolBytes, PROT_NONE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  assert(guard == original_base);
+  void* target = mmap(nullptr, kPoolBytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(target != MAP_FAILED && target != original_base);
+  assert(munmap(target, kPoolBytes) == 0);
+
+  auto remapped = dsidle::SharedPool::AttachAt(path, kPoolBytes, target);
+  assert(remapped.base() != original_base);
+  dsidle::ConfigureCurrentSwccAllocator(remapped, 1, 0);
+  threadinfo* remounted_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+  Masstree::default_table remounted;
+  remounted.table().attach();
+  for (const auto& [key, expected_value] : expected) {
+    lcdf::Str value;
+    assert(query.run_get1(remounted.table(), lcdf::Str(key.data(), key.size()), 0, value, *remounted_ti));
+    assert(value.len == expected_value.size());
+    assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
+  }
+
+  remapped.Close();
+  assert(munmap(guard, kPoolBytes) == 0);
   assert(unlink(path) == 0);
 }

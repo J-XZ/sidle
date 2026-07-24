@@ -140,6 +140,23 @@ SharedPool SharedPool::Attach(const std::string& path, std::uint64_t expected_by
   return SharedPool(fd, base, bytes);
 }
 
+SharedPool SharedPool::AttachAt(const std::string& path, std::uint64_t expected_bytes,
+                                void* requested_base) {
+  if (!requested_base) throw std::runtime_error("AttachAt requires a non-null mapping base");
+  const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if (fd < 0) Fail("open", path);
+  struct stat status {};
+  if (fstat(fd, &status) != 0) { close(fd); Fail("stat", path); }
+  const auto bytes = static_cast<std::uint64_t>(status.st_size);
+  void* base = mmap(requested_base, bytes, PROT_READ | PROT_WRITE,
+                    MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
+  if (base == MAP_FAILED) { close(fd); Fail("map at requested base", path); }
+  try { ValidateHeader(*static_cast<PoolHeader*>(base), expected_bytes); }
+  catch (...) { munmap(base, bytes); close(fd); throw; }
+  SetSharedPoolBase(base);
+  return SharedPool(fd, base, bytes);
+}
+
 SharedPool::~SharedPool() { Close(); }
 SharedPool::SharedPool(SharedPool&& other) noexcept : fd_(other.fd_), base_(other.base_), bytes_(other.bytes_) {
   other.fd_ = -1; other.base_ = nullptr; other.bytes_ = 0;
