@@ -243,6 +243,10 @@ result_t query<R>::run_replace(T& table, Str key, Str value, threadinfo& ti) {
     R* slot = lp.value();
     bool inserted = apply_replace(slot, found, value, ti);
     lp.set_value(slot);
+    // dsidle: a replacement changes bytes that a self-contained leaf replica
+    // may have copied. Bump the canonical leaf version before unlock so other
+    // VMs reject their old generation/version snapshot lazily.
+    lp.node()->mark_insert();
     lp.finish(1, ti);
     if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
         std::free(replicas->Invalidate(lp.node()->control_ref()));
@@ -280,6 +284,8 @@ bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
         R* slot = lp.value();
         apply_remove(slot, lp.node()->phantom_epoch_[0], ti);
         lp.set_value(slot);
+        // dsidle: tombstone/value removal also invalidates remote leaf copies.
+        lp.node()->mark_insert();
     }
     lp.finish(-1, ti);
     if (found) {

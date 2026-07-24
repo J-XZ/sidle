@@ -218,12 +218,32 @@ int main() {
                           promote_version.version_value()));
   workers.CoolOnce(*ti);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
+  // Simulate a remote VM directory: A's writer must not touch it, while B's
+  // subsequent lookup rejects its old version and returns the new canonical
+  // value instead of a stale copied row.
+  dsidle::ReplicaDirectory remote_replicas(pool);
+  assert(Masstree::leaf_replica<replica_params>::Promote(*canonical_leaf, promote_version, remote_replicas));
+  dsidle::ConfigureCurrentReplicaDirectory(replicas);
   const std::string replica_updated = "replica-local-write";
   query.run_replace(table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()),
                     lcdf::Str(replica_updated.data(), replica_updated.size()), *ti);
   expected[replica_key_text] = replica_updated;
   assert(!replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                            promote_version.version_value()));
+  dsidle::ConfigureCurrentReplicaDirectory(remote_replicas);
+  {
+    Masstree::unlocked_tcursor<replica_params> remote_cursor(
+        table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+    assert(remote_cursor.find_unlocked(*ti));
+    const auto column = remote_cursor.value()->col(0);
+    assert(column.len == replica_updated.size());
+    assert(std::memcmp(column.s, replica_updated.data(), column.len) == 0);
+  }
+  // VM A did not mutate VM B's process-local slot; B's read-side canonical
+  // version check, rather than cross-VM directory invalidation, rejected it.
+  assert(remote_replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                                 promote_version.version_value()));
+  dsidle::ConfigureCurrentReplicaDirectory(replicas);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
 
   const pid_t reader = fork();
