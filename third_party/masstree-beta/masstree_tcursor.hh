@@ -63,7 +63,7 @@ class unlocked_tcursor {
     bool find_unlocked(threadinfo& ti);
 
     inline value_type value() const {
-        return lv_.value();
+        return replica_value_ ? replica_value_ : lv_.value();
     }
     inline leaf<P>* node() const {
         return n_;
@@ -74,6 +74,8 @@ class unlocked_tcursor {
     inline int compare_key(const key_type& a, int bp) const {
         return n_->compare_key(a, bp);
     }
+    bool used_replica() const { return replica_value_ != nullptr; }
+    void disable_replica() { replica_enabled_ = false; }
     inline nodeversion_value_type full_version_value() const {
         static_assert(int(nodeversion_type::traits_type::top_stable_bits) >= int(leaf<P>::permuter_type::size_bits), "not enough bits to add size to version");
         return (v_.version_value() << leaf<P>::permuter_type::size_bits) + perm_.size();
@@ -85,6 +87,11 @@ class unlocked_tcursor {
     typename leaf<P>::nodeversion_type v_;
     permuter_type perm_;
     leafvalue<P> lv_;
+    // Keeps the directory reader count live through the caller's value copy.
+    // The buffer is process-local; it is never written into the leaf.
+    dsidle::ReplicaDirectory::ReadHandle replica_handle_;
+    value_type replica_value_{};
+    bool replica_enabled_{true};
     const node_base<P>* root_;
 };
 

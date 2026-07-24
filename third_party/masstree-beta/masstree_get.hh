@@ -17,6 +17,7 @@
 #define MASSTREE_GET_HH
 #include "masstree_tcursor.hh"
 #include "masstree_key.hh"
+#include "masstree_replica.hh"
 namespace Masstree {
 
 template <typename P>
@@ -26,12 +27,41 @@ bool unlocked_tcursor<P>::find_unlocked(threadinfo& ti)
     key_indexed_position kx;
     node_base<P>* root = const_cast<node_base<P>*>(root_);
 
- retry:
+retry:
+    replica_handle_ = {};
+    replica_value_ = nullptr;
     n_ = root->reach_leaf(ka_, v_, ti);
 
  forward:
     if (v_.deleted())
         goto retry;
+
+    if (replica_enabled_) if (auto* directory = dsidle::CurrentReplicaDirectoryOrNull()) {
+        const auto ref = n_->control_ref();
+        const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+        auto handle = directory->Acquire(ref, generation, v_.version_value());
+        if (handle) {
+            const typename Masstree::leaf_replica<P>::value_type* local_value = nullptr;
+            dsidle::NodeRef layer_ref;
+            const auto cached = Masstree::leaf_replica<P>::Lookup(
+                handle.snapshot().local_ptr, ka_, local_value, layer_ref);
+            if (n_->has_changed(v_)) {
+                n_ = n_->advance_to_key(ka_, v_, ti);
+                goto forward;
+            }
+            if (cached == Masstree::leaf_replica<P>::result::kValue) {
+                replica_value_ = const_cast<value_type>(local_value);
+                replica_handle_ = std::move(handle);
+                return true;
+            }
+            if (cached == Masstree::leaf_replica<P>::result::kLayer) {
+                ka_.shift_by(-int(sizeof(typename P::ikey_type)));
+                root = dsidle::ResolveCanonicalNode<node_base<P>>(layer_ref);
+                goto retry;
+            }
+            return false;
+        }
+    }
 
     n_->prefetch();
     perm_ = n_->permutation();
@@ -61,6 +91,9 @@ inline bool basic_table<P>::get(Str key, value_type &value,
                                 threadinfo& ti) const
 {
     unlocked_tcursor<P> lp(*this, key);
+    // This legacy pointer-returning API cannot retain the directory read
+    // handle past return; query APIs copy values while their cursor lives.
+    lp.disable_replica();
     bool found = lp.find_unlocked(ti);
     if (found)
         value = lp.value();

@@ -161,6 +161,13 @@ int main() {
       replica_key, replica_value, replica_layer) == Masstree::leaf_replica<replica_params>::result::kValue);
   assert(replica_value->col(0).len == expected.begin()->second.size());
   replica_handle = {};
+  {
+    Masstree::unlocked_tcursor<replica_params> replica_cursor(
+        table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+    assert(replica_cursor.find_unlocked(*ti));
+    assert(replica_cursor.used_replica());
+    assert(replica_cursor.value()->col(0).len == expected.begin()->second.size());
+  }
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
 
   const pid_t reader = fork();
