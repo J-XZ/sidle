@@ -87,12 +87,14 @@ class replica_workers {
   using table_type = basic_table<P>;
   replica_workers(table_type& table, dsidle::SharedPool& pool,
                   dsidle::ReplicaDirectory& directory, sidle::sidle_threshold& thresholds,
+                  std::uint32_t shard_count, std::uint32_t local_shard,
+                  std::uint32_t background_thread_base,
                   std::chrono::milliseconds basic_interval,
                   std::chrono::milliseconds cooler_interval,
                   std::chrono::milliseconds adjuster_interval)
-      : table_(table), directory_(directory), thresholds_(thresholds),
+      : table_(table), pool_(pool), directory_(directory), thresholds_(thresholds),
         histogram_(std::make_shared<sidle::sidle_histogram>(&thresholds)),
-        root_pin_(pool, directory), basic_interval_(basic_interval),
+        root_pin_(pool, directory), shard_count_(shard_count), local_shard_(local_shard), background_thread_base_(background_thread_base), basic_interval_(basic_interval),
         cooler_interval_(cooler_interval), adjuster_interval_(adjuster_interval) {}
 
   ~replica_workers() { Stop(); }
@@ -179,17 +181,20 @@ class replica_workers {
       ForEachLeaf(dsidle::ResolveCanonicalNode<node_base<P>>(children[index]), callback);
   }
 
-  void TriggerLoop() { auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, -1); while (running_) { TriggerOnce(*ti); std::this_thread::sleep_for(basic_interval_ * 5); } }
-  void ExecutorLoop(sidle::task_type type) { while (running_) { if (queue_.length(type) > sidle::queue_waiting_threshold) ExecuteOnce(type); std::this_thread::sleep_for(basic_interval_); ExecuteOnce(type); } }
-  void CoolerLoop() { auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, -1); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
-  void AdjusterLoop() { while (running_) { std::this_thread::sleep_for(adjuster_interval_); const auto budget = directory_.BudgetBytes(); if (budget == UINT64_MAX) continue; const double ratio = static_cast<double>(directory_.LocalBytes()) / budget; if (thresholds_.check_memory_usage(ratio) == sidle::mem_usage_status::tight) { thresholds_.adjust_local_allocation_threshold(true); thresholds_.adjust_demotion_depth_threshold(true); } } }
+  void BindCurrentThread() { dsidle::ConfigureCurrentSwccAllocator(pool_, shard_count_, local_shard_); dsidle::ConfigureCurrentReplicaDirectory(directory_); }
+  void TriggerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_); while (running_) { TriggerOnce(*ti); std::this_thread::sleep_for(basic_interval_ * 5); } }
+  void ExecutorLoop(sidle::task_type type) { BindCurrentThread(); while (running_) { if (queue_.length(type) > sidle::queue_waiting_threshold) ExecuteOnce(type); std::this_thread::sleep_for(basic_interval_); ExecuteOnce(type); } }
+  void CoolerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_ + 1); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
+  void AdjusterLoop() { BindCurrentThread(); while (running_) { std::this_thread::sleep_for(adjuster_interval_); const auto budget = directory_.BudgetBytes(); if (budget == UINT64_MAX) continue; const double ratio = static_cast<double>(directory_.LocalBytes()) / budget; if (thresholds_.check_memory_usage(ratio) == sidle::mem_usage_status::tight) { thresholds_.adjust_local_allocation_threshold(true); thresholds_.adjust_demotion_depth_threshold(true); } } }
 
   table_type& table_;
+  dsidle::SharedPool& pool_;
   dsidle::ReplicaDirectory& directory_;
   sidle::sidle_threshold& thresholds_;
   std::shared_ptr<sidle::sidle_histogram> histogram_;
   sidle::replica_queue queue_;
   root_replica_pin<P> root_pin_;
+  std::uint32_t shard_count_, local_shard_, background_thread_base_;
   std::chrono::milliseconds basic_interval_, cooler_interval_, adjuster_interval_;
   std::atomic<bool> running_{false};
   std::thread trigger_, promotion_, demotion_, cooler_, adjuster_;

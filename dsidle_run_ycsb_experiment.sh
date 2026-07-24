@@ -99,6 +99,15 @@ if int(no_latency):
         latency[key] = False
 open(output, 'w').write(json.dumps(config, separators=(',', ':')) + '\n')
 PY
+vm_cores=$(python3 - "$experiment_config" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))['vm']['core_count_per_vm'])
+PY
+)
+((threads_per_node + 2 <= vm_cores)) || {
+  echo "--threads-per-node requires two additional per-VM SIDLE replica-worker slots (vm.core_count_per_vm=$vm_cores)" >&2
+  exit 2
+}
 if (( ! skip_trace_gen )); then
   generator="$script_dir/third_party/YCSB-cpp/scripts/generate_cxlkv_trace.sh"
   [[ -x "$generator" ]] || { echo "missing executable YCSB trace generator: $generator (initialize submodules)" >&2; exit 1; }

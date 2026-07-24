@@ -6,6 +6,7 @@
 #include "query_masstree.hh"
 #include "masstree_get.hh"
 #include "masstree_insert.hh"
+#include "masstree_replica_worker.hh"
 #include "masstree_remove.hh"
 #include "masstree_scan.hh"
 
@@ -126,6 +127,7 @@ int main(int argc, char** argv) {
     auto pool = dsidle::SharedPool::Attach(cfg.shared_path, cfg.shared_size_mb << 20);
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
+    replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
     latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
     threadinfo* bootstrap_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
@@ -135,6 +137,15 @@ int main(int argc, char** argv) {
     // from the workload timer below.
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     if (!options.bootstrap) table.table().attach();
+    const auto epoch_slots_per_vm = pool.static_layout()->epoch_slot_count / cfg.vm_count;
+    if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 2)
+      Fail("pool epoch slots must reserve two SIDLE replica workers per VM");
+    sidle::sidle_threshold thresholds;
+    Masstree::replica_workers<Masstree::default_query_table_params> replica_workers(
+        table.table(), pool, replicas, thresholds, cfg.vm_count, options.node,
+        cfg.foreground_worker_count_per_vm, std::chrono::milliseconds(10),
+        std::chrono::milliseconds(1000), std::chrono::milliseconds(1000));
+    replica_workers.Start();
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
     std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr worker_failure; std::mutex worker_failure_mutex;
     const auto started = std::chrono::steady_clock::now();

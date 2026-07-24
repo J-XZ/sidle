@@ -21,6 +21,9 @@ VM 回放编排。镜像只构建一次；二进制和 ivshmem 模块在宿主�
   关闭所有延迟计费开关。
 - 默认先执行 1 个不计入汇总的预热轮次，再执行 `--rounds` 指定的正式轮次；可用
   `--warmup-rounds 0` 仅用于开发冒烟，不能用于 §6.4 正式性能结果。
+- 每 VM 还保留 2 个核/epoch slot 给 SIDLE 的 Trigger 与 Cooler worker，因此
+  `--threads-per-node + 2` 不得超过 `vm.core_count_per_vm`；正式 4 worker/8 vCPU
+  合同满足该约束。
 
 ## 已验证命令
 
