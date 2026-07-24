@@ -1,0 +1,2 @@
+PUT 4 0four
+DELETE 4 0four
