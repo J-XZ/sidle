@@ -88,9 +88,14 @@ add_test(NAME dsidle_ycsb_summarizer_tests
 set_tests_properties(dsidle_ycsb_summarizer_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_prepare_only_tests
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 2 && test -s \"$out/result/run_meta.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\""
+    "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 2 && test -s \"$out/result/run_meta.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_prepare_only_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_ycsb_trace_generation_tests
+  COMMAND /bin/sh -c
+    "out=$(mktemp -d /tmp/dsidle-ycsb-traces.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 10 --threads-per-node 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/traces/load/worker0.txt\" && test -s \"$out/result/traces/workloada/worker0.txt\" && test -s \"$out/result/traces/workloade/worker0.txt\" && grep -q '^GET ' \"$out/result/traces/workloada/worker0.txt\" && grep -q '^PUT ' \"$out/result/traces/workloada/worker0.txt\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
+set_tests_properties(dsidle_ycsb_trace_generation_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)

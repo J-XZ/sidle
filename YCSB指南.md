@@ -4,9 +4,9 @@
 
 `dsidle_run_ycsb_experiment.sh` 固定面向 4 VM 实验。它会校验 workload
 矩阵、物化本轮配置和 `run_meta.json`，并为将来的 trace/VM 回放保留统一的
-产物目录。当前工作树没有初始化计划要求的 YCSB-cpp 子模块，且 VM 初始化
-脚本尚未实现实际 QEMU 启动；因此只有 `--prepare-only` 可作为已验证的可执行
-流程，普通执行会明确失败而不会启动或清理 VM。
+产物目录。当前工作树固定了计划要求的 YCSB-cpp 子模块；首次使用前以递归方式
+初始化它。`--prepare-only` 会生成 trace 和实验材料，且已验证。VM 初始化脚本
+尚未实现实际 QEMU 启动，因此普通执行会在 trace 生成后明确失败而不会启动或清理 VM。
 
 ## 约束
 
@@ -22,9 +22,10 @@
 
 ## 已验证命令
 
-以下帮助和准备命令已在当前版本执行验证。`mktemp` 使示例不会改动仓库目录。
+以下初始化、帮助和准备命令已在当前版本执行验证。`mktemp` 使示例不会改动仓库目录。
 
 ```bash
+git submodule update --init --recursive
 ./dsidle_run_ycsb_experiment.sh --help
 
 out=$(mktemp -d /tmp/dsidle-ycsb-guide.XXXXXX)
@@ -37,7 +38,8 @@ out=$(mktemp -d /tmp/dsidle-ycsb-guide.XXXXXX)
 
 成功时会输出 `DSIDLE_YCSB_PREPARED`。目录内包含 `configs/`、`traces/`、
 `logs/`、`round_logs/`、派生的 `experiment_config_ycsb_4vm.jsonc` 和
-`run_meta.json`。后者记录 git SHA、配置 SHA256、参数和复现命令。
+`run_meta.json`。示例会生成 4 个 load、A 和 E worker trace；A 的 UPDATE 会
+展开为独立 GET 与 PUT。后者记录 git SHA、配置 SHA256、参数和复现命令。
 
 已有 runner 日志可通过下列已验证汇总命令生成 JSON、CSV 与报告：
 
@@ -49,8 +51,8 @@ python3 scripts/summarize_ycsb_experiment.py \
 
 ## 中断与失败处理
 
-准备模式只创建指定输出目录；中断后可以选择新的 `--out-dir` 重跑。非法数值、
+准备模式只创建指定输出目录；中断后可以选择新的 `--out-dir` 重跑。若只需物化
+配置，可加 `--skip-trace-gen`。非法数值、
 非法 NUMA 列表、非 2 的幂共享大小或空/重复/非法 workload 会以退出码 2 在
 创建输出目录前失败。完整执行失败时不应手工假定 VM 已被启动：先使用
-`dsidle_check_vms.sh --dry-run` 检查预期拓扑，待 VM 启动和 trace 生成实现后再
-执行运行阶段。
+`dsidle_check_vms.sh --dry-run` 检查预期拓扑，待 VM 启动实现后再执行运行阶段。

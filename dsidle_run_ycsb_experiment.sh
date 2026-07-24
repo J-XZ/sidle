@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 rounds=1
 record_count=100000
 operation_count=100000
@@ -87,6 +89,35 @@ if int(no_latency):
         latency[key] = False
 open(output, 'w').write(json.dumps(config, indent=2) + '\n')
 PY
+if (( ! skip_trace_gen )); then
+  generator="$script_dir/third_party/YCSB-cpp/scripts/generate_cxlkv_trace.sh"
+  [[ -x "$generator" ]] || { echo "missing executable YCSB trace generator: $generator (initialize submodules)" >&2; exit 1; }
+  generator_root="$script_dir/third_party/YCSB-cpp"
+  "$generator" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workloada" \
+    --phase load --nodes 4 --threads-per-node "$threads_per_node" --record-count "$record_count" \
+    --operation-count "$operation_count" --field-length 32
+  for workload in "${requested[@]}"; do
+    generator_args=(--output-dir "$out_dir/traces" --workload "$generator_root/workloads/workload$workload" \
+      --run-name "workload$workload" --phase run --nodes 4 --threads-per-node "$threads_per_node" \
+      --record-count "$record_count" --operation-count "$operation_count" --field-length 32)
+    [[ "$workload" == a ]] && generator_args+=(--update-read-before-write)
+    "$generator" "${generator_args[@]}"
+  done
+  python3 - "$out_dir/traces" "$threads_per_node" "${requested[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+root, threads, *workloads = sys.argv[1:]
+expected = 4 * int(threads)
+for phase in ['load'] + [f'workload{item}' for item in workloads]:
+    directory = Path(root) / phase
+    files = sorted(directory.glob('worker*.txt'))
+    names = {item.name for item in files}
+    wanted = {f'worker{index}.txt' for index in range(expected)}
+    if names != wanted or any(item.stat().st_size == 0 for item in files):
+        raise SystemExit(f'invalid trace worker set for {directory}: expected {expected} non-empty worker files')
+PY
+fi
 printf -v reproduce_command '%q ' "$0" --rounds "$rounds" --record-count "$record_count" --operation-count "$operation_count" --threads-per-node "$threads_per_node" --round-timeout "$round_timeout" --out-dir "$out_dir" --workloads "$workloads" --base-config "$base_config" --shared-reserve-mb "$shared_reserve_mb" --cache-flush-mb "$cache_flush_mb"
 [[ -n "$shared_numa" ]] && printf -v reproduce_command '%s--shared-numa %q ' "$reproduce_command" "$shared_numa"
 [[ -n "$shared_size_mb" ]] && printf -v reproduce_command '%s--shared-size-mb %q ' "$reproduce_command" "$shared_size_mb"
