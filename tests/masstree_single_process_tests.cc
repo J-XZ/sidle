@@ -206,6 +206,18 @@ int main() {
   assert(replica_executor.Demote({canonical_leaf->control_ref(), promote_generation}));
   assert(!replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                            promote_version.version_value()));
+  sidle::sidle_threshold worker_thresholds(1024, 80, false);
+  worker_thresholds.set_hotness_watermarks(0);
+  Masstree::replica_workers<replica_params> workers(
+      table.table(), pool, replicas, worker_thresholds,
+      std::chrono::milliseconds(1), std::chrono::milliseconds(1), std::chrono::milliseconds(1));
+  for (unsigned i = 0; i != 256; ++i) replicas.RecordAccess(canonical_leaf->control_ref());
+  workers.TriggerOnce(*ti);
+  workers.ExecuteOnce(sidle::task_type::promotion);
+  assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                          promote_version.version_value()));
+  workers.CoolOnce(*ti);
+  std::free(replicas.Invalidate(canonical_leaf->control_ref()));
   const std::string replica_updated = "replica-local-write";
   query.run_replace(table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()),
                     lcdf::Str(replica_updated.data(), replica_updated.size()), *ti);
