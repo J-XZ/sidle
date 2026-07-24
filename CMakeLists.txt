@@ -86,8 +86,8 @@ add_test(NAME dsidle_e2e_trace_runner_min_duration
 set_tests_properties(dsidle_e2e_trace_runner_min_duration PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_replica_activation
   COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 3 && \"$3\" --config \"$2\" --phase seed --node 0 --bootstrap && \"$3\" --config \"$4\" --phase replica-read --node 0 --min-duration-sec 1 > /tmp/dsidle-e2e-replica.log && python3 -c 'import re,sys; x=re.search(r\"replica_bytes=(\\d+)\", open(sys.argv[1]).read()); sys.exit(not x or int(x.group(1)) == 0)' /tmp/dsidle-e2e-replica.log"
-    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_replica_read_config.jsonc)
+    "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 3 && \"$3\" --config \"$2\" --phase seed --node 0 --bootstrap && \"$3\" --config \"$4\" --phase replica-read --node 0 --min-duration-sec 1 > /tmp/dsidle-e2e-replica.log && python3 -c 'import re,sys; x=re.search(r\"replica_bytes=(\\d+)\", open(sys.argv[1]).read()); sys.exit(not x or int(x.group(1)) <= 8)' /tmp/dsidle-e2e-replica.log"
+    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_replica_seed_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_replica_read_config.jsonc)
 set_tests_properties(dsidle_e2e_trace_runner_replica_activation PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_2vm_smoke
   COMMAND /bin/sh -c
