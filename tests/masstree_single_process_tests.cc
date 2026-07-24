@@ -215,6 +215,40 @@ int main() {
   lcdf::Str deleted;
   assert(!query.run_get1(table.table(), lcdf::Str(delete_key.data(), delete_key.size()), 0, deleted, *ti));
 
+  std::vector<std::pair<std::string, std::string>> split_inserts;
+  for (unsigned i = 0; i != 48; ++i) {
+    std::string key(8, 'z');
+    key[0] = static_cast<char>(i + 1);
+    split_inserts.emplace_back(std::move(key), "split-value-" + std::to_string(i));
+  }
+  const pid_t splitter = fork();
+  assert(splitter >= 0);
+  if (splitter == 0) {
+    pool.Close();
+    try {
+      auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+      dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+      Masstree::default_table child_table;
+      child_table.table().attach();
+      for (const auto& [key, value] : split_inserts)
+        query.run_replace(child_table.table(), lcdf::Str(key.data(), key.size()),
+                          lcdf::Str(value.data(), value.size()), *child_ti);
+    } catch (...) {
+      _exit(9);
+    }
+    _exit(0);
+  }
+  int splitter_status = 0;
+  assert(waitpid(splitter, &splitter_status, 0) == splitter);
+  assert(WIFEXITED(splitter_status) && WEXITSTATUS(splitter_status) == 0);
+  for (const auto& [key, value] : split_inserts) {
+    expected[key] = value;
+    lcdf::Str inserted;
+    assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
+    assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
+  }
+
   ScanCollector scanner;
   assert(table.table().scan(lcdf::Str("", 0), true, scanner, *ti) ==
          static_cast<int>(expected.size()));
