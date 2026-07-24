@@ -48,6 +48,9 @@ struct limbo_group {
         // dsidle: canonical pooled objects are recorded as SWCC offsets.
         // Non-pooled callback objects remain process-local addresses.
         uint64_t ref_;
+        // A retired tree node keeps its HWCC control reference until its SWCC
+        // body is actually returned to the owner shard.
+        dsidle::NodeRef node_ref_;
         union {
             struct {
                 memtag tag;
@@ -70,10 +73,12 @@ struct limbo_group {
         assert(head_ != tail_);
         return e_[head_].u_.epoch;
     }
-    void push_back(void* ptr, memtag tag, std::uint32_t owner_shard, mrcu_epoch_type epoch) {
+    void push_back(void* ptr, memtag tag, std::uint32_t owner_shard,
+                   dsidle::NodeRef node_ref, mrcu_epoch_type epoch) {
         assert(tail_ + 2 <= capacity);
         if (head_ == tail_ || epoch_ != epoch) {
             e_[tail_].ref_ = 0;
+            e_[tail_].node_ref_ = dsidle::NodeRef();
             e_[tail_].u_.epoch = epoch;
             epoch_ = epoch;
             ++tail_;
@@ -81,6 +86,7 @@ struct limbo_group {
         e_[tail_].ref_ = (tag != memtag(-1) && (tag & memtag_pool_mask))
             ? uint64_t(reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase()))
             : reinterpret_cast<uint64_t>(ptr);
+        e_[tail_].node_ref_ = node_ref;
         e_[tail_].u_.allocation = {tag, owner_shard};
         ++tail_;
     }
@@ -270,11 +276,16 @@ class threadinfo {
         mark(threadcounter(tc_alloc + (tag > memtag_value)),
              -nl * CACHE_LINE_SIZE);
     }
-    void pool_deallocate_rcu(void* p, size_t sz, memtag tag) {
+    void pool_deallocate_rcu(void* p, size_t sz, memtag tag, dsidle::NodeRef node_ref = {}) {
         int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
         assert(p && nl <= pool_max_nlines);
         memdebug::check_rcu(p, sz, memtag(tag + nl));
-        record_rcu(p, memtag(tag + nl));
+        if (node_ref) {
+            const auto epoch = gc_epoch_ ? gc_epoch_
+                : dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current();
+            dsidle::NodeControlSlab(dsidle::CurrentSharedPool()).Retire(node_ref, epoch);
+        }
+        record_rcu(p, memtag(tag + nl), node_ref);
         mark(threadcounter(tc_alloc + (tag > memtag_value)),
              -nl * CACHE_LINE_SIZE);
     }
@@ -365,7 +376,7 @@ class threadinfo {
     void refill_local_pool(int nl);
     void refill_rcu();
 
-    void free_rcu(uint64_t ref, memtag tag, std::uint32_t owner_shard) {
+    void free_rcu(uint64_t ref, memtag tag, std::uint32_t owner_shard, dsidle::NodeRef node_ref) {
         void* p = (tag != memtag(-1) && (tag & memtag_pool_mask))
             ? dsidle::SwccOffset<std::byte>(ref).get(dsidle::SharedPoolBase())
             : reinterpret_cast<void*>(ref);
@@ -380,10 +391,12 @@ class threadinfo {
             dsidle::FreeCurrentSwccToOwner(owner_shard, dsidle::SwccOffset<std::byte>(
                 reinterpret_cast<std::byte*>(p) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
                 nl * CACHE_LINE_SIZE);
+            if (node_ref)
+                dsidle::NodeControlSlab(dsidle::CurrentSharedPool()).Release(node_ref);
         }
     }
 
-    void record_rcu(void* ptr, memtag tag) {    
+    void record_rcu(void* ptr, memtag tag, dsidle::NodeRef node_ref = {}) {
         if (limbo_tail_->tail_ + 2 > limbo_tail_->capacity)
             refill_rcu();
         const uint64_t epoch = gc_epoch_ ? gc_epoch_
@@ -393,7 +406,7 @@ class threadinfo {
                   reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase())),
                   (tag & memtag_pool_mask) * CACHE_LINE_SIZE)
             : 0;
-        limbo_tail_->push_back(ptr, tag, owner_shard, epoch);
+        limbo_tail_->push_back(ptr, tag, owner_shard, node_ref, epoch);
     }
 
 #if ENABLE_ASSERTIONS

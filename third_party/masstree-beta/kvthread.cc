@@ -103,11 +103,12 @@ inline unsigned limbo_group::clean_until(threadinfo& ti, mrcu_epoch_type epoch_b
     while (head_ != tail_) {
         if (e_[head_].ref_) {
             ti.free_rcu(e_[head_].ref_, e_[head_].u_.allocation.tag,
-                        e_[head_].u_.allocation.owner_shard);
+                        e_[head_].u_.allocation.owner_shard, e_[head_].node_ref_);
             ti.mark(tc_gc);
             --count;
             if (!count) {
                 e_[head_].ref_ = 0;
+                e_[head_].node_ref_ = dsidle::NodeRef();
                 e_[head_].u_.epoch = epoch;
                 break;
             }

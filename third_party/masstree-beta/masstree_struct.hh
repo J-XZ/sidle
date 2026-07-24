@@ -298,9 +298,9 @@ class internode : public node_base<P> {
     }
     void deallocate_rcu(threadinfo& ti) {
         if (this->sidle_meta.type == node_mem_type_t::local) {
-            ti.pool_deallocate_rcu(this, sizeof(*this), memtag_masstree_internode);
+            ti.pool_deallocate_rcu(this, sizeof(*this), memtag_masstree_internode, this->control_ref());
         } else {
-            ti.pool_deallocate_rcu(this, sizeof(*this), memtag_masstree_internode_remote);
+            ti.pool_deallocate_rcu(this, sizeof(*this), memtag_masstree_internode_remote, this->control_ref());
         }
     }
 
@@ -696,9 +696,9 @@ class leaf : public node_base<P> {
             ti.deallocate_rcu(ksuf_, ksuf_->capacity(),
                               memtag_masstree_ksuffixes); 
         if (this->sidle_meta.metadata.type == node_mem_type_t::local) {
-            ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf);
+            ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf, this->control_ref());
         } else {
-            ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf_remote);
+            ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf_remote, this->control_ref());
         }
     }
 
