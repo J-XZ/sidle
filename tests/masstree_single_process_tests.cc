@@ -13,6 +13,7 @@
 #include <map>
 #include <string>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 int main() {
@@ -76,6 +77,32 @@ int main() {
     assert(value.len == expected_value.size());
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
+
+  const pid_t reader = fork();
+  assert(reader >= 0);
+  if (reader == 0) {
+    pool.Close();
+    try {
+      auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+      dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+      Masstree::default_table child_table;
+      child_table.table().attach();
+      for (const auto& [key, expected_value] : expected) {
+        lcdf::Str value;
+        if (!query.run_get1(child_table.table(), lcdf::Str(key.data(), key.size()), 0, value, *child_ti) ||
+            value.len != expected_value.size() ||
+            std::memcmp(value.s, expected_value.data(), value.len) != 0)
+          _exit(2);
+      }
+    } catch (...) {
+      _exit(3);
+    }
+    _exit(0);
+  }
+  int reader_status = 0;
+  assert(waitpid(reader, &reader_status, 0) == reader);
+  assert(WIFEXITED(reader_status) && WEXITSTATUS(reader_status) == 0);
 
   const auto original_base = pool.base();
   pool.Close();
