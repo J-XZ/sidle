@@ -28,7 +28,7 @@
 namespace {
 enum class TraceOpKind { kPut, kGet, kDelete, kScan };
 struct TraceOp { TraceOpKind kind; std::string key; uint64_t len; };
-struct Options { std::string config = dsidle::DefaultExperimentConfigPath(); std::string phase = "load"; uint32_t node = 0; uint32_t batch_ops = 4096; bool bootstrap = false; };
+struct Options { std::string config = dsidle::DefaultExperimentConfigPath(); std::string phase = "load"; uint32_t node = 0; uint32_t batch_ops = 4096; uint64_t min_duration_sec = 0; bool bootstrap = false; };
 
 [[noreturn]] void Fail(const std::string& text) { throw std::runtime_error(text); }
 uint64_t ParseUnsigned(std::string_view text, const char* label) {
@@ -74,8 +74,9 @@ Options ParseOptions(int argc, char** argv) {
     else if (arg == "--phase") options.phase = take("--phase");
     else if (arg == "--node") options.node = static_cast<uint32_t>(ParseUnsigned(take("--node"), "node"));
     else if (arg == "--batch-ops") options.batch_ops = static_cast<uint32_t>(ParseUnsigned(take("--batch-ops"), "batch_ops"));
+    else if (arg == "--min-duration-sec") options.min_duration_sec = ParseUnsigned(take("--min-duration-sec"), "min_duration_sec");
     else if (arg == "--bootstrap") options.bootstrap = true;
-    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_trace_runner [--config PATH] --phase NAME --node N [--batch-ops N] [--bootstrap]\n"; std::exit(0); }
+    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_trace_runner [--config PATH] --phase NAME --node N [--batch-ops N] [--min-duration-sec N] [--bootstrap]\n"; std::exit(0); }
     else Fail("unknown argument: " + arg);
   }
   if (!options.batch_ops) Fail("batch_ops must be > 0"); return options;
@@ -88,25 +89,28 @@ struct ScanCounter {
 
 uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentConfig& cfg,
                     Masstree::default_table* table, threadinfo* ti, uint32_t batch_ops,
-                    uint64_t seed, std::atomic<uint64_t>* heartbeat) {
-  std::ifstream input(path, std::ios::binary); if (!input) Fail("cannot open trace file: " + path.string());
+                    uint64_t seed, std::atomic<uint64_t>* heartbeat,
+                    std::chrono::steady_clock::time_point deadline) {
   query<row_type> query; std::mt19937_64 rng(seed); uint64_t total = 0, line_no = 0;
   std::string line;
-  while (std::getline(input, line)) {
-    ++line_no; if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.find_first_not_of(" \t") == std::string::npos || line.find_first_not_of(" \t") == line.find('#')) continue;
-    const TraceOp op = ParseTraceLine(line, path, line_no); const std::string key = FixedTraceKey(op.key, cfg.fixed_key_size);
-    { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      switch (op.kind) {
-        case TraceOpKind::kPut: { const std::string value = FixedTraceValue(cfg.fixed_value_size, &rng); query.run_replace(table->table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), *ti); break; }
-        case TraceOpKind::kGet: { lcdf::Str value; (void)query.run_get1(table->table(), lcdf::Str(key.data(), key.size()), 0, value, *ti); break; }
-        case TraceOpKind::kDelete: (void)query.run_remove(table->table(), lcdf::Str(key.data(), key.size()), *ti); break;
-        case TraceOpKind::kScan: { ScanCounter counter{op.len}; (void)table->table().scan(lcdf::Str(key.data(), key.size()), true, counter, *ti); break; }
+  do {
+    std::ifstream input(path, std::ios::binary); if (!input) Fail("cannot open trace file: " + path.string());
+    while (std::getline(input, line)) {
+      ++line_no; if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.find_first_not_of(" \t") == std::string::npos || line.find_first_not_of(" \t") == line.find('#')) continue;
+      const TraceOp op = ParseTraceLine(line, path, line_no); const std::string key = FixedTraceKey(op.key, cfg.fixed_key_size);
+      { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+        switch (op.kind) {
+          case TraceOpKind::kPut: { const std::string value = FixedTraceValue(cfg.fixed_value_size, &rng); query.run_replace(table->table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), *ti); break; }
+          case TraceOpKind::kGet: { lcdf::Str value; (void)query.run_get1(table->table(), lcdf::Str(key.data(), key.size()), 0, value, *ti); break; }
+          case TraceOpKind::kDelete: (void)query.run_remove(table->table(), lcdf::Str(key.data(), key.size()), *ti); break;
+          case TraceOpKind::kScan: { ScanCounter counter{op.len}; (void)table->table().scan(lcdf::Str(key.data(), key.size()), true, counter, *ti); break; }
+        }
       }
+      ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
+      (void)batch_ops;
     }
-    ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
-    (void)batch_ops;
-  }
+  } while (std::chrono::steady_clock::now() < deadline);
   ti->rcu_drain(); return total;
 }
 } // namespace
@@ -134,6 +138,7 @@ int main(int argc, char** argv) {
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
     std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr worker_failure; std::mutex worker_failure_mutex;
     const auto started = std::chrono::steady_clock::now();
+    const auto deadline = started + std::chrono::seconds(options.min_duration_sec);
     std::thread heartbeat_thread([&] {
       uint64_t previous = 0;
       while (!heartbeat_stop.load(std::memory_order_acquire)) {
@@ -150,7 +155,7 @@ int main(int argc, char** argv) {
       try {
         dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node); dsidle::ConfigureCurrentReplicaDirectory(replicas);
         threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker);
-        counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat);
+        counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat, deadline);
       } catch (...) { std::lock_guard<std::mutex> lock(worker_failure_mutex); if (!worker_failure) worker_failure = std::current_exception(); }
     };
     for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { replay_worker(worker); });

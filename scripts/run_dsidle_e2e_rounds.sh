@@ -107,6 +107,7 @@ if (( ! execute )); then
   for ((part = 0; part < ${#phase_names[@]}; ++part)); do
     for ((node = 0; node < vm_count; ++node)); do
       cmd=("$runner" --config "${phase_configs[$part]}" --phase "${phase_names[$part]}" --node "$node")
+      [[ "$suite" == concurrency ]] && cmd+=(--min-duration-sec 60)
       ((node == 0 && phase_bootstrap[part])) && cmd+=(--bootstrap)
       print_command timeout "$round_timeout" "${cmd[@]}"
     done
@@ -131,6 +132,7 @@ for ((round = 1; round <= rounds; ++round)); do
     for ((node = 0; node < vm_count; ++node)); do
       log="$out_dir/logs/${phase_names[$part]}_round_${round}_${phase_stages[$part]}_node${node}.log"
       cmd=("$runner" --config "${phase_configs[$part]}" --phase "${phase_names[$part]}" --node "$node")
+      [[ "$suite" == concurrency ]] && cmd+=(--min-duration-sec 60)
       ((node == 0 && phase_bootstrap[part])) && cmd+=(--bootstrap)
       timeout "$round_timeout" "${cmd[@]}" >"$log" 2>&1 & pids+=("$!")
     done
