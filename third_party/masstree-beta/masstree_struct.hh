@@ -133,12 +133,12 @@ class node_base : public make_nodeversion<P>::type {
 #endif
 
     node_base(bool isleaf, dsidle::NodeRef control_ref = {})
-        : nodeversion_type(isleaf), control_ref_(control_ref) {
+        : nodeversion_type(isleaf, control_ref), control_ref_(control_ref) {
     }
 
     node_base(bool isleaf, node_mem_type_t node_type, uint8_t depth, uint16_t time = 1,
               dsidle::NodeRef control_ref = {})
-        : nodeversion_type(isleaf), control_ref_(control_ref) {}
+        : nodeversion_type(isleaf, control_ref), control_ref_(control_ref) {}
 
     dsidle::NodeRef control_ref() const { return control_ref_; }
 
