@@ -83,14 +83,22 @@ for ((node = 0; node < vm_count; ++node)); do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir"
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$guest_config" "$ivshmem_module" "root@127.0.0.1:$remote_dir/"
-  # Keep an already-working custom ivshmem binding intact.  Rebinding it
-  # unconditionally can race its udev node recreation between VM rounds.
-  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "if ! test -c /dev/ivpci0; then dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ -L \"/sys/bus/pci/devices/\$dev/driver\" ] && printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod $remote_module; fi; test -c /dev/ivpci0"
+  # A /dev/ivpci0 symlink can be supplied by uio_pci_generic too, but its
+  # 4KiB UIO map is not the shared BAR.  Require the custom ivpci driver,
+  # mirroring the proven YCSB VM deployment path.
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; driver=\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\"); if [ \"\$driver\" != ivpci ]; then [ -L \"/sys/bus/pci/devices/\$dev/driver\" ] && printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod $remote_module; printf '%s' ivpci > \"/sys/bus/pci/devices/\$dev/driver_override\"; printf '%s' \"\$dev\" > /sys/bus/pci/drivers_probe; fi; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c /dev/ivpci0"
 done
 
 printf 'suite=%s rounds=%s config=%s runner=%s vm_count=%s\n' "$suite" "$rounds" "$config" "$runner" "$vm_count" >"$out_dir/run.meta"
 phase_prefix="e2e${suite}"
-phases=(fill read delete verify_delete scan)
+if [[ "$suite" == 08 ]]; then
+  # Match cxlkv e2e_08: distributed fill, then cross-VM random reads.
+  phases=(fill read)
+else
+  # Match cxlkv e2e_09: distributed fill, overwrite every key once, then
+  # cross-VM random reads that verify the updated 1000-byte value.
+  phases=(fill update read)
+fi
 for ((round = 1; round <= rounds; ++round)); do
   echo "DSIDLE_VM_E2E_ROUND_START suite=$suite round=$round"
   "$pool_tool" --init-pool --config "$config" --node-control-capacity "$node_capacity" --max-threads-per-vm "$max_threads" >"$out_dir/logs/pool_round_${round}.log" 2>&1

@@ -131,12 +131,12 @@ add_test(NAME dsidle_e2e_ycsb_suite_smoke
 set_tests_properties(dsidle_e2e_ycsb_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e08_suite_smoke
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e08-suite.XXXXXX); \"$1\" --execute --smoke --suite 08 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 2 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=08 phase=e2e08_scan node=3 status=ok' \"$out/logs/e2e08_scan_round_1_scan_node3.log\""
+    "out=$(mktemp -d /tmp/dsidle-e2e08-suite.XXXXXX); \"$1\" --execute --smoke --suite 08 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 2 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=08 phase=e2e08_read node=3 status=ok' \"$out/logs/e2e08_read_round_1_read_node3.log\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e08_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e09_suite_smoke
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e09-suite.XXXXXX); \"$1\" --execute --smoke --suite 09 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 2 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=09 phase=e2e09_scan node=3 status=ok' \"$out/logs/e2e09_scan_round_1_scan_node3.log\""
+    "out=$(mktemp -d /tmp/dsidle-e2e09-suite.XXXXXX); \"$1\" --execute --smoke --suite 09 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 2 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=09 phase=e2e09_read node=3 status=ok' \"$out/logs/e2e09_read_round_1_read_node3.log\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e09_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e09_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_vm_scripts_dry_run

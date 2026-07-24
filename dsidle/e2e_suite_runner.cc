@@ -10,12 +10,18 @@
 #include "masstree_scan.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 constexpr uint32_t kRecords = 100000;
@@ -38,7 +44,7 @@ Options Parse(int argc, char** argv) {
     else if (arg == "--phase") options.phase = take("--phase");
     else if (arg == "--node") options.node = Number(take("--node"), "node");
     else if (arg == "--bootstrap") options.bootstrap = true;
-    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_suite_runner --config PATH --phase e2e08_fill|e2e08_read|e2e08_delete|e2e08_verify_delete|e2e08_scan|e2e09_fill|e2e09_read|e2e09_delete|e2e09_verify_delete|e2e09_scan --node N [--bootstrap]\n"; std::exit(0); }
+    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_suite_runner --config PATH --phase e2e08_fill|e2e08_read|e2e09_fill|e2e09_update|e2e09_read --node N [--bootstrap]\n"; std::exit(0); }
     else Fail("unknown argument: " + arg);
   }
   if (options.phase.empty()) Fail("--phase is required");
@@ -50,77 +56,38 @@ Suite ParseSuite(const std::string& phase) {
   if (phase.rfind("e2e09_", 0) == 0) return {32, 1000, "09"};
   Fail("phase must start with e2e08_ or e2e09_");
 }
-bool EndsWith(const std::string& text, const char* suffix) {
-  const std::string value(suffix);
-  return text.size() >= value.size() && text.compare(text.size() - value.size(), value.size(), value) == 0;
-}
-std::string Key(const Suite& suite, uint32_t number) {
-  std::string result = std::string(suite.prefix) + std::to_string(number);
-  if (result.size() > suite.key_bytes) Fail("key encoding exceeds fixed size");
-  result.resize(suite.key_bytes, ' ');
+uint64_t StartForPart(uint64_t count, uint32_t parts, uint32_t part) { return count * part / parts; }
+uint64_t CountForPart(uint64_t count, uint32_t parts, uint32_t part) { return StartForPart(count, parts, part + 1) - StartForPart(count, parts, part); }
+char Base36(uint64_t value) { return static_cast<char>(value < 10 ? '0' + value : 'A' + (value - 10)); }
+uint64_t SplitMix64(uint64_t value) { value += 0x9e3779b97f4a7c15ULL; value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL; value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL; return value ^ (value >> 31U); }
+std::string Key(const Suite& suite, uint64_t index) {
+  std::string result(suite.key_bytes, '0'); result[0] = suite.prefix[0] == '0' ? 'k' : 'u';
+  for (uint32_t pos = suite.key_bytes - 1; pos > 0; --pos) { result[pos] = Base36(index % 36ULL); index /= 36ULL; }
   return result;
 }
-std::string Value(const Suite& suite, uint32_t number) {
-  std::string result(suite.value_bytes, static_cast<char>('!' + (number % 94)));
-  const std::string prefix = "v" + std::to_string(number) + ":";
-  std::memcpy(result.data(), prefix.data(), std::min(prefix.size(), result.size()));
+std::string Value(const Suite& suite, uint64_t index, uint64_t generation) {
+  if (suite.prefix[0] == '0') { std::string result(suite.value_bytes, '0'); for (uint32_t pos = suite.value_bytes; pos > 0; --pos) { result[pos - 1] = Base36(index % 36ULL); index /= 36ULL; } return result; }
+  std::string result(suite.value_bytes, '!'); uint64_t state = SplitMix64(index ^ (generation << 48U) ^ 0xC209ULL);
+  for (uint64_t i = 0; i < result.size(); ++i) { if ((i & 7ULL) == 0) state = SplitMix64(state + i + generation); result[i] = static_cast<char>('!' + ((state >> ((i & 7ULL) * 8ULL)) % 94ULL)); }
   return result;
 }
-struct ScanCount {
-  uint64_t count = 0;
-  template <typename S, typename K> void visit_leaf(const S&, const K&, threadinfo&) {}
-  bool visit_value(lcdf::Str, row_type*, threadinfo&) { ++count; return true; }
-};
-uint64_t Fill(Masstree::default_table& table, threadinfo& ti, const Suite& suite, uint32_t node, uint32_t nodes) {
-  // Masstree's writer version locks are intentionally local to a writer.  The
-  // e2e suite uses the other three processes for independent read/delete/scan
-  // verification, but keeps construction of a single tree serialized.
-  if (node != 0) return 0;
-  query<row_type> query;
-  uint64_t total = 0;
-  for (uint32_t index = 0; index < kRecords; ++index) {
-    const auto key = Key(suite, index), value = Value(suite, index);
-    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-    query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti);
-    ++total;
-  }
-  return total;
+uint64_t ReadIndex(const Suite& suite, uint32_t node, uint32_t worker, uint64_t seq) {
+  const uint64_t seed = (suite.prefix[0] == '0' ? 0xE2080000ULL : 0xE2090000ULL) ^ (uint64_t(node) << 32U) ^ (uint64_t(worker + 1) << 16U) ^ seq;
+  return SplitMix64(seed) % kRecords;
 }
-uint64_t ReadAndVerify(Masstree::default_table& table, threadinfo& ti, const Suite& suite, uint32_t node, uint32_t nodes, bool expect_deleted) {
-  query<row_type> query; uint64_t total = 0;
-  for (uint32_t index = node; index < kRecords; index += nodes) {
-    const bool deleted = index % kDeleteStride == 0;
-    lcdf::Str actual; const auto key = Key(suite, index);
-    { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      const bool found = query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti);
-      if (expect_deleted && deleted) { if (found) Fail("deleted key was returned"); }
-      else {
-        if (!found) Fail("expected key is absent");
-        const auto expected = Value(suite, index);
-        if (actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("read value differs from expected bytes");
-      }
-    }
-    ++total;
-  }
-  return total;
+uint64_t RunWorkers(Masstree::default_table& table, dsidle::SharedPool& pool, uint32_t vm_count, uint32_t node, uint32_t workers, const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
+  std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr failure; std::mutex failure_mutex;
+  for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { try { dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node); dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas); threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker); counts[worker] = operation(worker, *ti); } catch (...) { std::lock_guard<std::mutex> lock(failure_mutex); if (!failure) failure = std::current_exception(); } });
+  for (auto& thread : threads) thread.join(); if (failure) std::rethrow_exception(failure);
+  uint64_t total = 0; for (const auto count : counts) total += count; return total;
 }
-uint64_t Delete(Masstree::default_table& table, threadinfo& ti, const Suite& suite, uint32_t node) {
-  if (node != 1) return 0;
-  query<row_type> query; uint64_t total = 0;
-  for (uint32_t index = 0; index < kRecords; index += kDeleteStride) {
-    const auto key = Key(suite, index);
-    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-    query.run_remove(table.table(), lcdf::Str(key.data(), key.size()), ti); ++total;
-  }
-  return total;
+uint64_t Put(Masstree::default_table& table, dsidle::SharedPool& pool, const Suite& suite, uint32_t node, uint32_t nodes, uint32_t workers, uint64_t generation) {
+  const uint64_t node_start = StartForPart(kRecords, nodes, node), node_count = CountForPart(kRecords, nodes, node);
+  return RunWorkers(table, pool, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const auto key = Key(suite, node_start + start + i), value = Value(suite, node_start + start + i, generation); latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti); } return count; });
 }
-uint64_t ScanAndVerify(Masstree::default_table& table, threadinfo& ti, const Suite& suite, uint32_t node) {
-  if (node != 3) return 0;
-  ScanCount scan; const auto first = Key(suite, 0);
-  { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-    table.table().scan(lcdf::Str(first.data(), first.size()), true, scan, ti); }
-  if (scan.count != kRecords - kRecords / kDeleteStride) Fail("scan count does not match post-delete key count");
-  return scan.count;
+uint64_t ReadAndVerify(Masstree::default_table& table, dsidle::SharedPool& pool, const Suite& suite, uint32_t node, uint32_t nodes, uint32_t workers, uint64_t generation) {
+  const uint64_t node_count = CountForPart(kRecords, nodes, node);
+  return RunWorkers(table, pool, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
 }
 }  // namespace
 
@@ -141,11 +108,11 @@ int main(int argc, char** argv) {
     if (!options.bootstrap) table.table().attach();
     const auto begin = std::chrono::steady_clock::now();
     uint64_t operations = 0;
-    if (EndsWith(options.phase, "_fill")) operations = Fill(table, *ti, suite, options.node, cfg.vm_count);
-    else if (EndsWith(options.phase, "_read")) operations = ReadAndVerify(table, *ti, suite, options.node, cfg.vm_count, false);
-    else if (EndsWith(options.phase, "_delete")) operations = Delete(table, *ti, suite, options.node);
-    else if (EndsWith(options.phase, "_verify_delete")) operations = ReadAndVerify(table, *ti, suite, options.node, cfg.vm_count, true);
-    else if (EndsWith(options.phase, "_scan")) operations = ScanAndVerify(table, *ti, suite, options.node);
+    if (options.phase == "e2e08_fill") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e08_read") operations = ReadAndVerify(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_fill") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_update") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
+    else if (options.phase == "e2e09_read") operations = ReadAndVerify(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else Fail("unknown suite phase action");
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count());

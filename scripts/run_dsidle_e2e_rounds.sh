@@ -91,9 +91,15 @@ if [[ "$suite" == ycsb ]]; then
   phase_names=(load workloada); phase_configs=("$load_config" "$run_config"); phase_bootstrap=(1 0); phase_stages=(load run)
 elif [[ "$suite" == 08 || "$suite" == 09 ]]; then
   suite_phase="e2e${suite}"
-  phase_names=("${suite_phase}_fill" "${suite_phase}_read" "${suite_phase}_delete" "${suite_phase}_verify_delete" "${suite_phase}_scan")
-  phase_configs=("$config" "$config" "$config" "$config" "$config")
-  phase_bootstrap=(1 0 0 0 0); phase_stages=(fill read delete verify_delete scan)
+  if [[ "$suite" == 08 ]]; then
+    phase_names=("${suite_phase}_fill" "${suite_phase}_read")
+    phase_configs=("$config" "$config")
+    phase_bootstrap=(1 0); phase_stages=(fill read)
+  else
+    phase_names=("${suite_phase}_fill" "${suite_phase}_update" "${suite_phase}_read")
+    phase_configs=("$config" "$config" "$config")
+    phase_bootstrap=(1 0 0); phase_stages=(fill update read)
+  fi
 else
   phase_names=("$phase"); phase_configs=("$config"); phase_bootstrap=(1); phase_stages=([0]=$([[ "$phase" == load ]] && echo load || echo run))
 fi
