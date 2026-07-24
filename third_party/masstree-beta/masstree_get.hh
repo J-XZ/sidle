@@ -18,6 +18,7 @@
 #include "masstree_tcursor.hh"
 #include "masstree_key.hh"
 #include "masstree_replica.hh"
+#include "masstree_internal_replica.hh"
 namespace Masstree {
 
 template <typename P>

@@ -67,6 +67,8 @@ class ReplicaDirectory {
   void* ResetForReuse(NodeRef ref);
   void RecordAccess(NodeRef ref) const;
   std::uint64_t AccessCount(NodeRef ref) const;
+  void RecordInternalHit() { internal_hits_.fetch_add(1, std::memory_order_relaxed); }
+  std::uint64_t InternalHits() const { return internal_hits_.load(std::memory_order_relaxed); }
 
  private:
   static constexpr std::uint64_t kSlotsPerSegment = 4096;
@@ -92,6 +94,7 @@ class ReplicaDirectory {
   std::uint64_t segment_count_{};
   std::unique_ptr<std::atomic<Segment*>[]> segments_;
   mutable std::mutex segment_mutex_;
+  std::atomic<std::uint64_t> internal_hits_{0};
 };
 
 // Replica directories and buffers are process-local. Bind one per worker

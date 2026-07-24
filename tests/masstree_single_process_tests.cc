@@ -10,6 +10,7 @@
 #include "masstree_remove.hh"
 #include "masstree_scan.hh"
 #include "masstree_replica.hh"
+#include "masstree_internal_replica.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -131,12 +132,33 @@ int main() {
   }
   assert(replicas.AccessCount(table.table().root()->control_ref()) > 0);
 
-  // Encode a stable canonical leaf into local DRAM and read its copied row
-  // without following its canonical ValueRef or suffix pointer.
-  const auto& replica_key_text = expected.begin()->first;
   using replica_params = Masstree::default_table::parameters_type;
   using replica_key_type = Masstree::key<typename replica_params::ikey_type>;
   using replica_node_type = Masstree::node_base<replica_params>;
+  assert(!table.table().root()->isleaf());
+  auto* canonical_root = static_cast<Masstree::internode<replica_params>*>(table.table().root());
+  const auto root_replica_version = canonical_root->stable();
+  assert(Masstree::internode_replica<replica_params>::Promote(*canonical_root, root_replica_version, replicas));
+  const auto root_generation = canonical_root->control_ref().get(pool.base())->generation;
+  auto root_replica = replicas.Acquire(canonical_root->control_ref(), root_generation,
+                                       root_replica_version.version_value());
+  assert(root_replica);
+  const auto& root_key_text = expected.begin()->first;
+  replica_key_type root_key(root_key_text.data(), root_key_text.size());
+  const auto replica_child = Masstree::internode_replica<replica_params>::LookupChild(
+      root_replica.snapshot().local_ptr, root_key);
+  const auto canonical_child_index = Masstree::internode<replica_params>::bound_type::upper(root_key, *canonical_root);
+  assert(replica_child == canonical_root->child_[canonical_child_index].ref());
+  root_replica = {};
+  Masstree::unlocked_tcursor<replica_params> root_replica_cursor(
+      table.table(), lcdf::Str(root_key_text.data(), root_key_text.size()));
+  assert(root_replica_cursor.find_unlocked(*ti));
+  assert(replicas.InternalHits() > 0);
+  std::free(replicas.Invalidate(canonical_root->control_ref()));
+
+  // Encode a stable canonical leaf into local DRAM and read its copied row
+  // without following its canonical ValueRef or suffix pointer.
+  const auto& replica_key_text = expected.begin()->first;
   replica_key_type replica_key(replica_key_text.data(), replica_key_text.size());
   typename replica_node_type::nodeversion_type replica_version;
   auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);

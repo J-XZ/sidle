@@ -31,6 +31,8 @@
 
 namespace Masstree {
 
+template <typename P> class internode_replica;
+
 // dsidle: 8-byte persistent tree edge.  Conversions only resolve a transient
 // address at the use site; no process virtual address is stored in SWCC.
 template <typename T>
@@ -899,8 +901,22 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
     while (!v[sense].isleaf()) {
         const internode<P> *in = static_cast<const internode<P>*>(n[sense]);
         in->prefetch();
-        int kp = internode<P>::bound_type::upper(ka, *in);
-        n[sense ^ 1] = in->child_[kp];
+        node_base<P>* child = nullptr;
+        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull()) {
+            const auto ref = in->control_ref();
+            const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+            auto handle = replicas->Acquire(ref, generation, v[sense].version_value());
+            if (handle && handle.snapshot().kind == dsidle::ReplicaKind::kInternal) {
+                const auto child_ref = internode_replica<P>::LookupChild(handle.snapshot().local_ptr, ka);
+                child = dsidle::ResolveCanonicalNode<node_base<P>>(child_ref);
+                replicas->RecordInternalHit();
+            }
+        }
+        if (!child) {
+            int kp = internode<P>::bound_type::upper(ka, *in);
+            child = in->child_[kp];
+        }
+        n[sense ^ 1] = child;
         if (n[sense ^ 1]) {
             if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
                 replicas->RecordAccess(n[sense ^ 1]->control_ref());
@@ -908,7 +924,7 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
 #ifdef CAL_NODE_HOTNESS
         n[sense ^ 1]->record_access();
 #endif
-        if (!n[sense ^ 1]) {
+        if (!child) {
             goto retry;
         }
         v[sense ^ 1] = n[sense ^ 1]->stable_annotated(ti.stable_fence());
