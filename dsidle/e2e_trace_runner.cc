@@ -115,6 +115,10 @@ int main(int argc, char** argv) {
   try {
     const Options options = ParseOptions(argc, argv); const auto cfg = dsidle::LoadExperimentConfig(options.config);
     if (options.node >= cfg.vm_count) Fail("node is outside vm.count");
+#ifndef NDEBUG
+    if (cfg.latency_inject.enabled)
+      Fail("enabled latency injection requires a RelWithDebInfo/non-Debug build");
+#endif
     auto pool = dsidle::SharedPool::Attach(cfg.shared_path, cfg.shared_size_mb << 20);
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
