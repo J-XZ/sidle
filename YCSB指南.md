@@ -64,6 +64,9 @@ python3 scripts/summarize_ycsb_experiment.py \
   --log-dir tests/data/ycsb_logs --out-dir "$out"
 ```
 
+汇总的 `ops_per_sec` 使用各轮节点最大耗时的均值；`ops_per_sec_p50` 与
+`ops_per_sec_p90` 则基于单轮吞吐计算，用于报告离散度。预热轮不参与这些字段。
+
 ## 中断与失败处理
 
 准备模式只创建指定输出目录；中断后可以选择新的 `--out-dir` 重跑。若只需物化

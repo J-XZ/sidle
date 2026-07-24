@@ -3,12 +3,18 @@
 import argparse
 import csv
 import json
+import math
 import re
 from pathlib import Path
 from statistics import mean
 
 TRACE = re.compile(r"E2E_TRACE_TIME_US phase=(?P<phase>\S+) node=(?P<node>\d+) ops=(?P<ops>\d+) duration_us=(?P<duration>\d+)")
 NAME = re.compile(r"(?P<case>load|workload[abcde])_round_(?P<round>\d+)_(?P<stage>load|run)_node\d+\.log$")
+
+def percentile(values, fraction):
+    """Nearest-rank percentile; deterministic even for a single formal round."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
 
 def main():
     parser = argparse.ArgumentParser()
@@ -38,13 +44,14 @@ def main():
         rows = [row for row in wanted if (row["case"], row["stage"]) == key]
         avg_ops_sum = mean(row["ops_sum"] for row in rows)
         avg_duration_sec = mean(row["duration_sec_max"] for row in rows)
-        cases.append({"case": key[0], "stage": key[1], "rounds": len(rows), "ops_sum": avg_ops_sum, "duration_sec_max": avg_duration_sec, "avg_ops_sum": avg_ops_sum, "avg_duration_sec": avg_duration_sec, "ops_per_sec": avg_ops_sum / avg_duration_sec})
+        per_round_ops = [row["ops_sum"] / row["duration_sec_max"] for row in rows]
+        cases.append({"case": key[0], "stage": key[1], "rounds": len(rows), "ops_sum": avg_ops_sum, "duration_sec_max": avg_duration_sec, "avg_ops_sum": avg_ops_sum, "avg_duration_sec": avg_duration_sec, "ops_per_sec": avg_ops_sum / avg_duration_sec, "ops_per_sec_p50": percentile(per_round_ops, 0.50), "ops_per_sec_p90": percentile(per_round_ops, 0.90)})
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "ycsb_summary.json").write_text(json.dumps({"metadata": metadata, "rounds": rounds, "cases": cases}, indent=2) + "\n")
     with (args.out_dir / "ycsb_summary.csv").open("w", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=list(cases[0])); writer.writeheader(); writer.writerows(cases)
-    lines = ["# YCSB 实验报告", "", "| case | stage | rounds | avg_ops_sum | avg_duration_sec | ops_per_sec |", "| --- | --- | ---: | ---: | ---: | ---: |"]
-    lines += [f"| {row['case']} | {row['stage']} | {row['rounds']} | {row['avg_ops_sum']:.0f} | {row['avg_duration_sec']:.6f} | {row['ops_per_sec']:.2f} |" for row in cases]
+    lines = ["# YCSB 实验报告", "", "| case | stage | rounds | avg_ops_sum | avg_duration_sec | ops_per_sec | p50 | p90 |", "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    lines += [f"| {row['case']} | {row['stage']} | {row['rounds']} | {row['avg_ops_sum']:.0f} | {row['avg_duration_sec']:.6f} | {row['ops_per_sec']:.2f} | {row['ops_per_sec_p50']:.2f} | {row['ops_per_sec_p90']:.2f} |" for row in cases]
     (args.out_dir / "YCSB实验报告.md").write_text("\n".join(lines) + "\n")
 
 if __name__ == "__main__": main()
