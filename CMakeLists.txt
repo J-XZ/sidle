@@ -33,7 +33,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   add_link_options(-flto=full)
 endif()
 
-add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc)
+add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc dsidle/shard_allocator.cc)
 target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
@@ -46,3 +46,7 @@ set_tests_properties(dsidle_config_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CU
 add_executable(dsidle_shared_pool_tests tests/shared_pool_tests.cc)
 target_link_libraries(dsidle_shared_pool_tests PRIVATE dsidle)
 add_test(NAME dsidle_shared_pool_tests COMMAND dsidle_shared_pool_tests)
+
+add_executable(dsidle_shard_allocator_tests tests/shard_allocator_tests.cc)
+target_link_libraries(dsidle_shard_allocator_tests PRIVATE dsidle)
+add_test(NAME dsidle_shard_allocator_tests COMMAND dsidle_shard_allocator_tests)
