@@ -18,4 +18,18 @@ class EpochTable {
   EpochSlot& Slot(std::uint32_t vm, std::uint32_t thread) { if(thread>=threads_ || vm>=slots_.size()/threads_) throw std::runtime_error("invalid epoch slot"); return slots_[vm*threads_+thread]; }
   std::vector<EpochSlot> slots_; std::uint32_t threads_;
 };
+
+// A pool-resident view used by the distributed runtime; its backing slots are
+// allocated in HWCC and therefore survive process attach at different bases.
+class SharedEpochTable {
+ public:
+  SharedEpochTable(void* base, std::uint64_t offset, std::uint32_t vms, std::uint32_t threads)
+      : slots_(reinterpret_cast<EpochSlot*>(static_cast<std::byte*>(base) + offset)), vms_(vms), threads_(threads) {}
+  void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) { Slot(vm, thread).value.store(epoch, std::memory_order_release); }
+  void Leave(std::uint32_t vm, std::uint32_t thread) { Slot(vm, thread).value.store(kEpochInactive, std::memory_order_release); }
+  std::uint64_t MinimumActive() const { std::uint64_t min=kEpochInactive; for (std::uint32_t i=0;i<vms_*threads_;++i) { auto v=slots_[i].value.load(std::memory_order_acquire); if(v!=kEpochInactive && v<min) min=v; } return min; }
+ private:
+  EpochSlot& Slot(std::uint32_t vm, std::uint32_t thread) { if(vm>=vms_ || thread>=threads_) throw std::runtime_error("invalid epoch slot"); return slots_[vm*threads_+thread]; }
+  EpochSlot* slots_; std::uint32_t vms_, threads_;
+};
 }
