@@ -66,7 +66,7 @@ static void treestats1(node_base<P>* n, unsigned height) {
         sz = in->size();
         for (int i = 0; i <= sz; ++i)
             if (in->child_[i])
-                treestats1(in->child_[i], height + 1);
+                treestats1(static_cast<node_base<P>*>(in->child_[i]), height + 1);
     }
     assert((size_t) sz < arraysize(fillcounts));
     fillcounts[sz] += 1;

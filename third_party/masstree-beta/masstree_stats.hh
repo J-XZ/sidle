@@ -84,7 +84,7 @@ void node_json_stats(node_base<P>* n, lcdf::Json& j, int layer, int depth,
         internode<P> *in = static_cast<internode<P> *>(n);
         for (int i = 0; i <= in->size(); ++i)
             if (in->child_[i])
-                node_json_stats(in->child_[i], j, layer, depth + 1, ti);
+                node_json_stats(static_cast<node_base<P>*>(in->child_[i]), j, layer, depth + 1, ti);
         j[&"l1_node_by_depth"[!layer * 3]][depth] += 1;
         j[&"l1_internode_by_size"[!layer * 3]][in->size()] += 1;
     }

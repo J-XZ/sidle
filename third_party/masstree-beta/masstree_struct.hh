@@ -30,6 +30,32 @@
 
 namespace Masstree {
 
+// dsidle: 8-byte persistent tree edge.  Conversions only resolve a transient
+// address at the use site; no process virtual address is stored in SWCC.
+template <typename T>
+class node_link {
+  public:
+    constexpr node_link() = default;
+    node_link(std::nullptr_t) : ref_() {}
+    node_link(T* node) { *this = node; }
+    node_link& operator=(T* node) {
+        ref_ = node ? node->control_ref() : dsidle::NodeRef();
+        return *this;
+    }
+    node_link& operator=(std::nullptr_t) {
+        ref_ = dsidle::NodeRef();
+        return *this;
+    }
+    operator T*() const { return dsidle::ResolveCanonicalNode<T>(ref_); }
+    T* operator->() const { return dsidle::ResolveCanonicalNode<T>(ref_); }
+    explicit operator bool() const { return static_cast<bool>(ref_); }
+    dsidle::NodeRef ref() const { return ref_; }
+
+  private:
+    dsidle::NodeRef ref_{};
+};
+static_assert(sizeof(node_link<void>) == sizeof(std::uint64_t));
+
 template <typename P>
 struct make_nodeversion {
     typedef nodeversion_parameters<typename P::nodeversion_value_type> parameters_type;
@@ -150,7 +176,7 @@ class internode : public node_base<P> {
 #endif
     uint32_t height_;
     ikey_type ikey0_[width];
-    node_base<P>* child_[width + 1];
+    node_link<node_base<P> > child_[width + 1];
     node_base<P>* parent_;
     kvtimestamp_t created_at_[P::debug_level > 0];
     
@@ -266,12 +292,12 @@ class internode : public node_base<P> {
     }
     void shift_up(int p, int xp, int n) {
         memmove(ikey0_ + p, ikey0_ + xp, sizeof(ikey0_[0]) * n);
-        for (node_base<P> **a = child_ + p + n, **b = child_ + xp + n; n; --a, --b, --n)
+        for (auto* a = child_ + p + n, *b = child_ + xp + n; n; --a, --b, --n)
             *a = *b;
     }
     void shift_down(int p, int xp, int n) {
         memmove(ikey0_ + p, ikey0_ + xp, sizeof(ikey0_[0]) * n);
-        for (node_base<P> **a = child_ + p + 1, **b = child_ + xp + 1; n; ++a, ++b, --n)
+        for (auto* a = child_ + p + 1, *b = child_ + xp + 1; n; ++a, ++b, --n)
             *a = *b;
     }
 
