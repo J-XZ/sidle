@@ -141,7 +141,10 @@ for index in range(count):
 if execute and not dry:
     for index in range(count):
         port = int(vm['ssh_base_port']) + index
-        ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5', '-p', str(port), 'root@127.0.0.1']
+        # Match cxlkv's disposable-VM SSH policy: rebuilt images intentionally
+        # regenerate host keys, so the host known_hosts database must not gate
+        # the launch verification.
+        ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5', '-p', str(port), 'root@127.0.0.1']
         for _ in range(60):
             if subprocess.run(ssh + ['true'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0: break
             time.sleep(1)

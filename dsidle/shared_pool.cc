@@ -151,8 +151,12 @@ SharedPool SharedPool::Attach(const std::string& path, std::uint64_t expected_by
   if (fd < 0) Fail("open", path);
   struct stat status {};
   if (fstat(fd, &status) != 0) { close(fd); Fail("stat", path); }
-  if (status.st_size <= 0) { close(fd); throw std::runtime_error("empty D-SIDLE shared pool"); }
-  const auto bytes = static_cast<std::uint64_t>(status.st_size);
+  // The host backing file reports its extent through fstat().  A guest maps
+  // the same BAR through the UIO character device, whose st_size is defined
+  // as zero; use the experiment's explicit BAR size in that case.
+  const auto bytes = status.st_size > 0 ? static_cast<std::uint64_t>(status.st_size)
+                                        : (S_ISCHR(status.st_mode) ? expected_bytes : 0);
+  if (!bytes) { close(fd); throw std::runtime_error("empty D-SIDLE shared pool"); }
   void* base = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (base == MAP_FAILED) { close(fd); Fail("map", path); }
   try { ValidateHeader(*static_cast<PoolHeader*>(base), expected_bytes); }
@@ -168,7 +172,9 @@ SharedPool SharedPool::AttachAt(const std::string& path, std::uint64_t expected_
   if (fd < 0) Fail("open", path);
   struct stat status {};
   if (fstat(fd, &status) != 0) { close(fd); Fail("stat", path); }
-  const auto bytes = static_cast<std::uint64_t>(status.st_size);
+  const auto bytes = status.st_size > 0 ? static_cast<std::uint64_t>(status.st_size)
+                                        : (S_ISCHR(status.st_mode) ? expected_bytes : 0);
+  if (!bytes) { close(fd); throw std::runtime_error("empty D-SIDLE shared pool"); }
   void* base = mmap(requested_base, bytes, PROT_READ | PROT_WRITE,
                     MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
   if (base == MAP_FAILED) { close(fd); Fail("map at requested base", path); }

@@ -8,7 +8,7 @@ build/
 *.o
 *.in
 *.csv
-image/.mkosi-*/
+image/.mkosi-*
 image/root.img
 image/root.img.manifest
 image/rootfs/root/

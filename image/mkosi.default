@@ -18,6 +18,7 @@ Packages=systemd
          openssh-server
          ca-certificates
          build-essential
+         clang
          cmake
          ninja-build
          git
@@ -26,6 +27,9 @@ Packages=systemd
          numactl
          iproute2
          procps
+         rsync
+         gdb
+         tar
 ExtraTrees=rootfs
 PostInstallationScript=mkosi.postinst
 
