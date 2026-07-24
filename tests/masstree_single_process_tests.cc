@@ -12,6 +12,7 @@
 #include "masstree_replica.hh"
 #include "masstree_internal_replica.hh"
 #include "masstree_root_replica.hh"
+#include "masstree_replica_worker.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -194,6 +195,17 @@ int main() {
     assert(replica_cursor.used_replica());
     assert(replica_cursor.value()->col(0).len == expected.begin()->second.size());
   }
+  // D-SIDLE executor candidates are generation-qualified NodeRefs. It only
+  // publishes/evicts local buffers and leaves the canonical node untouched.
+  Masstree::replica_executor<replica_params> replica_executor(replicas);
+  std::free(replicas.Invalidate(canonical_leaf->control_ref()));
+  assert(replica_executor.Promote({canonical_leaf->control_ref(), promote_generation}));
+  assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                          promote_version.version_value()));
+  assert(!replica_executor.Promote({canonical_leaf->control_ref(), promote_generation + 1}));
+  assert(replica_executor.Demote({canonical_leaf->control_ref(), promote_generation}));
+  assert(!replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                           promote_version.version_value()));
   const std::string replica_updated = "replica-local-write";
   query.run_replace(table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()),
                     lcdf::Str(replica_updated.data(), replica_updated.size()), *ti);
