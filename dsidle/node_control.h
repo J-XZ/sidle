@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <type_traits>
+#include "dsidle/latency_simulator.h"
 
 namespace dsidle {
 
@@ -120,6 +121,7 @@ class NodeVersionAccessor {
 
   StableView stable() const {
     NodeControl* control = Control();
+    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
     std::uint64_t version = control->version_and_state.load(std::memory_order_acquire);
     while (version & MasstreeNodeVersionBits::dirty_mask)
       version = control->version_and_state.load(std::memory_order_acquire);
@@ -128,6 +130,7 @@ class NodeVersionAccessor {
 
   bool try_lock(std::uint64_t* locked_version = nullptr) const {
     NodeControl* control = Control();
+    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
     auto expected = control->version_and_state.load(std::memory_order_acquire);
     while (!(expected & (MasstreeNodeVersionBits::lock_bit | MasstreeNodeVersionBits::dirty_mask))) {
       if (control->version_and_state.compare_exchange_weak(expected, expected | MasstreeNodeVersionBits::lock_bit,
@@ -146,7 +149,9 @@ class NodeVersionAccessor {
     const auto next = locked_version & MasstreeNodeVersionBits::splitting_bit
         ? (locked_version + MasstreeNodeVersionBits::vsplit_lowbit) & MasstreeNodeVersionBits::split_unlock_mask
         : (locked_version + ((locked_version & MasstreeNodeVersionBits::inserting_bit) << 2)) & MasstreeNodeVersionBits::unlock_mask;
-    Control()->version_and_state.store(next, std::memory_order_release);
+    auto* control = Control();
+    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
+    control->version_and_state.store(next, std::memory_order_release);
   }
 
  private:
