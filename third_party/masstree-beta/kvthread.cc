@@ -100,12 +100,12 @@ inline unsigned limbo_group::clean_until(threadinfo& ti, mrcu_epoch_type epoch_b
                                          unsigned count) {
     epoch_type epoch = 0;
     while (head_ != tail_) {
-        if (e_[head_].ptr_) {
-            ti.free_rcu(e_[head_].ptr_, e_[head_].u_.tag);
+        if (e_[head_].ref_) {
+            ti.free_rcu(e_[head_].ref_, e_[head_].u_.tag);
             ti.mark(tc_gc);
             --count;
             if (!count) {
-                e_[head_].ptr_ = nullptr;
+                e_[head_].ref_ = 0;
                 e_[head_].u_.epoch = epoch;
                 break;
             }
@@ -170,11 +170,15 @@ void threadinfo::report_rcu(void *ptr) const
                 status = 0;
                 e = 0;
             }
-            if (lg->e_[i].ptr_ == ptr)
+            const uint64_t ref = (lg->e_[i].u_.tag != memtag(-1) &&
+                                  (lg->e_[i].u_.tag & memtag_pool_mask))
+                ? uint64_t(reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase()))
+                : reinterpret_cast<uint64_t>(ptr);
+            if (lg->e_[i].ref_ == ref)
                 fprintf(stderr, "thread %d: rcu %p@%d: %s as %x @%" PRIu64 "\n",
                         index_, lg, i, status ? "waiting" : "freed",
                         lg->e_[i].u_.tag, e);
-            else if (!lg->e_[i].ptr_)
+            else if (!lg->e_[i].ref_)
                 e = lg->e_[i].u_.epoch;
         }
     }

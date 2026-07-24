@@ -45,7 +45,9 @@ struct limbo_group {
     typedef mrcu_signed_epoch_type signed_epoch_type;
 
     struct limbo_element {
-        void* ptr_;
+        // dsidle: canonical pooled objects are recorded as SWCC offsets.
+        // Non-pooled callback objects remain process-local addresses.
+        uint64_t ref_;
         union {
             memtag tag;
             epoch_type epoch;
@@ -68,12 +70,14 @@ struct limbo_group {
     void push_back(void* ptr, memtag tag, mrcu_epoch_type epoch) {
         assert(tail_ + 2 <= capacity);
         if (head_ == tail_ || epoch_ != epoch) {
-            e_[tail_].ptr_ = nullptr;
+            e_[tail_].ref_ = 0;
             e_[tail_].u_.epoch = epoch;
             epoch_ = epoch;
             ++tail_;
         }
-        e_[tail_].ptr_ = ptr;
+        e_[tail_].ref_ = (tag != memtag(-1) && (tag & memtag_pool_mask))
+            ? uint64_t(reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(dsidle::SharedPoolBase()))
+            : reinterpret_cast<uint64_t>(ptr);
         e_[tail_].u_.tag = tag;
         ++tail_;
     }
@@ -339,7 +343,10 @@ class threadinfo {
     void refill_local_pool(int nl);
     void refill_rcu();
 
-    void free_rcu(void *p, memtag tag) {   
+    void free_rcu(uint64_t ref, memtag tag) {
+        void* p = (tag != memtag(-1) && (tag & memtag_pool_mask))
+            ? dsidle::SwccOffset<std::byte>(ref).get(dsidle::SharedPoolBase())
+            : reinterpret_cast<void*>(ref);
         if ((tag & memtag_pool_mask) == 0) {
             p = memdebug::check_free_after_rcu(p, tag);
             ::free(p);
