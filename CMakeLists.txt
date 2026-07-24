@@ -43,17 +43,26 @@ target_link_libraries(dsidle_shared_pool PRIVATE dsidle)
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
+target_compile_options(dsidle_config_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_config_tests COMMAND dsidle_config_tests)
 set_tests_properties(dsidle_config_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_shared_pool_tests tests/shared_pool_tests.cc)
 target_link_libraries(dsidle_shared_pool_tests PRIVATE dsidle)
+target_compile_options(dsidle_shared_pool_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_shared_pool_tests COMMAND dsidle_shared_pool_tests)
 
 add_executable(dsidle_shard_allocator_tests tests/shard_allocator_tests.cc)
 target_link_libraries(dsidle_shard_allocator_tests PRIVATE dsidle)
+target_compile_options(dsidle_shard_allocator_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_shard_allocator_tests COMMAND dsidle_shard_allocator_tests)
 
 add_executable(dsidle_epoch_tests tests/epoch_tests.cc)
 target_link_libraries(dsidle_epoch_tests PRIVATE dsidle)
+target_compile_options(dsidle_epoch_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_epoch_tests COMMAND dsidle_epoch_tests)
+
+add_executable(dsidle_node_control_tests tests/node_control_tests.cc)
+target_link_libraries(dsidle_node_control_tests PRIVATE dsidle)
+target_compile_options(dsidle_node_control_tests PRIVATE -UNDEBUG)
+add_test(NAME dsidle_node_control_tests COMMAND dsidle_node_control_tests)
