@@ -83,7 +83,7 @@ add_test(NAME dsidle_e2e_trace_runner_2vm_smoke
 set_tests_properties(dsidle_e2e_trace_runner_2vm_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_summarizer_tests
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-summary.XXXXXX); python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\""
+    "out=$(mktemp -d /tmp/dsidle-ycsb-summary.XXXXXX); python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\" && grep -q 'avg_ops_sum' \"$out/ycsb_summary.csv\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_ycsb_experiment.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ycsb_logs)
 set_tests_properties(dsidle_ycsb_summarizer_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_prepare_only_tests

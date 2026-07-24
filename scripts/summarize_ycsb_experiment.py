@@ -36,13 +36,15 @@ def main():
     wanted = [row for row in rounds if (row["case"] == "load" and row["stage"] == "load") or (row["case"].startswith("workload") and row["stage"] == "run")]
     for key in sorted(set((row["case"], row["stage"]) for row in wanted)):
         rows = [row for row in wanted if (row["case"], row["stage"]) == key]
-        cases.append({"case": key[0], "stage": key[1], "rounds": len(rows), "ops_sum": mean(row["ops_sum"] for row in rows), "duration_sec_max": mean(row["duration_sec_max"] for row in rows), "avg_duration_sec": mean(row["avg_duration_sec"] for row in rows), "ops_per_sec": mean(row["ops_sum"] for row in rows) / mean(row["duration_sec_max"] for row in rows)})
+        avg_ops_sum = mean(row["ops_sum"] for row in rows)
+        avg_duration_sec = mean(row["duration_sec_max"] for row in rows)
+        cases.append({"case": key[0], "stage": key[1], "rounds": len(rows), "ops_sum": avg_ops_sum, "duration_sec_max": avg_duration_sec, "avg_ops_sum": avg_ops_sum, "avg_duration_sec": avg_duration_sec, "ops_per_sec": avg_ops_sum / avg_duration_sec})
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "ycsb_summary.json").write_text(json.dumps({"metadata": metadata, "rounds": rounds, "cases": cases}, indent=2) + "\n")
     with (args.out_dir / "ycsb_summary.csv").open("w", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=list(cases[0])); writer.writeheader(); writer.writerows(cases)
-    lines = ["# YCSB 实验报告", "", "| case | stage | rounds | ops_sum | duration_sec_max | ops_per_sec |", "| --- | --- | ---: | ---: | ---: | ---: |"]
-    lines += [f"| {row['case']} | {row['stage']} | {row['rounds']} | {row['ops_sum']:.0f} | {row['duration_sec_max']:.6f} | {row['ops_per_sec']:.2f} |" for row in cases]
+    lines = ["# YCSB 实验报告", "", "| case | stage | rounds | avg_ops_sum | avg_duration_sec | ops_per_sec |", "| --- | --- | ---: | ---: | ---: | ---: |"]
+    lines += [f"| {row['case']} | {row['stage']} | {row['rounds']} | {row['avg_ops_sum']:.0f} | {row['avg_duration_sec']:.6f} | {row['ops_per_sec']:.2f} |" for row in cases]
     (args.out_dir / "YCSB实验报告.md").write_text("\n".join(lines) + "\n")
 
 if __name__ == "__main__": main()
