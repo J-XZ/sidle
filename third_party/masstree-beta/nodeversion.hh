@@ -17,6 +17,7 @@
 #define MASSTREE_NODEVERSION_HH
 #include "compiler.hh"
 #include "dsidle/shared_pool.h"
+#include "dsidle/swcc_visibility.h"
 
 template <typename P>
 class nodeversion {
@@ -155,6 +156,14 @@ class nodeversion {
             x.v_ = (x.v_ + P::vsplit_lowbit) & P::split_unlock_mask;
         else
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
+        if (control_ref_) {
+            // dsidle: canonical leaf/internode bodies are bounded by the
+            // baseline 512B node envelope; publish their SWCC writes before
+            // releasing the matching HWCC version.
+            auto* control = control_ref_.get(dsidle::SharedPoolBase());
+            dsidle::FlushSwccRange(static_cast<std::byte*>(dsidle::SharedPoolBase()) +
+                                       control->canonical_swcc_offset, 512);
+        }
         release_fence();
         store(x.v_);
         masstree_invariant(!(load() & P::lock_bit));

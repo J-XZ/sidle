@@ -379,6 +379,8 @@ class leafvalue {
         return dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
     }
     void set_value(value_type value) {
+        if (value)
+            dsidle::FlushSwccRange(value, value->size());
         raw_ = value ? dsidle::SwccOffset<value_element_type>(
             reinterpret_cast<std::byte*>(value) - static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
     }

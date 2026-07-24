@@ -6,6 +6,7 @@
 #include "masstree_tcursor.hh"
 #include "masstree_get.hh"
 #include "masstree_insert.hh"
+#include "masstree_remove.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -103,6 +104,61 @@ int main() {
   int reader_status = 0;
   assert(waitpid(reader, &reader_status, 0) == reader);
   assert(WIFEXITED(reader_status) && WEXITSTATUS(reader_status) == 0);
+
+  const std::string writer_key = expected.begin()->first;
+  const std::string writer_value = "child-overwrite";
+  const pid_t writer = fork();
+  assert(writer >= 0);
+  if (writer == 0) {
+    pool.Close();
+    try {
+      auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+      dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+      Masstree::default_table child_table;
+      child_table.table().attach();
+      query.run_replace(child_table.table(), lcdf::Str(writer_key.data(), writer_key.size()),
+                        lcdf::Str(writer_value.data(), writer_value.size()), *child_ti);
+    } catch (...) {
+      _exit(4);
+    }
+    _exit(0);
+  }
+  int writer_status = 0;
+  assert(waitpid(writer, &writer_status, 0) == writer);
+  assert(WIFEXITED(writer_status) && WEXITSTATUS(writer_status) == 0);
+  expected[writer_key] = writer_value;
+  lcdf::Str overwritten;
+  assert(query.run_get1(table.table(), lcdf::Str(writer_key.data(), writer_key.size()), 0, overwritten, *ti));
+  assert(overwritten.len == writer_value.size());
+  assert(std::memcmp(overwritten.s, writer_value.data(), overwritten.len) == 0);
+
+  auto delete_it = expected.begin();
+  if (delete_it->first == writer_key) ++delete_it;
+  const std::string delete_key = delete_it->first;
+  const pid_t remover = fork();
+  assert(remover >= 0);
+  if (remover == 0) {
+    pool.Close();
+    try {
+      auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+      dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+      threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+      Masstree::default_table child_table;
+      child_table.table().attach();
+      if (!query.run_remove(child_table.table(), lcdf::Str(delete_key.data(), delete_key.size()), *child_ti))
+        _exit(5);
+    } catch (...) {
+      _exit(6);
+    }
+    _exit(0);
+  }
+  int remover_status = 0;
+  assert(waitpid(remover, &remover_status, 0) == remover);
+  assert(WIFEXITED(remover_status) && WEXITSTATUS(remover_status) == 0);
+  expected.erase(delete_key);
+  lcdf::Str deleted;
+  assert(!query.run_get1(table.table(), lcdf::Str(delete_key.data(), delete_key.size()), 0, deleted, *ti));
 
   const auto original_base = pool.base();
   pool.Close();
