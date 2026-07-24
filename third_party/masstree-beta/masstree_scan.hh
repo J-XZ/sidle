@@ -397,7 +397,7 @@ int basic_table<P>::scan(H helper,
 
     typedef scanstackelt<P> mystack_type;
     mystack_type stack;
-    stack.root_ = root_;
+    stack.root_ = this->root();
     leafvalue_type entry = leafvalue_type::make_empty();
 
     int scancount = 0;

@@ -37,6 +37,8 @@ int main() {
   assert(root_view.v & dsidle::MasstreeNodeVersionBits::isleaf_bit);
   assert(root_view.swcc_off == static_cast<std::uint64_t>(
       reinterpret_cast<std::byte*>(table.table().root()) - static_cast<std::byte*>(pool.base())));
+  const auto published_root = dsidle::RootControlAccessor(pool.root_control()).stable();
+  assert(published_root.ref == root_ref && published_root.generation == root_view.gen);
   query<row_type> query;
   std::map<std::string, std::string> expected;
   const auto fixed_key = [](std::uint64_t number) {

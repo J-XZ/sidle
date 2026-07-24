@@ -357,11 +357,11 @@ void destroy_rcu_callback<P>::operator()(threadinfo& ti) {
 
 template <typename P>
 void basic_table<P>::destroy(threadinfo& ti) {
-    if (root_) {
+    if (root_ref_) {
         void* data = ti.allocate(sizeof(destroy_rcu_callback<P>), memtag_masstree_gc);
-        destroy_rcu_callback<P>* cb = new(data) destroy_rcu_callback<P>(root_);
+        destroy_rcu_callback<P>* cb = new(data) destroy_rcu_callback<P>(this->root());
         ti.rcu_register(cb);
-        root_ = 0;
+        root_ref_ = dsidle::NodeRef();
     }
 }
 

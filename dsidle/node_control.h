@@ -58,6 +58,19 @@ static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
 using NodeRef = HwccOffset<NodeControl>;
 using ValueRef = SwccOffset<std::byte>;
 
+// Resolves a canonical tree body only for the duration of the caller's stack
+// operation. Persistent structures retain the NodeRef, never this address.
+template <typename T>
+T* ResolveCanonicalNode(NodeRef ref) {
+  if (!ref) return nullptr;
+  void* base = SharedPoolBase();
+  auto* control = ref.get(base);
+  if (!control || control->allocation_state != NodeAllocationState::kPublished ||
+      !control->canonical_swcc_offset)
+    throw std::runtime_error("NodeRef does not name a published canonical node");
+  return SwccOffset<T>(control->canonical_swcc_offset).get(base);
+}
+
 struct StableView {
   std::uint64_t v{};
   std::uint64_t gen{};

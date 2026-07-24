@@ -21,6 +21,7 @@
 #include "compiler.hh"
 #include "ksearch.hh"
 #include "str.hh"
+#include "dsidle/shared_pool.h"
 
 // #define CAL_NODE_HOTNESS
 
@@ -141,7 +142,9 @@ public:
   inline void print(FILE *f = 0) const;
 
 private:
-  node_type *root_;
+  // dsidle: the persistent root identity lives in HWCC; root() resolves a
+  // stack-local canonical pointer for the original traversal code.
+  dsidle::NodeRef root_ref_;
 
   template <typename H, typename F>
   int scan(H helper, Str firstkey, bool matchfirst, F &scanner,

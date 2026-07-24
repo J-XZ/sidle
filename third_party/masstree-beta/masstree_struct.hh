@@ -686,8 +686,11 @@ void basic_table<P>::initialize(threadinfo& ti, const int cxl_percentage) {
     #ifdef CXL
     cxl_init(CXL_MAX_SIZE, cxl_percentage);
     #endif
-    masstree_precondition(!root_);
-    root_ = node_type::leaf_type::make_root(0, 0, ti);
+    masstree_precondition(!root_ref_);
+    node_type* root = node_type::leaf_type::make_root(0, 0, ti);
+    root_ref_ = root->control_ref();
+    const auto stable = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root_ref_).stable();
+    dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).publish(root_ref_, stable.gen);
 }
 
 
@@ -936,21 +939,22 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
 
 template <typename P>
 inline basic_table<P>::basic_table()
-    : root_(0) {
+    : root_ref_() {
 }
 
 template <typename P>
 inline node_base<P>* basic_table<P>::root() const {
-    return root_;
+    return dsidle::ResolveCanonicalNode<node_base<P> >(root_ref_);
 }
 
 template <typename P>
 inline node_base<P>* basic_table<P>::fix_root() {
-    node_base<P>* root = root_;
+    node_base<P>* root = this->root();
     if (unlikely(!root->is_root())) {
-        node_base<P>* old_root = root;
         root = root->maybe_parent();
-        (void) cmpxchg(&root_, old_root, root);
+        root_ref_ = root->control_ref();
+        const auto stable = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root_ref_).stable();
+        dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).publish(root_ref_, stable.gen);
     }
     return root;
 }
