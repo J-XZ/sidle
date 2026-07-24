@@ -70,6 +70,32 @@ class tagged_node_link {
 };
 static_assert(sizeof(tagged_node_link<void>) == sizeof(std::uint64_t));
 
+template <typename T>
+class swcc_link {
+  public:
+    constexpr swcc_link() = default;
+    swcc_link(std::nullptr_t) : ref_() {}
+    swcc_link(T* value) { *this = value; }
+    swcc_link& operator=(T* value) {
+        ref_ = value ? dsidle::SwccOffset<T>(reinterpret_cast<std::byte*>(value) -
+                                             static_cast<std::byte*>(dsidle::SharedPoolBase()))
+                     : dsidle::SwccOffset<T>();
+        return *this;
+    }
+    swcc_link& operator=(std::nullptr_t) {
+        ref_ = dsidle::SwccOffset<T>();
+        return *this;
+    }
+    operator T*() const { return ref_.get(dsidle::SharedPoolBase()); }
+    T* operator->() const { return ref_.get(dsidle::SharedPoolBase()); }
+    explicit operator bool() const { return static_cast<bool>(ref_); }
+    dsidle::SwccOffset<T> ref() const { return ref_; }
+
+  private:
+    dsidle::SwccOffset<T> ref_{};
+};
+static_assert(sizeof(swcc_link<void>) == sizeof(std::uint64_t));
+
 template <typename P>
 struct make_nodeversion {
     typedef nodeversion_parameters<typename P::nodeversion_value_type> parameters_type;
@@ -405,7 +431,7 @@ class leaf : public node_base<P> {
     typename permuter_type::storage_type permutation_;
     ikey_type ikey0_[width];
     leafvalue_type lv_[width];
-    external_ksuf_type* ksuf_;
+    swcc_link<external_ksuf_type> ksuf_;
     tagged_node_link<leaf<P> > next_;
     node_link<leaf<P> > prev_;
     node_link<node_base<P> > parent_;
@@ -636,8 +662,9 @@ class leaf : public node_base<P> {
         if (extrasize64_ > 0)
             ::prefetch((const char *) &iksuf_[0]);
         else if (extrasize64_ < 0) {
-            ::prefetch((const char *) ksuf_);
-            ::prefetch((const char *) ksuf_ + CACHE_LINE_SIZE);
+            const auto* external = static_cast<external_ksuf_type*>(ksuf_);
+            ::prefetch((const char *) external);
+            ::prefetch((const char *) external + CACHE_LINE_SIZE);
         }
     }
 

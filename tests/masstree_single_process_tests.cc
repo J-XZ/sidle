@@ -54,6 +54,13 @@ int main() {
     query.run_replace(table.table(), lcdf::Str(key.data(), key.size()),
                       lcdf::Str(value.data(), value.size()), *ti);
   }
+  for (unsigned i = 0; i != 2; ++i) {
+    const std::string key = "prefix--" + std::string(160, 'x') + static_cast<char>('A' + i);
+    const std::string value = "long-value-" + std::to_string(i);
+    expected[key] = value;
+    query.run_replace(table.table(), lcdf::Str(key.data(), key.size()),
+                      lcdf::Str(value.data(), value.size()), *ti);
+  }
   for (unsigned i = 0; i < kEntryCount; i += 7) {
     const std::string key = fixed_key(i);
     const std::string value = "updated-" + std::to_string(i);
