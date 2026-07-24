@@ -44,12 +44,17 @@ ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyCheck
 for port in "${ports[@]}"; do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'mkdir -p /root/dsidle-ycsb/traces'
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$runner" "$module" "$prepared_dir/guest_configs/" root@127.0.0.1:/root/dsidle-ycsb/
-  rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$prepared_dir/traces/" root@127.0.0.1:/root/dsidle-ycsb/traces/
-  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'if ! test -c /dev/ivpci0; then dev=$(for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x1af4 ] && [ "$(cat "$d/device")" = 0x1110 ] && basename "$d"; done); [ -n "$dev" ]; [ -L "/sys/bus/pci/devices/$dev/driver" ] && printf "%s" "$dev" > "/sys/bus/pci/devices/$dev/driver/unbind" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod /root/dsidle-ycsb/ivshmem_driver.ko; fi; test -c /dev/ivpci0'
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'dev=$(for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x1af4 ] && [ "$(cat "$d/device")" = 0x1110 ] && basename "$d"; done); [ -n "$dev" ]; driver=$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/driver")"); if [ "$driver" != ivpci ]; then [ -L "/sys/bus/pci/devices/$dev/driver" ] && printf "%s" "$dev" > "/sys/bus/pci/devices/$dev/driver/unbind" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod /root/dsidle-ycsb/ivshmem_driver.ko; printf "%s" ivpci > "/sys/bus/pci/devices/$dev/driver_override"; printf "%s" "$dev" > /sys/bus/pci/drivers_probe; fi; [ "$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/driver")")" = ivpci ]; test -c /dev/ivpci0'
 done
 for ((round=1; round<=rounds; ++round)); do
   "$pool_tool" --init-pool --config "$base" --node-control-capacity 2097152 --max-threads-per-vm "${topology[2]}" >"$prepared_dir/round_logs/pool_round_${round}.log" 2>&1
   for phase in "${phases[@]}"; do
+    # VM root disks deliberately remain small.  A phase is immutable during
+    # replay, so ship only that phase and remove the preceding one first.
+    for port in "${ports[@]}"; do
+      ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "rm -rf /root/dsidle-ycsb/traces && mkdir -p /root/dsidle-ycsb/traces/$phase"
+      rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" "$prepared_dir/traces/$phase/" "root@127.0.0.1:/root/dsidle-ycsb/traces/$phase/"
+    done
     pids=(); stage=run; [[ "$phase" == load ]] && stage=load
     for node in 0 1 2 3; do
       flag=(); [[ "$phase" == load && $node == 0 ]] && flag=(--bootstrap)
