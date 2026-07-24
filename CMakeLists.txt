@@ -33,7 +33,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   add_link_options(-flto=full)
 endif()
 
-add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc dsidle/shard_allocator.cc dsidle/replica_directory.cc)
+add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc dsidle/shard_allocator.cc dsidle/replica_directory.cc dsidle/latency_simulator.cc)
 target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
