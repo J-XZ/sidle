@@ -83,7 +83,9 @@ for ((node = 0; node < vm_count; ++node)); do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir"
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$guest_config" "$ivshmem_module" "root@127.0.0.1:$remote_dir/"
-  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; if [ -L \"/sys/bus/pci/devices/\$dev/driver\" ]; then printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; fi; modprobe -r uio_pci_generic 2>/dev/null || true; lsmod | grep -q '^ivshmem_driver ' || insmod $remote_module; printf '%s' ivpci > \"/sys/bus/pci/devices/\$dev/driver_override\"; printf '%s' \"\$dev\" > /sys/bus/pci/drivers_probe; test -c /dev/ivpci0"
+  # Keep an already-working custom ivshmem binding intact.  Rebinding it
+  # unconditionally can race its udev node recreation between VM rounds.
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "if ! test -c /dev/ivpci0; then dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ -L \"/sys/bus/pci/devices/\$dev/driver\" ] && printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod $remote_module; fi; test -c /dev/ivpci0"
 done
 
 printf 'suite=%s rounds=%s config=%s runner=%s vm_count=%s\n' "$suite" "$rounds" "$config" "$runner" "$vm_count" >"$out_dir/run.meta"
