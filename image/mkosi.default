@@ -1,0 +1,27 @@
+[Distribution]
+Distribution=debian
+Release=bookworm
+
+[Output]
+Format=gpt_ext4
+Output=root.img
+
+[Boot]
+Bootable=yes
+
+[Content]
+Packages=systemd
+         linux-image-amd64
+         openssh-server
+         ca-certificates
+         build-essential
+         cmake
+         ninja-build
+         git
+         python3
+         libnuma-dev
+         numactl
+         iproute2
+         procps
+ExtraTrees=rootfs
+PostInstallationScript=mkosi.postinst
