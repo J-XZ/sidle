@@ -16,6 +16,7 @@
 #ifndef BTREE_LEAFLINK_HH
 #define BTREE_LEAFLINK_HH 1
 #include "compiler.hh"
+#include "dsidle/swcc_visibility.h"
 
 /** @brief Operations to manage linked lists of B+tree leaves.
 
@@ -29,6 +30,21 @@ template <typename N, bool CONCURRENT = N::concurrent> struct btree_leaflink {};
 // operations.
 template <typename N> struct btree_leaflink<N, true> {
   private:
+    // dsidle: link words live in SWCC.  They are only changed while the
+    // original node protocol holds the relevant node locks; publication is a
+    // normal store followed by writeback/fence, never a SWCC CAS/RMW.
+    static inline void invalidate_next(N* n) {
+        dsidle::InvalidateSwccRange(&n->next_, sizeof(n->next_));
+    }
+    static inline void invalidate_prev(N* n) {
+        dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
+    }
+    static inline void flush_next(N* n) {
+        dsidle::FlushSwccRange(&n->next_, sizeof(n->next_));
+    }
+    static inline void flush_prev(N* n) {
+        dsidle::FlushSwccRange(&n->prev_, sizeof(n->prev_));
+    }
     static inline uint64_t mark(N *n) {
         return n->control_ref().value() | 1;
     }
@@ -38,14 +54,14 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static inline N *lock_next(N *n, SF spin_function) {
         while (1) {
+            invalidate_next(n);
             uint64_t raw = n->next_.raw_;
             N *next = n->next_;
             if (!next || !is_marked(raw)) {
-                // dsidle: SWCC link words are never CAS targets. M2 is
-                // single-process and callers already hold n's node lock; M4
-                // adds the cross-VM lock/flush publication protocol.
-                if (next)
+                if (next) {
                     n->next_.raw_ = raw | 1;
+                    flush_next(n);
+                }
                 return next;
             }
             spin_function();
@@ -65,12 +81,17 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static void link_split(N *n, N *nr, SF spin_function) {
         nr->prev_ = n;
+        flush_prev(nr);
         N *next = lock_next(n, spin_function);
         nr->next_ = next;
-        if (next)
+        flush_next(nr);
+        if (next) {
             next->prev_ = nr;
+            flush_prev(next);
+        }
         fence();
         n->next_ = nr;
+        flush_next(n);
     }
 
     /** @brief Change the prev link of @a n's next node to @a nn.
@@ -86,21 +107,28 @@ template <typename N> struct btree_leaflink<N, true> {
     static void change_link(N *n, N *nn, SF spin_function) {
         N *next = lock_next(n, spin_function);
         nn->next_ = next;
-        if (next)
+        flush_next(nn);
+        if (next) {
             next->prev_ = nn;
+            flush_prev(next);
+        }
         fence();
         N *prev = nullptr;
         while (1) {
+            invalidate_prev(n);
             prev = n->prev_;
             if (!prev) {
                 break;
             }
             prev->next_.raw_ = mark(n);
+            flush_next(prev);
             break;
         }
         if (prev) {
             prev->next_ = nn;
             nn->prev_ = prev;
+            flush_next(prev);
+            flush_prev(nn);
         }
     }
 
@@ -120,14 +148,19 @@ template <typename N> struct btree_leaflink<N, true> {
         N *next = lock_next(n, spin_function);
         N *prev;
         while (1) {
+            invalidate_prev(n);
             prev = n->prev_;
             prev->next_.raw_ = mark(n);
+            flush_next(prev);
             break;
         }
-        if (next)
+        if (next) {
             next->prev_ = prev;
+            flush_prev(next);
+        }
         fence();
         prev->next_ = next;
+        flush_next(prev);
     }
 };
 
