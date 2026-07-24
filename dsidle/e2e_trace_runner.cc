@@ -120,7 +120,13 @@ int main(int argc, char** argv) {
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
     threadinfo* bootstrap_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
-    Masstree::default_table table; if (options.bootstrap) table.initialize(*bootstrap_ti, 80); else table.table().attach();
+    Masstree::default_table table;
+    if (options.bootstrap) table.initialize(*bootstrap_ti, 80);
+    // Node zero publishes the root before entering; every other VM waits
+    // before attaching. This is an ivshmem-backed phase barrier, excluded
+    // from the workload timer below.
+    dsidle::SharedExperimentPhaseBarrier(pool).Wait();
+    if (!options.bootstrap) table.table().attach();
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
     std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers);
     const auto started = std::chrono::steady_clock::now();

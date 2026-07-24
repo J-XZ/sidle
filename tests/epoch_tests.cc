@@ -25,10 +25,12 @@ int main() {
   if (child == 0) {
     pool.Close();
     auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+    dsidle::SharedExperimentPhaseBarrier(attached).Wait();
     assert(dsidle::SharedEpochState(attached).Advance() == 3);
     dsidle::SharedEpochSlots(attached).Enter(1, 1, 17);
     _exit(0);
   }
+  dsidle::SharedExperimentPhaseBarrier(pool).Wait();
   int status = 0;
   assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
   assert(clock.Current() == 3);

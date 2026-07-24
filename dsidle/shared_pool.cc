@@ -221,6 +221,8 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     new (base + epochs_offset + index * sizeof(EpochSlot)) EpochSlot{};
   std::memset(base + diagnostic_offset, 0, kDiagnosticBytes);
   new (base + diagnostic_offset) SharedEpochClock{};
+  auto* phase_barrier = new (base + diagnostic_offset + sizeof(SharedEpochClock)) SharedPhaseBarrier{};
+  phase_barrier->participants = options.vm_count;
   layout->node_control_offset = nodes_offset;
   layout->node_control_capacity = options.node_control_capacity;
   for (std::uint64_t index = 0; index < options.node_control_capacity; ++index) {
@@ -316,6 +318,11 @@ SharedEpochClockView SharedEpochState(SharedPool& pool) {
     throw std::runtime_error("D-SIDLE epoch clock is not initialized");
   return SharedEpochClockView(reinterpret_cast<SharedEpochClock*>(
       static_cast<std::byte*>(pool.base()) + layout->diagnostic_offset));
+}
+
+SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool) {
+  return SharedPhaseBarrierView(reinterpret_cast<SharedPhaseBarrier*>(
+      static_cast<std::byte*>(pool.base()) + pool.static_layout()->diagnostic_offset + sizeof(SharedEpochClock)));
 }
 
 std::string DescribeHwccBudget(const SharedPool& pool) {

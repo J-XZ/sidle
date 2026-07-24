@@ -99,6 +99,7 @@ class SharedPool {
 void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options);
 SharedEpochTable SharedEpochSlots(SharedPool& pool);
 SharedEpochClockView SharedEpochState(SharedPool& pool);
+SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool);
 std::string DescribeHwccBudget(const SharedPool& pool);
 
 // The Masstree runtime binds one process-local shard before creating its

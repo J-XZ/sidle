@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 #include "dsidle/latency_simulator.h"
 namespace dsidle {
@@ -19,6 +20,17 @@ struct alignas(64) SharedEpochClock {
 };
 static_assert(sizeof(SharedEpochClock) == 64);
 
+// A reusable process barrier in the HWCC diagnostic region. It is intentionally
+// separate from epoch slots: waiting at an experiment phase boundary must not
+// make a VM appear inside an RCU critical section.
+struct alignas(64) SharedPhaseBarrier {
+  std::atomic<std::uint64_t> generation{0};
+  std::atomic<std::uint32_t> arrived{0};
+  std::uint32_t participants{0};
+  std::byte padding[48]{};
+};
+static_assert(sizeof(SharedPhaseBarrier) == 64);
+
 class SharedEpochClockView {
  public:
   explicit SharedEpochClockView(SharedEpochClock* clock) : clock_(clock) {}
@@ -26,6 +38,24 @@ class SharedEpochClockView {
   std::uint64_t Advance() const { latency_sim::RecordHwccAtomicRmw(&clock_->value); return clock_->value.fetch_add(1, std::memory_order_acq_rel) + 1; }
  private:
   SharedEpochClock* clock_;
+};
+
+class SharedPhaseBarrierView {
+ public:
+  explicit SharedPhaseBarrierView(SharedPhaseBarrier* barrier) : barrier_(barrier) {}
+  void Wait() const {
+    if (!barrier_ || !barrier_->participants) throw std::runtime_error("invalid shared phase barrier");
+    const auto generation = barrier_->generation.load(std::memory_order_acquire);
+    if (barrier_->arrived.fetch_add(1, std::memory_order_acq_rel) + 1 == barrier_->participants) {
+      barrier_->arrived.store(0, std::memory_order_release);
+      barrier_->generation.fetch_add(1, std::memory_order_release);
+      return;
+    }
+    while (barrier_->generation.load(std::memory_order_acquire) == generation)
+      std::this_thread::yield();
+  }
+ private:
+  SharedPhaseBarrier* barrier_{};
 };
 
 class EpochTable {
