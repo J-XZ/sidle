@@ -96,6 +96,7 @@ for tool in ('qemu-system-x86_64', 'numactl', 'taskset', 'ssh'):
     if not shutil.which(tool): raise SystemExit(f'missing required tool: {tool}')
 if not dry and (not Path(image).is_file() or Path(image).stat().st_size == 0): raise SystemExit(f'missing VM image: {image}')
 if not dry and (not Path(pool_tool).is_file() or not os.access(pool_tool, os.X_OK)): raise SystemExit(f'missing shared-pool tool: {pool_tool}')
+if not dry and not str(vm['local_ssh_pub_key']).strip(): raise SystemExit('vm.local_ssh_pub_key must be configured before actual VM launch')
 if apply_tuning: print('DSIDLE_VM_HOST_TUNING requested=true (no tuning keys are declared in experiment config)')
 else: print('DSIDLE_VM_HOST_TUNING requested=false (check/report only)')
 
@@ -130,6 +131,16 @@ for index in range(count):
             time.sleep(0.1)
         if not pidfile.exists(): raise SystemExit(f'QEMU did not create pidfile: {pidfile}')
         subprocess.run(['taskset', '-apc', ','.join(map(str, core_slice)), pidfile.read_text().strip()], check=True)
+
+if execute and not dry:
+    for index in range(count):
+        port = int(vm['ssh_base_port']) + index
+        ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5', '-p', str(port), 'root@127.0.0.1']
+        for _ in range(60):
+            if subprocess.run(ssh + ['true'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0: break
+            time.sleep(1)
+        else: raise SystemExit(f'VM {index} did not become reachable by SSH')
+        subprocess.run(ssh + ['/usr/local/sbin/dsidle-bind-ivshmem'], check=True)
 
 print('DSIDLE_VM_INIT_DRY_RUN_OK' if dry else 'DSIDLE_VM_INIT_OK')
 PY

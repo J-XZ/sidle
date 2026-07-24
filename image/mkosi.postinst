@@ -5,3 +5,22 @@ if [ -s /root/.ssh/authorized_keys ]; then
     chmod 700 /root/.ssh
     chmod 600 /root/.ssh/authorized_keys
 fi
+install -d -m 0755 /usr/local/sbin /etc/udev/rules.d
+cat >/usr/local/sbin/dsidle-bind-ivshmem <<'EOF'
+#!/bin/sh
+set -eu
+modprobe uio_pci_generic
+for device in /sys/bus/pci/devices/*; do
+    [ "$(cat "$device/vendor")" = 0x1af4 ] || continue
+    [ "$(cat "$device/device")" = 0x1110 ] || continue
+    name=$(basename "$device")
+    printf '%s' uio_pci_generic >"$device/driver_override"
+    printf '%s' "$name" >/sys/bus/pci/drivers/uio_pci_generic/bind 2>/dev/null || true
+done
+udevadm settle
+test -e /dev/ivpci0
+EOF
+chmod 0755 /usr/local/sbin/dsidle-bind-ivshmem
+cat >/etc/udev/rules.d/70-dsidle-ivshmem.rules <<'EOF'
+SUBSYSTEM=="uio", KERNEL=="uio0", SYMLINK+="ivpci0"
+EOF

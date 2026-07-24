@@ -1,6 +1,6 @@
 [Distribution]
-Distribution=debian
-Release=bookworm
+Distribution=ubuntu
+Release=jammy
 
 [Output]
 Format=gpt_ext4
@@ -11,7 +11,7 @@ Bootable=yes
 
 [Content]
 Packages=systemd
-         linux-image-amd64
+         linux-image-generic
          openssh-server
          ca-certificates
          build-essential
