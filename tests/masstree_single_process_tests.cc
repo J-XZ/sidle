@@ -7,6 +7,7 @@
 #include "masstree_get.hh"
 #include "masstree_insert.hh"
 #include "masstree_remove.hh"
+#include "masstree_scan.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -15,6 +16,20 @@
 #include <string>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <vector>
+
+namespace {
+struct ScanCollector {
+  std::vector<std::pair<std::string, std::string>> rows;
+  template <typename S, typename K>
+  void visit_leaf(const S&, const K&, threadinfo&) {}
+  bool visit_value(lcdf::Str key, row_type* value, threadinfo&) {
+    const auto column = value->col(0);
+    rows.emplace_back(std::string(key.s, key.len), std::string(column.s, column.len));
+    return true;
+  }
+};
+}  // namespace
 #include <unistd.h>
 
 int main() {
@@ -199,6 +214,18 @@ int main() {
   expected.erase(delete_key);
   lcdf::Str deleted;
   assert(!query.run_get1(table.table(), lcdf::Str(delete_key.data(), delete_key.size()), 0, deleted, *ti));
+
+  ScanCollector scanner;
+  assert(table.table().scan(lcdf::Str("", 0), true, scanner, *ti) ==
+         static_cast<int>(expected.size()));
+  assert(scanner.rows.size() == expected.size());
+  auto expected_it = expected.begin();
+  for (const auto& [key, value] : scanner.rows) {
+    assert(expected_it != expected.end());
+    assert(key == expected_it->first && value == expected_it->second);
+    ++expected_it;
+  }
+  assert(expected_it == expected.end());
 
   const auto original_base = pool.base();
   pool.Close();
