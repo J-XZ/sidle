@@ -50,3 +50,7 @@ add_test(NAME dsidle_shared_pool_tests COMMAND dsidle_shared_pool_tests)
 add_executable(dsidle_shard_allocator_tests tests/shard_allocator_tests.cc)
 target_link_libraries(dsidle_shard_allocator_tests PRIVATE dsidle)
 add_test(NAME dsidle_shard_allocator_tests COMMAND dsidle_shard_allocator_tests)
+
+add_executable(dsidle_epoch_tests tests/epoch_tests.cc)
+target_link_libraries(dsidle_epoch_tests PRIVATE dsidle)
+add_test(NAME dsidle_epoch_tests COMMAND dsidle_epoch_tests)
