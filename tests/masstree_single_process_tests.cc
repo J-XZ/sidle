@@ -133,6 +133,46 @@ int main() {
   assert(overwritten.len == writer_value.size());
   assert(std::memcmp(overwritten.s, writer_value.data(), overwritten.len) == 0);
 
+  int start_gate[2];
+  assert(pipe(start_gate) == 0);
+  const std::string race_values[] = {"race-writer-a", "race-writer-b"};
+  pid_t racers[2];
+  for (unsigned racer = 0; racer != 2; ++racer) {
+    racers[racer] = fork();
+    assert(racers[racer] >= 0);
+    if (racers[racer] == 0) {
+      close(start_gate[1]);
+      char token = 0;
+      if (read(start_gate[0], &token, 1) != 1) _exit(7);
+      pool.Close();
+      try {
+        auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+        dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+        threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
+        Masstree::default_table child_table;
+        child_table.table().attach();
+        query.run_replace(child_table.table(), lcdf::Str(writer_key.data(), writer_key.size()),
+                          lcdf::Str(race_values[racer].data(), race_values[racer].size()), *child_ti);
+      } catch (...) {
+        _exit(8);
+      }
+      _exit(0);
+    }
+  }
+  close(start_gate[0]);
+  assert(write(start_gate[1], "++", 2) == 2);
+  close(start_gate[1]);
+  for (const pid_t racer : racers) {
+    int status = 0;
+    assert(waitpid(racer, &status, 0) == racer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  }
+  lcdf::Str raced;
+  assert(query.run_get1(table.table(), lcdf::Str(writer_key.data(), writer_key.size()), 0, raced, *ti));
+  const std::string raced_value(raced.s, raced.len);
+  assert(raced_value == race_values[0] || raced_value == race_values[1]);
+  expected[writer_key] = raced_value;
+
   auto delete_it = expected.begin();
   if (delete_it->first == writer_key) ++delete_it;
   const std::string delete_key = delete_it->first;
