@@ -268,6 +268,76 @@ int main() {
     assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
   }
 
+  // Two independently attached workers begin their disjoint insert batches at
+  // the same time. Both batches exceed a leaf's capacity and therefore force
+  // overlapping split/root publication paths rather than merely racing a
+  // value overwrite.
+  std::vector<std::pair<std::string, std::string>> concurrent_inserts;
+  for (unsigned worker = 0; worker != 2; ++worker) {
+    for (unsigned i = 0; i != 64; ++i) {
+      std::string key(8, static_cast<char>('q' + worker));
+      key[0] = static_cast<char>(0x80 + worker);
+      key[1] = static_cast<char>(i + 1);
+      concurrent_inserts.emplace_back(std::move(key),
+                                      "concurrent-split-" + std::to_string(worker) + "-" + std::to_string(i));
+    }
+  }
+  int split_ready[2];
+  int split_go[2];
+  assert(pipe(split_ready) == 0 && pipe(split_go) == 0);
+  pid_t split_workers[2]{};
+  for (unsigned worker = 0; worker != 2; ++worker) {
+    split_workers[worker] = fork();
+    assert(split_workers[worker] >= 0);
+    if (split_workers[worker] == 0) {
+      close(split_ready[0]);
+      close(split_go[1]);
+      pool.Close();
+      try {
+        auto attached = dsidle::SharedPool::Attach(path, kPoolBytes);
+        dsidle::ConfigureCurrentSwccAllocator(attached, 1, 0);
+        threadinfo* child_ti = threadinfo::make(threadinfo::TI_MAIN, static_cast<int>(worker));
+        Masstree::default_table child_table;
+        child_table.table().attach();
+        const char ready = 'r';
+        if (write(split_ready[1], &ready, 1) != 1) _exit(14);
+        char go = 0;
+        if (read(split_go[0], &go, 1) != 1) _exit(15);
+        for (unsigned i = 0; i != 64; ++i) {
+          const auto& [key, value] = concurrent_inserts[worker * 64 + i];
+          query.run_replace(child_table.table(), lcdf::Str(key.data(), key.size()),
+                            lcdf::Str(value.data(), value.size()), *child_ti);
+        }
+        child_ti->rcu_drain();
+      } catch (...) {
+        _exit(16);
+      }
+      _exit(0);
+    }
+  }
+  close(split_ready[1]);
+  close(split_go[0]);
+  for (unsigned worker = 0; worker != 2; ++worker) {
+    char ready = 0;
+    assert(read(split_ready[0], &ready, 1) == 1 && ready == 'r');
+  }
+  const char go = 'g';
+  assert(write(split_go[1], &go, 1) == 1);
+  assert(write(split_go[1], &go, 1) == 1);
+  close(split_ready[0]);
+  close(split_go[1]);
+  for (const auto split_worker : split_workers) {
+    int status = 0;
+    assert(waitpid(split_worker, &status, 0) == split_worker);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  }
+  for (const auto& [key, value] : concurrent_inserts) {
+    expected[key] = value;
+    lcdf::Str inserted;
+    assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
+    assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
+  }
+
   int scan_started[2];
   assert(pipe(scan_started) == 0);
   const std::string scan_delete_key = split_inserts.back().first;
