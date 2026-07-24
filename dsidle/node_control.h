@@ -142,8 +142,18 @@ class NodeVersionAccessor {
     return false;
   }
 
-  void mark_insert() const { Control()->version_and_state.fetch_or(MasstreeNodeVersionBits::inserting_bit, std::memory_order_acq_rel); }
-  void mark_split() const { Control()->version_and_state.fetch_or(MasstreeNodeVersionBits::splitting_bit, std::memory_order_acq_rel); }
+  void mark_insert() const {
+    auto* control = Control();
+    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
+    control->version_and_state.fetch_or(MasstreeNodeVersionBits::inserting_bit,
+                                        std::memory_order_acq_rel);
+  }
+  void mark_split() const {
+    auto* control = Control();
+    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
+    control->version_and_state.fetch_or(MasstreeNodeVersionBits::splitting_bit,
+                                        std::memory_order_acq_rel);
+  }
   void unlock_release(std::uint64_t locked_version) const {
     if (!(locked_version & MasstreeNodeVersionBits::lock_bit)) throw std::runtime_error("NodeControl unlock without lock");
     const auto next = locked_version & MasstreeNodeVersionBits::splitting_bit
@@ -188,9 +198,11 @@ class RootControlAccessor {
 
   RootView stable() const {
     while (true) {
+      latency_sim::RecordHwccAtomicLoad(&root_->version);
       const auto first = root_->version.load(std::memory_order_acquire);
       const NodeRef ref(root_->root_ref);
       const auto generation = root_->root_generation;
+      latency_sim::RecordHwccAtomicLoad(&root_->version);
       const auto second = root_->version.load(std::memory_order_acquire);
       if (first == second) return {ref, generation, second};
     }
@@ -200,6 +212,7 @@ class RootControlAccessor {
     if (!ref) throw std::runtime_error("cannot publish null root NodeRef");
     root_->root_ref = ref.value();
     root_->root_generation = generation;
+    latency_sim::RecordHwccAtomicRmw(&root_->version);
     root_->version.fetch_add(1, std::memory_order_release);
   }
 
