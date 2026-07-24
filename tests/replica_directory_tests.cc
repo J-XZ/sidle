@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <thread>
 #include <unistd.h>
 
 int main() {
@@ -46,6 +48,23 @@ int main() {
   std::free(oversized);
   std::free(directory.Invalidate(ref));
   assert(directory.LocalBytes() == 0);
+  std::atomic<bool> publishing{true};
+  std::thread reader([&] {
+    while (publishing.load(std::memory_order_acquire)) {
+      auto concurrent = directory.Acquire(ref, 1, 42);
+      if (concurrent) assert(static_cast<char*>(concurrent.snapshot().local_ptr)[0] == 'r');
+    }
+  });
+  for (unsigned index = 0; index != 1024; ++index) {
+    auto* replacement = static_cast<char*>(std::malloc(32)); assert(replacement);
+    replacement[0] = 'r';
+    void* old = nullptr;
+    assert(directory.TryPublish(ref, {replacement, 1, 42, 32, dsidle::ReplicaKind::kValueLeaf}, &old));
+    std::free(old);
+  }
+  publishing.store(false, std::memory_order_release);
+  reader.join();
+  std::free(directory.Invalidate(ref));
   controls.Retire(ref, 9);
   controls.Release(ref);
   const auto reused = controls.Reserve((4ULL << 20) + 64, 2);
