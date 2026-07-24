@@ -81,6 +81,11 @@ add_test(NAME dsidle_e2e_trace_runner_2vm_smoke
     "truncate -s 128M /tmp/dsidle-e2e-runner-2vm.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 2 && { \"$3\" --config \"$2\" --phase smoke --node 0 --bootstrap > /tmp/dsidle-e2e-node0.log 2>&1 & p=$!; \"$3\" --config \"$2\" --phase smoke --node 1 > /tmp/dsidle-e2e-node1.log 2>&1 & q=$!; wait $p && wait $q; } && grep -q 'E2E_TRACE_TIME_US phase=smoke node=0' /tmp/dsidle-e2e-node0.log && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' /tmp/dsidle-e2e-node1.log"
     sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_2vm_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_ycsb_summarizer_tests
+  COMMAND /bin/sh -c
+    "out=$(mktemp -d /tmp/dsidle-ycsb-summary.XXXXXX); python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_ycsb_experiment.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ycsb_logs)
+set_tests_properties(dsidle_ycsb_summarizer_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
