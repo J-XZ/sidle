@@ -13,6 +13,29 @@ constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
 inline void FlushSwccLine(const void* address) {
   _mm_clflush(address);
 }
+
+std::uint32_t ClassIndex(std::uint64_t block_size) {
+  if (block_size < kSmallestSwccBlock || block_size > kLargestSwccBlock ||
+      (block_size & (block_size - 1)))
+    throw std::runtime_error("invalid SWCC size class");
+  std::uint32_t index = 0;
+  for (auto value = block_size; value > kSmallestSwccBlock; value >>= 1) ++index;
+  return index;
+}
+
+void InitializeClass(SharedPool& pool, std::uint32_t count, std::uint64_t block_size,
+                     std::uint64_t range_start, std::uint64_t range_bytes) {
+  const auto class_index = ClassIndex(block_size);
+  const auto* metadata = pool.static_layout();
+  const auto per_shard = (range_bytes / count / block_size) * block_size;
+  if (!per_shard) throw std::runtime_error("SWCC capacity too small for shard allocator");
+  for (std::uint32_t shard = 0; shard < count; ++shard) {
+    auto* entry = new (static_cast<std::byte*>(pool.base()) + metadata->shard_controls_offset +
+                       (static_cast<std::uint64_t>(shard) * kSwccSizeClassCount + class_index) * sizeof(ShardControl)) ShardControl{};
+    entry->bump.store(range_start + shard * per_shard, std::memory_order_relaxed);
+    entry->limit = range_start + (shard + 1) * per_shard;
+  }
+}
 }  // namespace
 
 void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count, std::uint64_t block_size) {
@@ -21,28 +44,39 @@ void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count,
   const auto* metadata = pool.static_layout();
   if (metadata->shard_count != count || !metadata->shard_controls_offset)
     throw std::runtime_error("shared-pool shard metadata does not match allocator");
-  const auto controls_end = metadata->shard_controls_offset + count * sizeof(ShardControl);
+  const auto controls_end = metadata->shard_controls_offset + count * kSwccSizeClassCount * sizeof(ShardControl);
   if (controls_end > pool.header()->hwcc_bytes) throw std::runtime_error("HWCC capacity exhausted by shard metadata");
   const auto start = AlignUp(pool.header()->swcc_offset, block_size);
   const auto usable = pool.header()->swcc_bytes - (start - pool.header()->swcc_offset);
-  const auto per_shard = (usable / count / block_size) * block_size;
-  if (!per_shard) throw std::runtime_error("SWCC capacity too small for shard allocator");
-  for (std::uint32_t shard = 0; shard < count; ++shard) {
-    auto* entry = new (static_cast<std::byte*>(pool.base()) + metadata->shard_controls_offset + shard * sizeof(ShardControl)) ShardControl{};
-    entry->bump.store(start + shard * per_shard, std::memory_order_relaxed);
-    entry->limit = start + (shard + 1) * per_shard;
+  InitializeClass(pool, count, block_size, start, usable);
+  std::atomic_thread_fence(std::memory_order_release);
+}
+
+void FixedBlockShardAllocator::InitializeAll(SharedPool& pool, std::uint32_t count) {
+  if (!count || pool.static_layout()->shard_count != count)
+    throw std::runtime_error("shared-pool shard metadata does not match allocator");
+  const auto span = pool.header()->swcc_bytes / kSwccSizeClassCount;
+  for (std::uint32_t index = 0; index < kSwccSizeClassCount; ++index) {
+    const auto block_size = kSmallestSwccBlock << index;
+    const auto raw_start = pool.header()->swcc_offset + static_cast<std::uint64_t>(index) * span;
+    const auto start = AlignUp(raw_start, block_size);
+    const auto consumed = start - raw_start;
+    const auto bytes = span > consumed ? span - consumed : 0;
+    InitializeClass(pool, count, block_size, start, bytes);
   }
   std::atomic_thread_fence(std::memory_order_release);
 }
 
 FixedBlockShardAllocator::FixedBlockShardAllocator(SharedPool& pool, std::uint32_t count, std::uint64_t block_size)
-    : pool_(pool), shard_count_(count), block_size_(block_size) {
-  if (!count || block_size < sizeof(FreeObjectHeader)) throw std::runtime_error("invalid shard allocator attach");
+    : pool_(pool), shard_count_(count), block_size_(block_size), class_index_(ClassIndex(block_size)) {
+  if (!count || block_size < sizeof(FreeObjectHeader) || pool.static_layout()->shard_count != count)
+    throw std::runtime_error("invalid shard allocator attach");
 }
 
 ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
   if (shard >= shard_count_) throw std::runtime_error("invalid shard index");
-  return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + pool_.static_layout()->shard_controls_offset + shard * sizeof(ShardControl));
+  return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + pool_.static_layout()->shard_controls_offset +
+                                         (static_cast<std::uint64_t>(shard) * kSwccSizeClassCount + class_index_) * sizeof(ShardControl));
 }
 
 void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation) {
@@ -93,6 +127,29 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
 void FixedBlockShardAllocator::Free(std::uint32_t owner, SwccOffset<std::byte> block, std::uint64_t generation) {
   if (!block) throw std::runtime_error("cannot free null SWCC offset");
   Push(control(owner)->remote_free_head, block.value(), generation);
+}
+
+std::uint64_t SwccShardAllocator::SizeClassBlockSize(std::uint64_t size) {
+  if (!size) throw std::runtime_error("cannot allocate zero SWCC bytes");
+  auto block = kSmallestSwccBlock;
+  while (block < size && block < kLargestSwccBlock) block <<= 1;
+  if (block < size) throw std::runtime_error("D-SIDLE SWCC allocation exceeds largest size class");
+  return block;
+}
+
+SwccOffset<std::byte> SwccShardAllocator::Allocate(std::uint32_t shard, std::uint64_t size) {
+  const auto block = SizeClassBlockSize(size);
+  return FixedBlockShardAllocator(pool_, shard_count_, block).Allocate(shard);
+}
+
+void SwccShardAllocator::Free(std::uint32_t owner_shard, SwccOffset<std::byte> block,
+                              std::uint64_t size, std::uint64_t generation) {
+  FixedBlockShardAllocator(pool_, shard_count_, SizeClassBlockSize(size)).Free(owner_shard, block, generation);
+}
+
+std::uint64_t SwccShardAllocator::HarvestRemote(std::uint32_t shard, std::uint64_t size,
+                                                 std::uint64_t maximum) {
+  return FixedBlockShardAllocator(pool_, shard_count_, SizeClassBlockSize(size)).HarvestRemote(shard, maximum);
 }
 
 }  // namespace dsidle

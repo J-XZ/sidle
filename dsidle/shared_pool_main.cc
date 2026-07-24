@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
                                     config.swcc.size_mb << 20};
     auto pool = dsidle::SharedPool::InitializeExisting(config.shared_path, layout);
     dsidle::InitializePoolMetadata(pool, {config.vm_count, max_threads, node_capacity});
-    dsidle::FixedBlockShardAllocator::Initialize(pool, config.vm_count, 2ULL << 20);
+    dsidle::FixedBlockShardAllocator::InitializeAll(pool, config.vm_count);
     std::cout << dsidle::DescribeHwccBudget(pool) << '\n';
   } catch (const std::exception& error) {
     std::cerr << "dsidle_shared_pool: " << error.what() << '\n';

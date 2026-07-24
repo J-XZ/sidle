@@ -1,4 +1,5 @@
 #include "dsidle/shared_pool.h"
+#include "dsidle/shard_allocator.h"
 
 #include <cerrno>
 #include <cstring>
@@ -132,7 +133,7 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
   const auto nodes_offset = AlignUp(sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout), kCacheLine);
   const auto nodes_bytes = options.node_control_capacity * sizeof(NodeControl);
   const auto shards_offset = nodes_offset + nodes_bytes;
-  const auto shard_bytes = static_cast<std::uint64_t>(options.vm_count) * kCacheLine;
+  const auto shard_bytes = static_cast<std::uint64_t>(options.vm_count) * kSwccSizeClassCount * kCacheLine;
   const auto epochs_offset = shards_offset + shard_bytes;
   const auto epoch_count = static_cast<std::uint64_t>(options.vm_count) * options.max_threads_per_vm;
   const auto epochs_bytes = epoch_count * sizeof(EpochSlot);
@@ -220,7 +221,7 @@ std::string DescribeHwccBudget(const SharedPool& pool) {
   const auto total = layout->diagnostic_offset ? layout->diagnostic_offset + kDiagnosticBytes : 0;
   return "HWCC budget: header/root/static=" + std::to_string(sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout)) +
       " node_controls=" + std::to_string(layout->node_control_capacity * sizeof(NodeControl)) +
-      " shards=" + std::to_string(layout->shard_count * kCacheLine) +
+      " shard_classes=" + std::to_string(layout->shard_count * kSwccSizeClassCount * kCacheLine) +
       " epoch_slots=" + std::to_string(layout->epoch_slot_count * sizeof(EpochSlot)) +
       " diagnostics=" + std::to_string(kDiagnosticBytes) + " total=" + std::to_string(total) +
       " capacity=" + std::to_string(pool.header()->hwcc_bytes);

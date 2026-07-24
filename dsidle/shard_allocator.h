@@ -8,6 +8,10 @@
 
 namespace dsidle {
 
+constexpr std::uint64_t kSmallestSwccBlock = 64;
+constexpr std::uint64_t kLargestSwccBlock = 2ULL << 20;
+constexpr std::uint32_t kSwccSizeClassCount = 16;  // 64B .. 2MiB
+
 // Exactly the reusable 16 bytes prescribed for an SWCC free object.
 struct FreeObjectHeader {
   std::uint64_t next_offset{};
@@ -32,6 +36,10 @@ class FixedBlockShardAllocator {
   // process attaches.  Blocks are fixed-size so their free header need not
   // carry an untrusted size field. Pool metadata must already be initialized.
   static void Initialize(SharedPool& pool, std::uint32_t shard_count, std::uint64_t block_size);
+  // Initializes every power-of-two size class from 64B through 2MiB. This is
+  // the production pool layout; Initialize() remains useful to isolate a
+  // single class in focused allocator tests.
+  static void InitializeAll(SharedPool& pool, std::uint32_t shard_count);
 
   FixedBlockShardAllocator(SharedPool& pool, std::uint32_t shard_count, std::uint64_t block_size);
   SwccOffset<std::byte> Allocate(std::uint32_t shard);
@@ -46,6 +54,25 @@ class FixedBlockShardAllocator {
   SharedPool& pool_;
   std::uint32_t shard_count_;
   std::uint64_t block_size_;
+  std::uint32_t class_index_;
+};
+
+// Canonical SWCC allocator used by Masstree objects. The returned address is
+// still an offset; callers must not persist the resolved pointer.
+class SwccShardAllocator {
+ public:
+  SwccShardAllocator(SharedPool& pool, std::uint32_t shard_count)
+      : pool_(pool), shard_count_(shard_count) {}
+  SwccOffset<std::byte> Allocate(std::uint32_t shard, std::uint64_t size);
+  void Free(std::uint32_t owner_shard, SwccOffset<std::byte> block,
+            std::uint64_t size, std::uint64_t generation);
+  std::uint64_t HarvestRemote(std::uint32_t shard, std::uint64_t size,
+                              std::uint64_t maximum = 64);
+
+  static std::uint64_t SizeClassBlockSize(std::uint64_t size);
+ private:
+  SharedPool& pool_;
+  std::uint32_t shard_count_;
 };
 
 }  // namespace dsidle

@@ -28,6 +28,9 @@ class BasicOffset {
   friend constexpr bool operator==(BasicOffset left, BasicOffset right) {
     return left.value_ == right.value_;
   }
+  friend constexpr bool operator!=(BasicOffset left, BasicOffset right) {
+    return !(left == right);
+  }
 
  private:
   std::uint64_t value_{};
