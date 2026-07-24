@@ -38,4 +38,10 @@ class LatencySimulator {
 };
 CacheModel ParseCacheModel(const std::string&); const char* CacheModelName(CacheModel);
 LatencySimulator& GlobalLatencySimulator(); bool InstrumentationEnabledFast();
+inline void RecordSwccRead(const void* p, uint64_t n) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordRange(PoolKind::kSwcc, AccessKind::kRead, p, n); }
+inline void RecordSwccWrite(const void* p, uint64_t n) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordRange(PoolKind::kSwcc, AccessKind::kWrite, p, n); }
+inline void RecordSwccFlush(const void* p, uint64_t n) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordRange(PoolKind::kSwcc, AccessKind::kFlush, p, n); }
+inline void RecordHwccAtomicLoad(const void* p) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordLine(PoolKind::kHwcc, AccessKind::kAtomicLoad, p); }
+inline void RecordHwccAtomicStore(const void* p) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordLine(PoolKind::kHwcc, AccessKind::kAtomicStore, p); }
+inline void RecordHwccAtomicRmw(const void* p) { if (InstrumentationEnabledFast()) GlobalLatencySimulator().RecordLine(PoolKind::kHwcc, AccessKind::kAtomicRmw, p); }
 }  // namespace latency_sim
