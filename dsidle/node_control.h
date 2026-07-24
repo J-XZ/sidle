@@ -7,6 +7,8 @@
 
 namespace dsidle {
 
+class SharedPool;
+
 template <typename T, typename RegionTag>
 class BasicOffset {
  public:
@@ -54,5 +56,17 @@ struct alignas(64) RootControl {
   std::byte padding[40]{};
 };
 static_assert(sizeof(RootControl) == 64 && alignof(RootControl) == 64);
+
+// The free chain uses canonical_swcc_offset only while the slot is FREE; a
+// published control line never contains an allocator link.
+class NodeControlSlab {
+ public:
+  explicit NodeControlSlab(SharedPool& pool) : pool_(pool) {}
+  NodeRef Acquire(std::uint64_t canonical_swcc_offset, std::uint32_t node_type);
+  void Release(NodeRef ref);
+
+ private:
+  SharedPool& pool_;
+};
 
 }  // namespace dsidle

@@ -38,6 +38,9 @@ target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
 
+add_executable(dsidle_shared_pool dsidle/shared_pool_main.cc)
+target_link_libraries(dsidle_shared_pool PRIVATE dsidle)
+
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
 add_test(NAME dsidle_config_tests COMMAND dsidle_config_tests)

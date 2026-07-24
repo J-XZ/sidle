@@ -28,11 +28,9 @@ static_assert(sizeof(ShardControl) == 64);
 
 class FixedBlockShardAllocator {
  public:
-  static constexpr std::uint64_t kControlOffset = sizeof(PoolHeader) + sizeof(RootControl);
-
   // Initialisation is a pool-creation operation and must run once before any
   // process attaches.  Blocks are fixed-size so their free header need not
-  // carry an untrusted size field.
+  // carry an untrusted size field. Pool metadata must already be initialized.
   static void Initialize(SharedPool& pool, std::uint32_t shard_count, std::uint64_t block_size);
 
   FixedBlockShardAllocator(SharedPool& pool, std::uint32_t shard_count, std::uint64_t block_size);

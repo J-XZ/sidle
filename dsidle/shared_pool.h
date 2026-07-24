@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dsidle/node_control.h"
+#include "dsidle/epoch.h"
 
 #include <atomic>
 #include <cstddef>
@@ -18,6 +19,27 @@ struct PoolLayout {
   std::uint64_t hwcc_bytes{};
   std::uint64_t swcc_offset{};
   std::uint64_t swcc_bytes{};
+};
+
+// The fixed metadata line follows RootControl.  It describes the remainder of
+// the prescribed HWCC layout without putting process-local addresses in the
+// backing file.
+struct alignas(64) PoolStaticLayout {
+  std::uint64_t node_control_offset{};
+  std::uint64_t node_control_capacity{};
+  std::atomic<std::uint64_t> node_free_head{0};
+  std::uint64_t shard_controls_offset{};
+  std::uint64_t shard_count{};
+  std::uint64_t epoch_slots_offset{};
+  std::uint64_t epoch_slot_count{};
+  std::uint64_t diagnostic_offset{};
+};
+static_assert(sizeof(PoolStaticLayout) == 64 && alignof(PoolStaticLayout) == 64);
+
+struct PoolInitialization {
+  std::uint32_t vm_count{};
+  std::uint32_t max_threads_per_vm{};
+  std::uint64_t node_control_capacity{2'097'152};
 };
 
 // The fixed first cache line is deliberately small: all extensible metadata
@@ -44,12 +66,16 @@ class SharedPool {
   SharedPool& operator=(SharedPool&& other) noexcept;
 
   static SharedPool Create(const std::string& path, const PoolLayout& layout);
+  // Replaces the contents of an already-created backing file during explicit
+  // --init-pool setup. It never resizes the file.
+  static SharedPool InitializeExisting(const std::string& path, const PoolLayout& layout);
   static SharedPool Attach(const std::string& path, std::uint64_t expected_bytes);
 
   void* base() const { return base_; }
   std::uint64_t size() const { return bytes_; }
   PoolHeader* header() const { return static_cast<PoolHeader*>(base_); }
   RootControl* root_control() const { return reinterpret_cast<RootControl*>(static_cast<std::byte*>(base_) + sizeof(PoolHeader)); }
+  PoolStaticLayout* static_layout() const { return reinterpret_cast<PoolStaticLayout*>(static_cast<std::byte*>(base_) + sizeof(PoolHeader) + sizeof(RootControl)); }
   void* hwcc_base() const { return static_cast<std::byte*>(base_) + header()->hwcc_offset; }
   void* swcc_base() const { return static_cast<std::byte*>(base_) + header()->swcc_offset; }
   void Close();
@@ -63,5 +89,11 @@ class SharedPool {
   void* base_{nullptr};
   std::uint64_t bytes_{0};
 };
+
+// Initializes all fixed HWCC structures after the backing file was created or
+// prefaulted by the host launcher.  This is intentionally a one-shot command.
+void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options);
+SharedEpochTable SharedEpochSlots(SharedPool& pool);
+std::string DescribeHwccBudget(const SharedPool& pool);
 
 }  // namespace dsidle

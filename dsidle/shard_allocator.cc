@@ -18,14 +18,17 @@ inline void FlushSwccLine(const void* address) {
 void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count, std::uint64_t block_size) {
   if (!count || block_size < sizeof(FreeObjectHeader) || (block_size & (block_size - 1)))
     throw std::runtime_error("invalid shard allocator parameters");
-  const auto controls_end = kControlOffset + count * sizeof(ShardControl);
+  const auto* metadata = pool.static_layout();
+  if (metadata->shard_count != count || !metadata->shard_controls_offset)
+    throw std::runtime_error("shared-pool shard metadata does not match allocator");
+  const auto controls_end = metadata->shard_controls_offset + count * sizeof(ShardControl);
   if (controls_end > pool.header()->hwcc_bytes) throw std::runtime_error("HWCC capacity exhausted by shard metadata");
   const auto start = AlignUp(pool.header()->swcc_offset, block_size);
   const auto usable = pool.header()->swcc_bytes - (start - pool.header()->swcc_offset);
   const auto per_shard = (usable / count / block_size) * block_size;
   if (!per_shard) throw std::runtime_error("SWCC capacity too small for shard allocator");
   for (std::uint32_t shard = 0; shard < count; ++shard) {
-    auto* entry = new (static_cast<std::byte*>(pool.base()) + kControlOffset + shard * sizeof(ShardControl)) ShardControl{};
+    auto* entry = new (static_cast<std::byte*>(pool.base()) + metadata->shard_controls_offset + shard * sizeof(ShardControl)) ShardControl{};
     entry->bump.store(start + shard * per_shard, std::memory_order_relaxed);
     entry->limit = start + (shard + 1) * per_shard;
   }
@@ -39,7 +42,7 @@ FixedBlockShardAllocator::FixedBlockShardAllocator(SharedPool& pool, std::uint32
 
 ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
   if (shard >= shard_count_) throw std::runtime_error("invalid shard index");
-  return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + kControlOffset + shard * sizeof(ShardControl));
+  return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + pool_.static_layout()->shard_controls_offset + shard * sizeof(ShardControl));
 }
 
 void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation) {
