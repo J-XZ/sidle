@@ -318,6 +318,11 @@ int main() {
   }
   assert(expected_it == expected.end());
 
+  // The original thread accumulated retired overwrite/delete values. Its
+  // explicit exit path must reclaim them and leave its shared slot inactive.
+  ti->rcu_drain();
+  assert(dsidle::SharedEpochSlots(pool).MinimumActive() == dsidle::kEpochInactive);
+
   const auto original_base = pool.base();
   pool.Close();
   void* guard = mmap(original_base, kPoolBytes, PROT_NONE,
@@ -339,6 +344,9 @@ int main() {
     assert(value.len == expected_value.size());
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
+
+  remounted_ti->rcu_drain();
+  assert(dsidle::SharedEpochSlots(remapped).MinimumActive() == dsidle::kEpochInactive);
 
   remapped.Close();
   assert(munmap(guard, kPoolBytes) == 0);

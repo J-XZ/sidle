@@ -24,6 +24,7 @@
 #include "memdebug.hh"
 #include <assert.h>
 #include <pthread.h>
+#include <chrono>
 #include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -324,6 +325,23 @@ class threadinfo {
         if (perform_gc_epoch_ != dsidle::SharedEpochState(dsidle::CurrentSharedPool()).Current())
             hard_rcu_quiesce();
     }
+    // dsidle: callers invoke this before joining a worker. Limbo remains
+    // owned by its creating thread until every deferred object is reclaimed.
+    void rcu_drain() {
+        if (gc_epoch_) {
+            dsidle::SharedEpochSlots(dsidle::CurrentSharedPool()).Leave(
+                dsidle::CurrentSwccShard(), static_cast<std::uint32_t>(index_));
+            gc_epoch_ = 0;
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!limbo_empty()) {
+            rcu_quiesce();
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw std::runtime_error("D-SIDLE RCU limbo did not drain before thread exit");
+        }
+        dsidle::SharedEpochSlots(dsidle::CurrentSharedPool()).Leave(
+            dsidle::CurrentSwccShard(), static_cast<std::uint32_t>(index_));
+    }
     typedef ::mrcu_callback mrcu_callback;
     void rcu_register(mrcu_callback* cb) {
         record_rcu(cb, memtag(-1));
@@ -375,6 +393,9 @@ class threadinfo {
     void refill_remote_pool(int nl);
     void refill_local_pool(int nl);
     void refill_rcu();
+    bool limbo_empty() const {
+        return limbo_head_ == limbo_tail_ && limbo_head_->head_ == limbo_head_->tail_;
+    }
 
     void free_rcu(uint64_t ref, memtag tag, std::uint32_t owner_shard, dsidle::NodeRef node_ref) {
         void* p = (tag != memtag(-1) && (tag & memtag_pool_mask))
