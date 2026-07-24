@@ -99,6 +99,11 @@ target_link_libraries(dsidle_replica_directory_tests PRIVATE dsidle)
 target_compile_options(dsidle_replica_directory_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_replica_directory_tests COMMAND dsidle_replica_directory_tests)
 
+add_executable(dsidle_latency_simulator_tests tests/latency_simulator_tests.cc)
+target_link_libraries(dsidle_latency_simulator_tests PRIVATE dsidle)
+target_compile_options(dsidle_latency_simulator_tests PRIVATE -UNDEBUG)
+add_test(NAME dsidle_latency_simulator_tests COMMAND dsidle_latency_simulator_tests)
+
 add_executable(dsidle_masstree_single_process_tests tests/masstree_single_process_tests.cc)
 target_link_libraries(dsidle_masstree_single_process_tests PRIVATE dsidle_masstree)
 target_compile_options(dsidle_masstree_single_process_tests PRIVATE -UNDEBUG -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h)
