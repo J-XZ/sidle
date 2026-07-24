@@ -210,6 +210,7 @@ int main() {
   worker_thresholds.set_hotness_watermarks(0);
   Masstree::replica_workers<replica_params> workers(
       table.table(), pool, replicas, worker_thresholds,
+      1, 0, 1,
       std::chrono::milliseconds(1), std::chrono::milliseconds(1), std::chrono::milliseconds(1));
   for (unsigned i = 0; i != 256; ++i) replicas.RecordAccess(canonical_leaf->control_ref());
   workers.TriggerOnce(*ti);

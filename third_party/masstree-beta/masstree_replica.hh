@@ -118,10 +118,25 @@ class leaf_replica {
                       dsidle::ReplicaDirectory& directory) {
     const auto ref = source.control_ref();
     const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
-    void* buffer = Create(source, source.permutation());
-    if (source.has_changed(version)) {
-      std::free(buffer);
+    // A leaf's permutation and values are changed by foreground writers.  An
+    // optimistic version check after Create() is too late: a writer can
+    // change a value length between Create's sizing and copying passes.  Do
+    // not make promotion contend with writers; skip this candidate unless we
+    // can immediately own the leaf for the whole snapshot.
+    auto& mutable_source = const_cast<leaf_type&>(source);
+    if (!mutable_source.try_lock()) return false;
+    const auto locked_version = mutable_source;
+    const auto published_version = locked_version.unlocked_version_value();
+    if (published_version != version.unlocked_version_value()) {
+      mutable_source.unlock();
       return false;
+    }
+    void* buffer = nullptr;
+    try {
+      buffer = Create(source, source.permutation());
+    } catch (...) {
+      mutable_source.unlock();
+      throw;
     }
     bool has_layer = false;
     const auto permutation = source.permutation();
@@ -129,11 +144,16 @@ class leaf_replica {
       has_layer = has_layer || source.is_layer(permutation[index]);
     const auto bytes = static_cast<const header*>(buffer)->bytes;
     void* old = nullptr;
-    if (!directory.TryPublish(ref, {buffer, generation, version.version_value(), bytes,
+    if (!directory.TryPublish(ref, {buffer, generation, published_version, bytes,
       has_layer ? dsidle::ReplicaKind::kLayerLeaf : dsidle::ReplicaKind::kValueLeaf}, &old)) {
       std::free(buffer);
+      mutable_source.unlock();
       return false;
     }
+    // Publishing before unlock is safe: readers cannot acquire this replica
+    // while the canonical version is locked, and unlock releases exactly the
+    // version recorded above.
+    mutable_source.unlock();
     std::free(old);
     return true;
   }
