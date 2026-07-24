@@ -88,6 +88,8 @@ const char *CacheModelName(CacheModel model);
 LatencySimulator &GlobalLatencySimulator();
 bool InstrumentationEnabledFast();
 void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag);
+bool TscSpinAvailableForTest();
+void DelaySpinNsForTest(uint64_t ns);
 
 class LatencySimulator {
 public:

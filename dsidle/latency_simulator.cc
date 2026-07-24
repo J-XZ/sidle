@@ -61,12 +61,12 @@ void DelaySpinNs(uint64_t ns) {
   if (ns == 0) return;
   CalibrateTscOnce();
   const double rate = g_tsc_ticks_per_ns.load(std::memory_order_acquire);
-  if (rate <= 0.0) { std::this_thread::sleep_for(std::chrono::nanoseconds(ns)); return; }
+  if (rate <= 0.0) throw std::runtime_error("TSC calibration is unavailable for latency injection");
 #if defined(__x86_64__) || defined(__i386__)
   const uint64_t target = ReadTsc() + std::max<uint64_t>(1, static_cast<uint64_t>(rate * ns));
   while (ReadTsc() < target) CpuRelax();
 #else
-  std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+  throw std::runtime_error("TSC busy-spin is unavailable on this architecture");
 #endif
 }
 uint64_t RoundNs(double value) { return value <= 0.0 ? 0 : static_cast<uint64_t>(std::llround(value)); }
@@ -150,12 +150,23 @@ void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag) {
          << " cache_model=" << CacheModelName(config.cache_model)
          << " cache_hits_enabled=" << (config.cache_hits_enabled ? 1 : 0) << '\n';
 }
-LatencySimulator::LatencySimulator(Config c) : config_(c), generation_(NextGeneration()) { g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed); }
+bool TscSpinAvailableForTest() {
+  CalibrateTscOnce();
+  return g_tsc_ticks_per_ns.load(std::memory_order_acquire) > 0.0;
+}
+void DelaySpinNsForTest(uint64_t ns) { DelaySpinNs(ns); }
+LatencySimulator::LatencySimulator(Config c) : config_(c), generation_(NextGeneration()) {
+  if (c.enabled && !TscSpinAvailableForTest())
+    throw std::runtime_error("TSC calibration is unavailable for enabled latency injection");
+  g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed);
+}
 void LatencySimulator::Configure(Config c) {
   if (!c.cache_line_bytes) throw std::invalid_argument("latency simulator cache_line_bytes must be > 0");
   if (c.cache_fixed_hit_rate < 0.0 || c.cache_fixed_hit_rate > 1.0) throw std::invalid_argument("latency simulator cache_fixed_hit_rate must be in [0, 1]");
   c.cache_capacity_lines = std::max<uint64_t>(1, c.cache_capacity_lines); c.cache_associativity = std::max<uint64_t>(1, c.cache_associativity);
-  config_=c; g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed); generation_=NextGeneration(); if(c.enabled) CalibrateTscOnce();
+  if (c.enabled && !TscSpinAvailableForTest())
+    throw std::runtime_error("TSC calibration is unavailable for enabled latency injection");
+  config_=c; g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed); generation_=NextGeneration();
 }
 void LatencySimulator::BeginScope(ScopeKind scope) { if (!InstrumentationEnabledFast()) return; auto &s=StateFor(this,config_,generation_); if(s.active==this){++s.depth;return;} s.active=ScopeEnabled(config_,scope)?this:nullptr; s.pending=0; s.depth=s.active==this; }
 void LatencySimulator::EndScopeAndDelay() { if (!InstrumentationEnabledFast()) return; auto &s=StateFor(this,config_,generation_); if(s.active!=this) return; if(s.depth>1){--s.depth;return;} const uint64_t delay=s.pending; s.pending=0;s.depth=0;s.active=nullptr;DelaySpinNs(delay); }

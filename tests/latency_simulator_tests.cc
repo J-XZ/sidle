@@ -1,5 +1,8 @@
 #include "dsidle/latency_simulator.h"
+#include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <limits>
 #include <sstream>
 int main() {
   latency_sim::Config c; c.enabled=true; c.stats_enabled=true; c.swcc_read_ns_per_line=3; c.hwcc_atomic_load_ns=7;
@@ -48,4 +51,34 @@ int main() {
   assert(line.find("LATENCY_SIM_STATS tag=unit") != std::string::npos);
   assert(line.find("hwcc_raw=1") != std::string::npos);
   assert(line.find("delayed_ns=1") != std::string::npos);
+
+  latency_sim::Config swcc_only; swcc_only.enabled=true; swcc_only.stats_enabled=true;
+  swcc_only.swcc_read_ns_per_line=5;
+  latency_sim::LatencySimulator swcc_sim(swcc_only);
+  swcc_sim.BeginScope(latency_sim::ScopeKind::kForeground);
+  swcc_sim.RecordLine(latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead, value);
+  swcc_sim.EndScopeAndDelay();
+  const auto swcc_stats=swcc_sim.TakeStatsAndReset();
+  assert(swcc_stats.swcc_delayed_ns == 5 && swcc_stats.hwcc_delayed_ns == 0);
+
+  latency_sim::Config hwcc_only; hwcc_only.enabled=true; hwcc_only.stats_enabled=true;
+  hwcc_only.hwcc_atomic_load_ns=7;
+  latency_sim::LatencySimulator hwcc_sim(hwcc_only);
+  hwcc_sim.BeginScope(latency_sim::ScopeKind::kForeground);
+  hwcc_sim.RecordLine(latency_sim::PoolKind::kHwcc, latency_sim::AccessKind::kAtomicLoad, value);
+  hwcc_sim.EndScopeAndDelay();
+  const auto hwcc_stats=hwcc_sim.TakeStatsAndReset();
+  assert(hwcc_stats.swcc_delayed_ns == 0 && hwcc_stats.hwcc_delayed_ns == 7);
+
+  if (latency_sim::TscSpinAvailableForTest()) {
+    latency_sim::DelaySpinNsForTest(1);  // Warm the calibrated spin path.
+    uint64_t best_ns=std::numeric_limits<uint64_t>::max();
+    for (int index=0; index<100; ++index) {
+      const auto begin=std::chrono::steady_clock::now();
+      latency_sim::DelaySpinNsForTest(1000);
+      const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-begin).count();
+      best_ns=std::min(best_ns, static_cast<uint64_t>(elapsed));
+    }
+    assert(best_ns >= 800 && best_ns <= 1200);
+  }
 }
