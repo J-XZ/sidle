@@ -47,6 +47,12 @@ void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
   swcc_allocator_context = {&pool, shard_count, local_shard};
 }
 
+SharedPool& CurrentSharedPool() {
+  if (!swcc_allocator_context.pool)
+    throw std::runtime_error("D-SIDLE shared pool is not configured in this thread");
+  return *swcc_allocator_context.pool;
+}
+
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size) {
   const auto& context = swcc_allocator_context;
   if (!context.pool) throw std::runtime_error("D-SIDLE SWCC allocator is not configured");

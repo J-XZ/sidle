@@ -30,6 +30,13 @@ int main() {
   threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
   Masstree::default_table table;
   table.initialize(*ti, 80);
+  const auto root_ref = table.table().root()->control_ref();
+  assert(root_ref);
+  const dsidle::NodeVersionAccessor root_version(pool.base(), root_ref);
+  const auto root_view = root_version.stable();
+  assert(root_view.v & dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(root_view.swcc_off == static_cast<std::uint64_t>(
+      reinterpret_cast<std::byte*>(table.table().root()) - static_cast<std::byte*>(pool.base())));
   query<row_type> query;
   std::map<std::string, std::string> expected;
   const auto fixed_key = [](std::uint64_t number) {

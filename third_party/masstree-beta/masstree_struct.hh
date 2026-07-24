@@ -22,6 +22,7 @@
 #include "mtcounters.hh"
 #include "timestamp.hh"
 #include "sidle_frontend.hh"
+#include <immintrin.h>
 #ifdef CAL_NODE_HOTNESS
 #include <unordered_map>
 #include <vector>
@@ -65,12 +66,15 @@ class node_base : public make_nodeversion<P>::type {
     static std::unordered_map<uint64_t, uint16_t> hotness_map_;
 #endif
 
-    node_base(bool isleaf)
-        : nodeversion_type(isleaf) {
+    node_base(bool isleaf, dsidle::NodeRef control_ref = {})
+        : nodeversion_type(isleaf), control_ref_(control_ref) {
     }
 
-    node_base(bool isleaf, node_mem_type_t node_type, uint8_t depth, uint16_t time = 1)
-        : nodeversion_type(isleaf) {}
+    node_base(bool isleaf, node_mem_type_t node_type, uint8_t depth, uint16_t time = 1,
+              dsidle::NodeRef control_ref = {})
+        : nodeversion_type(isleaf), control_ref_(control_ref) {}
+
+    dsidle::NodeRef control_ref() const { return control_ref_; }
 
 
     inline base_type* parent() const {
@@ -115,6 +119,9 @@ class node_base : public make_nodeversion<P>::type {
 #ifdef CAL_NODE_HOTNESS
     void record_access() const {}
 #endif
+
+  private:
+    dsidle::NodeRef control_ref_{};
 };
 
 template <typename P>
@@ -152,8 +159,8 @@ class internode : public node_base<P> {
         : node_base<P>(false), nkeys_(0), height_(height), parent_(), sidle_meta() {
     }
 
-    internode(uint32_t height, node_mem_type_t type, uint8_t depth)
-        : node_base<P>(false), nkeys_(0), height_(height), parent_(), sidle_meta(type, depth) {}
+    internode(uint32_t height, node_mem_type_t type, uint8_t depth, dsidle::NodeRef control_ref = {})
+        : node_base<P>(false, type, depth, 1, control_ref), nkeys_(0), height_(height), parent_(), sidle_meta(type, depth) {}
 
     static internode<P>* make(uint32_t height, threadinfo& ti) {
         void* ptr = ti.pool_allocate(sizeof(internode<P>),
@@ -171,7 +178,15 @@ class internode : public node_base<P> {
         (void) type;
         (void) is_migration;
         void* ptr = ti.pool_allocate(sizeof(internode<P>), memtag_masstree_internode_remote);
-        internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth);
+        auto& pool = dsidle::CurrentSharedPool();
+        dsidle::NodeControlSlab controls(pool);
+        const dsidle::SwccOffset<std::byte> offset(
+            reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
+        const auto ref = controls.Reserve(offset.value(), 1);
+        internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth, ref);
+        _mm_clflush(n);
+        _mm_sfence();
+        controls.Publish(ref, 0);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
@@ -362,8 +377,8 @@ class leaf : public node_base<P> {
     internal_ksuf_type iksuf_[0];
     
 
-    leaf(size_t sz, phantom_epoch_type phantom_epoch, node_mem_type_t type = node_mem_type_t::unknown, uint8_t depth = 0, uint16_t access_time = 1)
-        : node_base<P>(true), modstate_(modstate_insert),
+    leaf(size_t sz, phantom_epoch_type phantom_epoch, node_mem_type_t type = node_mem_type_t::unknown, uint8_t depth = 0, uint16_t access_time = 1, dsidle::NodeRef control_ref = {})
+        : node_base<P>(true, type, depth, access_time, control_ref), modstate_(modstate_insert),
           permutation_(permuter_type::make_empty()),
           ksuf_(), parent_(), iksuf_{}, sidle_meta(type, depth, access_time) {
         masstree_precondition(sz % 64 == 0 && sz / 64 < 128);
@@ -393,7 +408,15 @@ class leaf : public node_base<P> {
         (void) type;
         (void) is_migration;
         void* ptr = ti.pool_allocate(sz, memtag_masstree_leaf_remote);
-        leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time);
+        auto& pool = dsidle::CurrentSharedPool();
+        dsidle::NodeControlSlab controls(pool);
+        const dsidle::SwccOffset<std::byte> offset(
+            reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
+        const auto ref = controls.Reserve(offset.value(), 2);
+        leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time, ref);
+        _mm_clflush(n);
+        _mm_sfence();
+        controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();

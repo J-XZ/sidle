@@ -101,6 +101,7 @@ std::string DescribeHwccBudget(const SharedPool& pool);
 // memkind fallback exists.
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard);
+SharedPool& CurrentSharedPool();
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size);
 void FreeCurrentSwcc(SwccOffset<std::byte> block, std::uint64_t size,
                      std::uint64_t generation = 0);
