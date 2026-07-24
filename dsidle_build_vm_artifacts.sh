@@ -17,7 +17,8 @@ done
 mkdir -p "$out"
 # Build once outside VMs in the exact Jammy root filesystem used by the guests.
 systemd-nspawn --quiet --image="$image" --bind="$root:/src" --bind="$out:/build" /bin/bash -lc \
-  'cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build /build --target dsidle_e2e_suite_runner -j8 && make -C /src/third_party/ivshmem-kernel KDIR=/lib/modules/5.15.0-25-generic/build && cp /src/third_party/ivshmem-kernel/ivshmem_driver.ko /build/'
+  'cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build /build --target dsidle_e2e_suite_runner dsidle_e2e_trace_runner -j8 && make -C /src/third_party/ivshmem-kernel KDIR=/lib/modules/5.15.0-25-generic/build && cp /src/third_party/ivshmem-kernel/ivshmem_driver.ko /build/'
 test -x "$out/dsidle_e2e_suite_runner"
+test -x "$out/dsidle_e2e_trace_runner"
 test -s "$out/ivshmem_driver.ko"
 echo "DSIDLE_VM_ARTIFACTS_OK out_dir=$out"

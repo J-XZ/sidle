@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     if (!options.bootstrap) table.table().attach();
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
-    std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers);
+    std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr worker_failure; std::mutex worker_failure_mutex;
     const auto started = std::chrono::steady_clock::now();
     std::thread heartbeat_thread([&] {
       uint64_t previous = 0;
@@ -146,13 +146,17 @@ int main(int argc, char** argv) {
         previous = current;
       }
     });
-    for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] {
-      dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node); dsidle::ConfigureCurrentReplicaDirectory(replicas);
-      threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker);
-      counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat);
-    });
+    auto replay_worker = [&](uint32_t worker) {
+      try {
+        dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node); dsidle::ConfigureCurrentReplicaDirectory(replicas);
+        threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+        counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat);
+      } catch (...) { std::lock_guard<std::mutex> lock(worker_failure_mutex); if (!worker_failure) worker_failure = std::current_exception(); }
+    };
+    for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { replay_worker(worker); });
     for (auto& thread : threads) thread.join();
     heartbeat_stop.store(true, std::memory_order_release); heartbeat_cv.notify_one(); heartbeat_thread.join();
+    if (worker_failure) std::rethrow_exception(worker_failure);
     const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
     uint64_t total = 0; for (const auto count : counts) total += count;
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << total << " duration_us=" << duration << " trace_first=" << first << " trace_workers=" << workers << " batch_ops=" << options.batch_ops << '\n';

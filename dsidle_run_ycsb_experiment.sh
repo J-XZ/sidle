@@ -87,7 +87,7 @@ latency['cache_hits_enabled'] = False
 if int(no_latency):
     for key in ('enabled', 'foreground_enabled', 'merge_enabled', 'stats_enabled'):
         latency[key] = False
-open(output, 'w').write(json.dumps(config, indent=2) + '\n')
+open(output, 'w').write(json.dumps(config, separators=(',', ':')) + '\n')
 PY
 if (( ! skip_trace_gen )); then
   generator="$script_dir/third_party/YCSB-cpp/scripts/generate_cxlkv_trace.sh"
@@ -127,7 +127,7 @@ config = json.loads(Path(base).read_text())
 for phase in ['load'] + [f'workload{item}' for item in workloads]:
     phase_config = json.loads(json.dumps(config))
     phase_config['dsidle']['trace_dir'] = str(Path(trace_root) / phase)
-    (Path(config_dir) / f'experiment_config_ycsb_{phase}.jsonc').write_text(json.dumps(phase_config, indent=2) + '\n')
+    (Path(config_dir) / f'experiment_config_ycsb_{phase}.jsonc').write_text(json.dumps(phase_config, separators=(',', ':')) + '\n')
 PY
 printf -v reproduce_command '%q ' "$0" --rounds "$rounds" --record-count "$record_count" --operation-count "$operation_count" --threads-per-node "$threads_per_node" --round-timeout "$round_timeout" --out-dir "$out_dir" --workloads "$workloads" --base-config "$base_config" --shared-reserve-mb "$shared_reserve_mb" --cache-flush-mb "$cache_flush_mb"
 [[ -n "$shared_numa" ]] && printf -v reproduce_command '%s--shared-numa %q ' "$reproduce_command" "$shared_numa"

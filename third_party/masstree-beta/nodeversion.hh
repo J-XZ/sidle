@@ -167,8 +167,11 @@ class nodeversion {
                                        control->canonical_swcc_offset, 512);
         }
         release_fence();
+        // A competing writer may legally acquire this version immediately
+        // after the store below.  Validate the value being published, not a
+        // later racy load from the shared cache line.
+        masstree_invariant(!(x.v_ & P::lock_bit));
         store(x.v_);
-        masstree_invariant(!(load() & P::lock_bit));
     }
 
     void mark_insert() {
