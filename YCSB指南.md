@@ -49,7 +49,8 @@ out=$(mktemp -d /tmp/dsidle-ycsb-guide.XXXXXX)
 实际 100k 验收回放（4 VM × 4 worker、load/workloada、连续 10 轮）的命令为：
 
 ```bash
-./dsidle_build_vm_artifacts.sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j"$(nproc)" --target dsidle_e2e_trace_runner dsidle_shared_pool
 ./dsidle_run_ycsb_experiment.sh \
   --vm-count 4 --warmup-rounds 1 --rounds 10 \
   --record-count 100000 --operation-count 100000 \

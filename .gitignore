@@ -10,9 +10,11 @@ build-jammy/
 *.in
 *.csv
 image/.mkosi-*
+image/mkosi.extra/
+image/mkosi.cache/
+image/mkosi.builddir/
 image/root.img
 image/root.img.manifest
-image/rootfs/root/
 unready_script
 script
 .git_backup

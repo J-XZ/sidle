@@ -6,34 +6,43 @@ value 位于 SWCC，跨 VM 控制项位于 HWCC；每台 VM 可以有受预算�
 
 ## 从空白宿主机启动四台 VM
 
-以下命令均在本仓根目录执行。镜像仅构建一次；D-SIDLE 程序在宿主用镜像内的
-Jammy 工具链构建一次，再 rsync 到来宾，来宾不编译程序。
+以下命令均在本仓根目录执行。镜像仅构建一次。VM init 与 cxlkv 对齐：共享内存
+tmpfs NUMA 绑定、bridge/tap、guest 内编译加载 `ivpci` 驱动、QEMU taskset。
 
 ```bash
 git submodule update --init --recursive
 ./dsidle_make_vm_img.sh
-./dsidle_init_vms.sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j"$(nproc)"
+./dsidle_init_vms.sh --execute
 ./dsidle_check_vms.sh
-./dsidle_build_vm_artifacts.sh
 ```
 
-`dsidle_init_vms.sh` 使用本仓 `image/root.img`、`experiment_config.jsonc` 和
-ivshmem-plain 创建 VM；不读取或执行任何同级仓库的镜像、脚本或构建产物。
-结束时用 `./dsidle_kill_vms.sh` 精确停止由该脚本记录 PID 的 VM。
+`dsidle_make_vm_img.sh` 与 cxlkv 同构：调用本仓 `image/make_vm_img.sh`
+（mkosi Jammy、`RootSize=38G`、钉死内核与完整 postinst）。
+
+`dsidle_init_vms.sh` 使用本仓 `image/root.img`、`experiment_config.jsonc`：
+- 宿主机性能调优（SMT/THP/NUMA balancing 等，与 cxlkv 一致）
+- 在 `shared_memory.numa_node` 上挂载 tmpfs（`mpol=bind`）并创建 ivshmem backing
+- `dsidle_shared_pool --init-pool` 写入池元数据
+- bridge/tap + 双网卡 QEMU + ivshmem-plain
+- 向 guest rsync `third_party/ivshmem-kernel`，guest 内 `make` + `modprobe ivshmem_driver`
+- 校验 BAR2 与 `/dev/ivpci0`（`ivpci` 驱动），再 taskset QEMU
+
+结束时用 `./dsidle_kill_vms.sh --execute` 停止 QEMU、清空 `vm.storage_path`
+内容、删除 ivshmem 产物并卸载共享内存 tmpfs（对齐 cxlkv `clear_vm_data`）。
 
 ## 端到端套件
 
-08/09 的 VM 数据面套件使用 100k key。下面使用已经构建的宿主产物；每个命令
-会把程序、内核模块和来宾配置 rsync 到四个 VM。
+08/09 的 VM 数据面套件使用 100k key。驱动已在 init 阶段装好；runner 使用宿主
+`build/` 产物并 rsync 到 guest。
 
 ```bash
 scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 08 --rounds 10 \
-  --runner build-jammy/dsidle_e2e_suite_runner \
-  --ivshmem-module build-jammy/ivshmem_driver.ko \
+  --runner build/dsidle_e2e_suite_runner \
   --pool-tool build/dsidle_shared_pool
 scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 09 --rounds 10 \
-  --runner build-jammy/dsidle_e2e_suite_runner \
-  --ivshmem-module build-jammy/ivshmem_driver.ko \
+  --runner build/dsidle_e2e_suite_runner \
   --pool-tool build/dsidle_shared_pool
 ```
 

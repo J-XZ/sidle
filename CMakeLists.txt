@@ -141,8 +141,8 @@ add_test(NAME dsidle_e2e09_suite_smoke
 set_tests_properties(dsidle_e2e09_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_vm_scripts_dry_run
   COMMAND /bin/sh -c
-    "\"$1\" --dry-run --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run"
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_init_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_check_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_make_vm_img.sh)
+    "\"$1\" --dry-run --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run --config \"$2\" && \"$5\" --dry-run"
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_init_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_check_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_kill_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_make_vm_img.sh)
 set_tests_properties(dsidle_vm_scripts_dry_run PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)

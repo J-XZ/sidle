@@ -1,37 +1,66 @@
 #!/usr/bin/env bash
+# D-SIDLE wrapper aligned with cxlkv's
+# xz_scripts/init_scripts_env_2_make_vm_img.fish: build image/root.img via
+# image/make_vm_img.sh (copied from cxlkv tigon emulation) when missing.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+target_img="$root/image/root.img"
 force=0
 dry_run=0
-config="${DSIDLE_EXPERIMENT_CONFIG_JSONC:-$root/experiment_config.jsonc}"
+
 while (($#)); do
   case "$1" in
-    --force) force=1; shift;; --dry-run) dry_run=1; shift;;
-    --config) (($# >= 2)) || { echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2; exit 2; }; config=$2; shift 2;;
-    --help) echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2; exit 0;;
-    *) echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2; exit 2;;
+    --force) force=1; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --config)
+      # Accepted for API compatibility with other dsidle_* scripts; image build
+      # injects SSH keys from the host ~/.ssh like cxlkv, not from experiment config.
+      (($# >= 2)) || { echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2; exit 2; }
+      shift 2
+      ;;
+    --help)
+      echo "usage: $0 [--config PATH] [--force] [--dry-run]"
+      echo "Build image/root.img via image/make_vm_img.sh (cxlkv-aligned mkosi flow)."
+      echo "Skips when image/root.img already exists unless --force is set."
+      exit 0
+      ;;
+    *)
+      echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2
+      exit 2
+      ;;
   esac
 done
-image="$root/image/root.img"
-if [[ -s "$image" && $force -eq 0 ]]; then echo "D-SIDLE image already exists: $image"; exit 0; fi
-[[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
-cmd=(mkosi -C "$root/image")
-((force)) && cmd+=(--force)
-cmd+=(build)
-if ((dry_run)); then printf 'DRY_RUN '; printf '%q ' "${cmd[@]}"; printf '\n'; exit 0; fi
-command -v mkosi >/dev/null || { echo "mkosi is required" >&2; exit 1; }
+
 mkdir -p "$root/image"
-key_path="$root/image/rootfs/root/.ssh/authorized_keys"
-python3 - "$config" "$key_path" <<'PY'
-import json,re,sys
-from pathlib import Path
-text=re.sub(r'//[^\n]*', '', Path(sys.argv[1]).read_text())
-key=json.loads(text)['vm']['local_ssh_pub_key'].strip()
-target=Path(sys.argv[2])
-if key:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(key+'\n')
-PY
-"${cmd[@]}"
-[[ -s "$image" ]] || { echo "mkosi did not produce $image" >&2; exit 1; }
+
+if ((dry_run)); then
+  printf 'DRY_RUN '
+  printf '%q ' bash "$root/image/make_vm_img.sh"
+  printf '\n'
+  exit 0
+fi
+
+if ((force == 0)) && [[ -f "$target_img" ]]; then
+  img_size=$(stat -c %s "$target_img" 2>/dev/null || echo 0)
+  if [[ -n "$img_size" && "$img_size" -gt 0 ]]; then
+    echo "[make_vm_img] $target_img already exists ($img_size bytes); skip build."
+    exit 0
+  fi
+  echo "[make_vm_img] WARN: $target_img exists but is empty; rebuilding." >&2
+fi
+
+[[ -x "$root/image/make_vm_img.sh" ]] || {
+  echo "missing executable: $root/image/make_vm_img.sh" >&2
+  exit 1
+}
+
+(
+  cd "$root/image"
+  ./make_vm_img.sh
+)
+
+[[ -s "$target_img" ]] || {
+  echo "make_vm_img.sh did not produce $target_img" >&2
+  exit 1
+}

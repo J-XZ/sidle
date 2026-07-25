@@ -1,12 +1,21 @@
 {
+  // 本配置文件适合双 numa r6525 的实验机器
   // D-SIDLE's standalone experiment contract.  Paths are host-local inputs.
   "shared_memory": {
     "size_mb": 32768,
     "path": "/mnt/xz_shared_mem",
     "device_path": "/dev/ivpci0",
-    "numa_node": [1],
-    "hwcc": { "offset_mb": 0, "size_mb": 1024 },
-    "swcc": { "offset_mb": 1024, "size_mb": 31744 }
+    "numa_node": [
+      1
+    ],
+    "hwcc": {
+      "offset_mb": 0,
+      "size_mb": 1024
+    },
+    "swcc": {
+      "offset_mb": 1024,
+      "size_mb": 31744
+    }
   },
   "vm": {
     "count": 4,
@@ -14,17 +23,59 @@
     "mem_size_mb_per_vm": 2048,
     "storage_path": "/mnt/xz_vm_storage",
     "ssh_base_port": 10022,
-    "numa_node": [0],
+    "numa_node": [
+      0
+    ],
     "local_ssh_pub_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDrHw+F5VoY1WowRKN5r2OEDq+gHxMHdeSgRel4UVnONICudOrXQID5zlauhI/hijpD5ErLtVjom1lw06fhJqkpY26YvjqE+D2yJLwefJBZ+amCSOWriQoJTc7EAXP+050yOqZ9dZ/m3YopwXRlq2zsJGeGWbyNnOUSkUW1frWCjvjr5VPbWw/y6/MUcvLYg/GcP2sqFMhxELkmvGyai0sHHfBFCRpRmNdeehiJKLPTeAy/d6r9KZtfpnh1i3jizd165S7mvXQQ5+DrBNkjwb2UQtnuJsGD/XW0fLD5IPiLxahKLaHIIi8+VxVqR1oiYqffVi4AzNFzaBF8mZnA930VJ0BSgtYY1+VNZu7ScMXVam3S4Z+r4BFmlgMZYoT16UNvkuBcv8b/5/ZHLGB+ibcClb0VySD2Uig5ZiMOiZiqIHS5VELQfkc3zJYQ9DERPOU/jGJmTbSFri2Q4eTd8T7r9gqmkkkycaf7fQT1sujY29xBCCQHYcHREmX6NwSCIWfI50zvkhq3fOqHgw7A9MvbSpcJnsOeYUAHAdyKJV4/bd1VfC70AuEE7McCbDGv14GKeaqFq4AANqWWBv8Sdz8ursKKMWnVUxaifVdeJbTuac6aPer2Vk3XIv4WtIP6sRJM7x3PGTuPQsIhTr/KHoB8SBux47Lh6FtOChEMEISc3Q== xuzhenjiang@hhu.edu.cn\nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDJRRfQun/GuTm3/achpoel3HeV+lMqQ43H/XE1gxJJGFJK/htv4q6wBvo7O8iNQWXJs7aJ+VhEnmC+ehu3C958RfNBYUdWTkiVvM7b9PEGwSR/ZKtH+fauMiYaV4lcmpV25rJCzOx8V0Mpqro16yh0wcyrpaWoKI9yZIURkuPvziPnofx+L/ADJjAOOxFaW8hoW4hvASTUt0Zuu4ghXN5WTiQzJXm2h49uQeJNTKC2ZwsSoa4fHdVK7EcOhEJ6VS/+tpgdcYC0aIvYr6Lahs2SWBNZ20nw7PfPIZFc1eO+SSt2Kaf3+wWaLnqB30BiPxZLUHad0j4KB5gBWsNeXK2x5ZW9CYbecakgCnrxnAcviDg5EcrTkoespGjuteHJHjqiw1cmav6yDVTq/NaY+KNhwpjIPIaBWp5byXsdRfwbVFlTNc07PUuAi3kczMtFQukJODz4K9G/vOELk+Uua+pGsdgfYHi/KQrqyzroKEU3b1F2I0+fKIviBRJGfyG5SnE= root@node1.cxl2.dpmfs-pg0.clemson.cloudlab.us",
     "first_ip": "192.168.100.2",
     "bridge_tap_ip": "192.168.100.1"
   },
   "host_cpu": {
-    "reserved_cores": [34],
-    "ivshmem_server_cores": [32, 33],
-    "vm_cores": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    "reserved_cores": [
+      34
+    ],
+    "ivshmem_server_cores": [
+      32,
+      33
+    ],
+    "vm_cores": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ]
   },
-  "e2e": { "foreground_worker_count_per_vm": 4 },
+  "e2e": {
+    "foreground_worker_count_per_vm": 4
+  },
   "dsidle": {
     "replica_budget_mb": 1536,
     "hot_percentage_seed": 50,
@@ -32,13 +83,25 @@
     "fixed_value_size": 32,
     "trace_dir": "trace",
     "latency_inject": {
-      "enabled": false, "foreground_enabled": true, "merge_enabled": true, "stats_enabled": false,
+      "enabled": false,
+      "foreground_enabled": true,
+      "merge_enabled": true,
+      "stats_enabled": false,
       "cache_line_bytes": 64,
-      "swcc_read_ns_per_line": 0, "swcc_write_ns_per_line": 0, "swcc_flush_ns_per_line": 0,
-      "hwcc_read_ns_per_line": 0, "hwcc_write_ns_per_line": 0,
-      "hwcc_atomic_load_ns": 0, "hwcc_atomic_store_ns": 0, "hwcc_atomic_rmw_ns": 0,
-      "cache_model": "none", "cache_hits_enabled": true, "cache_capacity_lines": 4096,
-      "cache_associativity": 8, "cache_fixed_hit_rate": 0, "cache_hit_extra_ns": 0
+      "swcc_read_ns_per_line": 0,
+      "swcc_write_ns_per_line": 0,
+      "swcc_flush_ns_per_line": 0,
+      "hwcc_read_ns_per_line": 0,
+      "hwcc_write_ns_per_line": 0,
+      "hwcc_atomic_load_ns": 0,
+      "hwcc_atomic_store_ns": 0,
+      "hwcc_atomic_rmw_ns": 0,
+      "cache_model": "none",
+      "cache_hits_enabled": true,
+      "cache_capacity_lines": 4096,
+      "cache_associativity": 8,
+      "cache_fixed_hit_rate": 0,
+      "cache_hit_extra_ns": 0
     }
   }
 }

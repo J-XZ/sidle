@@ -131,7 +131,10 @@ double Number(const std::string& object, const std::string& name) {
 
 std::vector<int> NumaNodes(const std::string& object, const std::string& name) {
   std::smatch match;
-  if (!std::regex_search(object, match, std::regex("\\\"" + name + "\\\"\\s*:\\s*(\\[[^]]*\\]|[0-9]+)")))
+  // Allow pretty-printed arrays with newlines; [^] does not span newlines reliably
+  // across libstdc++ ECMAScript, so use [\s\S] with a non-greedy array match.
+  if (!std::regex_search(object, match,
+                         std::regex("\\\"" + name + "\\\"\\s*:\\s*(\\[[\\s\\S]*?\\]|[0-9]+)")))
     throw std::runtime_error("missing NUMA node: " + name);
   std::vector<int> nodes;
   const std::regex number("[0-9]+");

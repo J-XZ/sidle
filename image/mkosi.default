@@ -1,37 +1,98 @@
 [Distribution]
 Distribution=ubuntu
+# Ubuntu 的组件（components）
+Repositories=main,restricted,universe,multiverse
 Release=jammy
+
+# 不再复用宿主机 sources（宿主机不是 jammy/源不全时会导致找不到包）
+UseHostRepositories=no
+
+# Mirror=https://mirrors.ustc.edu.cn/ubuntu
+Mirror=http://archive.ubuntu.com/ubuntu
+
+[Partitions]
+RootSize=38G
+ESPSize=512M
 
 [Output]
 Format=gpt_ext4
-Output=root.img
-
-[Boot]
 Bootable=yes
-KernelCommandLine=console=ttyS0
+Output=root.img
+KernelCommandLine="console=ttyS0"
 BootProtocols=bios
 WithUnifiedKernelImages=no
 
 [Content]
-Packages=systemd
-         linux-image-generic
-         openssh-server
-         ca-certificates
-         build-essential
-         clang
-         cmake
-         ninja-build
-         git
-         python3
-         libnuma-dev
-         numactl
-         iproute2
-         procps
-         rsync
-         gdb
-         tar
-ExtraTrees=rootfs
-PostInstallationScript=mkosi.postinst
+WithNetwork=yes
+PostInstallationScript=mkosi_postinst.sh
+
+Packages=
+  sudo
+  acl
+  apt-transport-https
+  bzip2
+  ca-certificates
+  curl
+  dmsetup
+  gettext-base
+  git
+  git-lfs
+  gnupg-agent
+  hwloc
+  iperf3
+  iproute2
+  ipvsadm
+  jq
+  libopenmpi3
+  libpmem2
+  libseccomp2
+  libseccomp-dev
+  lsof
+  lshw
+  net-tools
+  nftables
+  openmpi-bin
+  openssh-client
+  openssh-server
+  pciutils
+  pkg-config
+  python3
+  python3-pip
+  python3-sh
+  rsync
+  socat
+  software-properties-common
+  strace
+  sysstat
+  tar
+  tzdata
+  ubuntu-minimal
+  unzip
+  util-linux
+  vim
+  wget
+  gdb
+  numactl
+  tcpdump
+  chrony
+  libgoogle-glog-dev
+  libgflags-dev
+  libzmq3-dev
+  trace-cmd
+  cmake
+  fish
+
+  # 编译/安装内核模块（含 DKMS）常用依赖
+  build-essential
+  dkms
+  libelf-dev
+  kmod
+  bc
+  flex
+  bison
+  dwarves
+  libssl-dev
+  libncurses-dev
 
 [Validation]
 Password=root

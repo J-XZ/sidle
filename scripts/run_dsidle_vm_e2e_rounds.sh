@@ -7,8 +7,7 @@ config="$repo_root/experiment_config.jsonc"
 suite=""
 rounds=1
 out_dir=""
-runner="${DSIDLE_VM_SUITE_RUNNER:-$repo_root/build-jammy/dsidle_e2e_suite_runner}"
-ivshmem_module="${DSIDLE_IVSHMEM_MODULE:-$repo_root/build-jammy/ivshmem_driver.ko}"
+runner="${DSIDLE_VM_SUITE_RUNNER:-$repo_root/build/dsidle_e2e_suite_runner}"
 pool_tool="${DSIDLE_POOL_TOOL:-$repo_root/build/dsidle_shared_pool}"
 node_capacity=2097152
 max_threads=16
@@ -16,19 +15,21 @@ round_timeout=7200
 execute=0
 
 usage() {
-  echo "usage: $0 --suite 08|09 [--config PATH] [--rounds N] [--out-dir DIR] [--runner PATH] [--ivshmem-module PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--round-timeout SEC] --execute" >&2
+  echo "usage: $0 --suite 08|09 [--config PATH] [--rounds N] [--out-dir DIR] [--runner PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--round-timeout SEC] --execute" >&2
 }
 need_value() { (($# >= 2)) || { usage; exit 2; }; }
 while (($#)); do
   case "$1" in
-    --suite|--config|--rounds|--out-dir|--runner|--ivshmem-module|--pool-tool|--node-control-capacity|--max-threads-per-vm|--round-timeout)
+    --suite|--config|--rounds|--out-dir|--runner|--pool-tool|--node-control-capacity|--max-threads-per-vm|--round-timeout)
       need_value "$@"
       case "$1" in
         --suite) suite=$2;; --config) config=$2;; --rounds) rounds=$2;; --out-dir) out_dir=$2;;
-        --runner) runner=$2;; --ivshmem-module) ivshmem_module=$2;; --pool-tool) pool_tool=$2;; --node-control-capacity) node_capacity=$2;;
+        --runner) runner=$2;; --pool-tool) pool_tool=$2;; --node-control-capacity) node_capacity=$2;;
         --max-threads-per-vm) max_threads=$2;; --round-timeout) round_timeout=$2;;
       esac
       shift 2;;
+    # Compatibility: ivshmem driver is loaded by dsidle_init_vms.sh (cxlkv-aligned).
+    --ivshmem-module) (($# >= 2)) || { usage; exit 2; }; shift 2;;
     --execute) execute=1; shift;;
     --help) usage; exit 0;;
     *) usage; exit 2;;
@@ -39,8 +40,7 @@ for value in "$rounds" "$node_capacity" "$max_threads" "$round_timeout"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer required" >&2; exit 2; }
 done
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
-[[ -x "$runner" ]] || { echo "missing externally built Jammy runner: $runner" >&2; exit 2; }
-[[ -f "$ivshmem_module" ]] || { echo "missing externally built ivshmem module: $ivshmem_module" >&2; exit 2; }
+[[ -x "$runner" ]] || { echo "missing suite runner: $runner (build RelWithDebInfo target dsidle_e2e_suite_runner)" >&2; exit 2; }
 [[ -x "$pool_tool" ]] || { echo "missing pool tool: $pool_tool" >&2; exit 2; }
 ((execute)) || { echo "refusing to start a VM experiment without --execute" >&2; exit 2; }
 
@@ -50,10 +50,12 @@ text=re.sub(r'//[^\n]*', '', open(sys.argv[1]).read())
 cfg=json.loads(text)
 print(cfg['vm']['count'])
 print(cfg['vm']['ssh_base_port'])
+print(cfg['shared_memory']['device_path'])
 PY
 )
 vm_count=${topology[0]}
 ssh_base_port=${topology[1]}
+device_path=${topology[2]}
 [[ "$vm_count" == 4 ]] || { echo "VM E2E runner requires four VMs" >&2; exit 2; }
 [[ -n "$out_dir" ]] || out_dir="$repo_root/exp_data/vm_e2e${suite}_$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$out_dir/logs" "$out_dir/configs"
@@ -66,9 +68,7 @@ cfg['shared_memory']['path']=cfg['shared_memory']['device_path']
 cfg['dsidle']['fixed_key_size']=8 if suite == '08' else 32
 cfg['dsidle']['fixed_value_size']=8 if suite == '08' else 1000
 with open(target, 'w') as out:
-    out.write('// Generated for the VM UIO BAR; do not use for host pool initialization.\n')
-    # The standalone C++ JSONC reader deliberately accepts the repository's
-    # compact-array contract; retain that representation for generated input.
+    out.write('// Generated for the guest ivpci BAR; do not use for host pool initialization.\n')
     json.dump(cfg, out, separators=(',', ':'))
     out.write('\n')
 PY
@@ -77,26 +77,21 @@ ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyCheck
 remote_dir=/root/dsidle-bin
 remote_runner="$remote_dir/dsidle_e2e_suite_runner"
 remote_config="$remote_dir/e2e${suite}_guest.jsonc"
-remote_module="$remote_dir/ivshmem_driver.ko"
 for ((node = 0; node < vm_count; ++node)); do
   port=$((ssh_base_port + node))
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir"
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
-    "$runner" "$guest_config" "$ivshmem_module" "root@127.0.0.1:$remote_dir/"
-  # A /dev/ivpci0 symlink can be supplied by uio_pci_generic too, but its
-  # 4KiB UIO map is not the shared BAR.  Require the custom ivpci driver,
-  # mirroring the proven YCSB VM deployment path.
-  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; driver=\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\"); if [ \"\$driver\" != ivpci ]; then [ -L \"/sys/bus/pci/devices/\$dev/driver\" ] && printf '%s' \"\$dev\" > \"/sys/bus/pci/devices/\$dev/driver/unbind\" || true; modprobe -r uio_pci_generic 2>/dev/null || true; rmmod ivshmem_driver 2>/dev/null || true; insmod $remote_module; printf '%s' ivpci > \"/sys/bus/pci/devices/\$dev/driver_override\"; printf '%s' \"\$dev\" > /sys/bus/pci/drivers_probe; fi; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c /dev/ivpci0"
+    "$runner" "$guest_config" "root@127.0.0.1:$remote_dir/"
+  # Driver must already be loaded by dsidle_init_vms.sh (ivpci + full BAR2).
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+    "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c $device_path"
 done
 
 printf 'suite=%s rounds=%s config=%s runner=%s vm_count=%s\n' "$suite" "$rounds" "$config" "$runner" "$vm_count" >"$out_dir/run.meta"
 phase_prefix="e2e${suite}"
 if [[ "$suite" == 08 ]]; then
-  # Match cxlkv e2e_08: distributed fill, then cross-VM random reads.
   phases=(fill read)
 else
-  # Match cxlkv e2e_09: distributed fill, overwrite every key once, then
-  # cross-VM random reads that verify the updated 1000-byte value.
   phases=(fill update read)
 fi
 for ((round = 1; round <= rounds; ++round)); do

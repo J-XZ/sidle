@@ -24,15 +24,15 @@ cfg = json.loads(text); vm, shared, cpu = cfg['vm'], cfg['shared_memory'], cfg['
 backing = Path(shared['path'])
 if backing.is_dir(): backing /= 'ivshmem_shared_mem'
 nodes = shared['numa_node'] if isinstance(shared['numa_node'], list) else [shared['numa_node']]
-vm_nodes = vm['numa_node'] if isinstance(vm['numa_node'], list) else [vm['numa_node']]
 vm_cores = cpu['vm_cores'] if isinstance(cpu['vm_cores'], list) else [cpu['vm_cores']]
+device_path = shared['device_path']
 for index in range(int(vm['count'])):
     vm_dir = Path(vm['storage_path']) / f'vm_{index}'
     pidfile = vm_dir / 'qemu.pid'
     port = int(vm['ssh_base_port']) + index
     wanted_cores = set(map(int, vm_cores[index * int(vm['core_count_per_vm']):(index + 1) * int(vm['core_count_per_vm'])]))
     if dry:
-        print(f'DRY_RUN verify pid={pidfile} qemu_cmdline=ivshmem:{backing} taskset={",".join(map(str, sorted(wanted_cores)))} ssh={ssh_user}@127.0.0.1:{port} device={shared["device_path"]} numa_nodes={",".join(map(str, nodes))}')
+        print(f'DRY_RUN verify pid={pidfile} qemu_cmdline=ivshmem:{backing} taskset={",".join(map(str, sorted(wanted_cores)))} ssh={ssh_user}@127.0.0.1:{port} device={device_path} driver=ivpci numa_nodes={",".join(map(str, nodes))}')
         continue
     if not pidfile.is_file(): raise SystemExit(f'missing pid file: {pidfile}')
     try: pid = int(pidfile.read_text().strip()); os.kill(pid, 0)
@@ -43,7 +43,12 @@ for index in range(int(vm['count'])):
     actual_cores = os.sched_getaffinity(pid)
     if not wanted_cores <= actual_cores:
         raise SystemExit(f'pid {pid} CPU affinity {sorted(actual_cores)} misses configured cores {sorted(wanted_cores)}')
-    subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '-p', str(port), f'{ssh_user}@127.0.0.1', f'test -e {shared["device_path"]}'], check=True)
+    ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-p', str(port), f'{ssh_user}@127.0.0.1']
+    # Require custom ivpci driver (not uio_pci_generic) and the configured device node.
+    subprocess.run(ssh + ['bash', '-lc',
+        f'dev=$(for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x1af4 ] && [ "$(cat "$d/device")" = 0x1110 ] && basename "$d"; done); '
+        f'[ -n "$dev" ]; [ "$(basename "$(readlink -f "/sys/bus/pci/devices/$dev/driver")")" = ivpci ]; test -c {device_path}'],
+        check=True)
     mapped_nodes = set()
     backing_lines = []
     for line in Path(f'/proc/{pid}/numa_maps').read_text(errors='replace').splitlines():
@@ -51,9 +56,8 @@ for index in range(int(vm['count'])):
         backing_lines.append(line)
         mapped_nodes.update(int(item.split('=')[0][1:]) for item in line.split() if re.fullmatch(r'N\d+=\d+', item))
     if not backing_lines: raise SystemExit(f'pid {pid} has no numa_maps entry for {backing}')
-    # A freshly truncated ivshmem file has no resident pages yet.  Once a
-    # workload faults shared pages in, their observed NUMA nodes must obey the
-    # configured shared-memory placement.
+    # Fresh sparse/tmpfs backing may have no resident pages yet; once faulted in,
+    # observed NUMA nodes must obey shared_memory.numa_node.
     if mapped_nodes and not mapped_nodes <= set(map(int, nodes)):
         raise SystemExit(f'pid {pid} backing NUMA nodes {sorted(mapped_nodes)} outside configured {nodes}')
 print('DSIDLE_VM_CHECK_DRY_RUN_OK' if dry else 'DSIDLE_VM_CHECK_OK')

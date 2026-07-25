@@ -171,6 +171,10 @@ meta={"warmup_rounds":int(warmup_rounds),"rounds":int(rounds),"record_count":int
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
-if (( ! skip_build )); then "$script_dir/dsidle_build_vm_artifacts.sh"; fi
+if (( ! skip_build )); then
+  # Host RelWithDebInfo build (ivpci driver is guest-built by dsidle_init_vms.sh).
+  cmake -S "$script_dir" -B "$script_dir/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  cmake --build "$script_dir/build" --target dsidle_e2e_trace_runner dsidle_shared_pool -j"$(nproc)"
+fi
 if (( ! skip_vm_init )); then "$script_dir/dsidle_check_vms.sh"; fi
 "$script_dir/scripts/run_dsidle_vm_ycsb_rounds.sh" --prepared-dir "$out_dir" --warmup-rounds "$warmup_rounds" --rounds "$rounds" --round-timeout "$round_timeout"
