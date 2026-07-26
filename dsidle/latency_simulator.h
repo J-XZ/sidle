@@ -138,6 +138,16 @@ inline void RecordSwccFlush(const void *address, uint64_t bytes) {
     GlobalLatencySimulator().RecordRange(PoolKind::kSwcc, AccessKind::kFlush,
                                          address, bytes);
 }
+inline void RecordHwccRead(const void *address, uint64_t bytes) {
+  if (InstrumentationEnabledFast())
+    GlobalLatencySimulator().RecordRange(PoolKind::kHwcc, AccessKind::kRead,
+                                         address, bytes);
+}
+inline void RecordHwccWrite(const void *address, uint64_t bytes) {
+  if (InstrumentationEnabledFast())
+    GlobalLatencySimulator().RecordRange(PoolKind::kHwcc, AccessKind::kWrite,
+                                         address, bytes);
+}
 inline void RecordHwccAtomicLoad(const void *address) {
   if (InstrumentationEnabledFast())
     GlobalLatencySimulator().RecordLine(PoolKind::kHwcc,

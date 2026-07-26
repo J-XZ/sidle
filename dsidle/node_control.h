@@ -44,6 +44,7 @@ template <typename T> using SwccOffset = BasicOffset<T, SwccRegion>;
 template <typename T> using HwccOffset = BasicOffset<T, HwccRegion>;
 
 enum class NodeAllocationState : std::uint32_t { kFree, kAllocating, kPublished, kRetiring };
+inline constexpr std::size_t kCanonicalNodeEnvelopeBytes = 512;
 
 // dsidle: This is the sole cross-VM control cache line for a canonical node.
 struct alignas(64) NodeControl {
@@ -100,20 +101,25 @@ T* ResolveCanonicalNode(NodeRef ref) {
   if (!ref) return nullptr;
   void* base = SharedPoolBase();
   auto* control = ref.get(base);
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   const auto state = control
       ? control->allocation_state.load(std::memory_order_acquire)
       : NodeAllocationState::kFree;
+  if (control)
+    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
+                                sizeof(control->canonical_swcc_offset));
   if (!control ||
       (state != NodeAllocationState::kPublished &&
        state != NodeAllocationState::kRetiring) ||
       !control->canonical_swcc_offset)
     throw std::runtime_error("NodeRef does not name a live canonical node");
   T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
-  // NodeControl publishes only the SWCC offset.  Invalidate before the first
-  // canonical-body access; in particular, nodeversion::load() must not read a
-  // stale control_ref_ from this first cache line.
+  // NodeControl publishes only the SWCC offset. Invalidate the first line
+  // before reading the embedded control_ref_; nodeversion::stable() then
+  // invalidates and charges the complete node envelope before traversal.
   InvalidateSwccRange(canonical, kSwccCacheLineBytes);
-  latency_sim::RecordSwccRead(canonical, 64);
+  latency_sim::RecordSwccRead(canonical, kSwccCacheLineBytes);
   return canonical;
 }
 
@@ -154,8 +160,18 @@ class NodeVersionAccessor {
     NodeControl* control = Control(true);
     latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
     std::uint64_t version = control->version_and_state.load(std::memory_order_acquire);
-    while (version & MasstreeNodeVersionBits::dirty_mask)
+    while (version & MasstreeNodeVersionBits::dirty_mask) {
+      latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
       version = control->version_and_state.load(std::memory_order_acquire);
+    }
+    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
+                                sizeof(control->canonical_swcc_offset) +
+                                    sizeof(control->generation));
+    auto* canonical =
+        static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset;
+    InvalidateSwccRange(canonical, kCanonicalNodeEnvelopeBytes);
+    latency_sim::RecordSwccRead(canonical,
+                                kCanonicalNodeEnvelopeBytes);
     return {version, control->generation, control->canonical_swcc_offset};
   }
 
@@ -168,7 +184,11 @@ class NodeVersionAccessor {
                                                             std::memory_order_acq_rel, std::memory_order_acquire)) {
         InvalidateSwccRange(
             static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset,
-            512);
+            kCanonicalNodeEnvelopeBytes);
+        latency_sim::RecordSwccRead(
+            static_cast<std::byte*>(pool_base_) +
+                control->canonical_swcc_offset,
+            kCanonicalNodeEnvelopeBytes);
         if (locked_version) *locked_version = expected | MasstreeNodeVersionBits::lock_bit;
         return true;
       }
@@ -202,6 +222,7 @@ class NodeVersionAccessor {
   NodeControl* Control(bool allow_retiring = false) const {
     auto* control = ref_.get(pool_base_);
     if (!control) throw std::runtime_error("null NodeRef");
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
     const auto state = control->allocation_state.load(std::memory_order_acquire);
     if (state != NodeAllocationState::kPublished &&
         !(allow_retiring && state == NodeAllocationState::kRetiring))
@@ -240,6 +261,9 @@ class RootControlAccessor {
         continue;
       const NodeRef ref(root_->root_ref);
       const auto generation = root_->root_generation;
+      latency_sim::RecordHwccRead(&root_->root_ref,
+                                  sizeof(root_->root_ref) +
+                                      sizeof(root_->root_generation));
       latency_sim::RecordHwccAtomicLoad(&root_->version);
       const auto second = root_->version.load(std::memory_order_acquire);
       if (first == second) return {ref, generation, second};
@@ -264,6 +288,9 @@ class RootControlAccessor {
     }
     root_->root_ref = ref.value();
     root_->root_generation = generation;
+    latency_sim::RecordHwccWrite(&root_->root_ref,
+                                 sizeof(root_->root_ref) +
+                                     sizeof(root_->root_generation));
     latency_sim::RecordHwccAtomicStore(&root_->version);
     root_->version.store(version + 2, std::memory_order_release);
   }

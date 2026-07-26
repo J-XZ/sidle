@@ -167,8 +167,13 @@ class nodeversion {
             // baseline 512B node envelope; publish their SWCC writes before
             // releasing the matching HWCC version.
             auto* control = control_ref_.get(dsidle::SharedPoolBase());
-            dsidle::FlushSwccRange(static_cast<std::byte*>(dsidle::SharedPoolBase()) +
-                                       control->canonical_swcc_offset, 512);
+            auto* canonical =
+                static_cast<std::byte*>(dsidle::SharedPoolBase()) +
+                control->canonical_swcc_offset;
+            latency_sim::RecordSwccWrite(
+                canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+            dsidle::FlushSwccRange(
+                canonical, dsidle::kCanonicalNodeEnvelopeBytes);
         }
         release_fence();
         // A competing writer may legally acquire this version immediately
@@ -245,24 +250,41 @@ class nodeversion {
   private:
     value_type load() const {
         if (!control_ref_) return v_;
-        return static_cast<value_type>(control_ref_.get(dsidle::SharedPoolBase())
-            ->version_and_state.load(std::memory_order_acquire));
+        auto* version = &control_ref_.get(dsidle::SharedPoolBase())
+                             ->version_and_state;
+        latency_sim::RecordHwccAtomicLoad(version);
+        return static_cast<value_type>(
+            version->load(std::memory_order_acquire));
     }
     void store(value_type value) {
         if (!control_ref_) v_ = value;
-        else control_ref_.get(dsidle::SharedPoolBase())->version_and_state.store(value, std::memory_order_release);
+        else {
+            auto* version = &control_ref_.get(dsidle::SharedPoolBase())
+                                 ->version_and_state;
+            latency_sim::RecordHwccAtomicStore(version);
+            version->store(value, std::memory_order_release);
+        }
     }
     bool compare_exchange(value_type expected, value_type desired) {
         if (!control_ref_) return bool_cmpxchg(&v_, expected, desired);
         std::uint64_t observed = expected;
-        return control_ref_.get(dsidle::SharedPoolBase())->version_and_state.compare_exchange_strong(
-            observed, desired, std::memory_order_acq_rel, std::memory_order_acquire);
+        auto* version = &control_ref_.get(dsidle::SharedPoolBase())
+                             ->version_and_state;
+        latency_sim::RecordHwccAtomicRmw(version);
+        return version->compare_exchange_strong(
+            observed, desired, std::memory_order_acq_rel,
+            std::memory_order_acquire);
     }
     void invalidate_canonical() const {
         if (!control_ref_) return;
         const auto* control = control_ref_.get(dsidle::SharedPoolBase());
-        dsidle::InvalidateSwccRange(static_cast<const std::byte*>(dsidle::SharedPoolBase()) +
-                                        control->canonical_swcc_offset, 512);
+        const auto* canonical =
+            static_cast<const std::byte*>(dsidle::SharedPoolBase()) +
+            control->canonical_swcc_offset;
+        dsidle::InvalidateSwccRange(
+            canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+        latency_sim::RecordSwccRead(
+            canonical, dsidle::kCanonicalNodeEnvelopeBytes);
     }
     value_type v_{};
     dsidle::NodeRef control_ref_{};
