@@ -113,6 +113,16 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     fence();
     if (twig_tail != n_)
         twig_tail->lv_[0] = nl;
+    // The intermediate layer roots are never locked and therefore never pass
+    // through nodeversion::unlock().  Publish their completed SWCC bodies
+    // before the old leaf exposes twig_head to another VM.
+    for (const auto& new_node : new_nodes_) {
+        latency_sim::RecordSwccWrite(
+            new_node.first, new_node.first->allocated_size());
+        dsidle::FlushSwccRange(
+            new_node.first, new_node.first->allocated_size());
+    }
+    fence();
     if (twig_head != n_)
         n_->lv_[kx_.p] = twig_head;
     else

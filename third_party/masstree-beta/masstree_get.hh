@@ -39,7 +39,7 @@ retry:
 
     if (replica_enabled_) if (auto* directory = dsidle::CurrentReplicaDirectoryOrNull()) {
         const auto ref = n_->control_ref();
-        const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+        const auto generation = dsidle::LoadNodeGeneration(ref);
         auto handle = directory->Acquire(ref, generation, v_.version_value());
         if (handle) {
             const typename Masstree::leaf_replica<P>::value_type* local_value = nullptr;
@@ -56,11 +56,13 @@ retry:
                 return true;
             }
             if (cached == Masstree::leaf_replica<P>::result::kLayer) {
-                ka_.shift_by(-int(sizeof(typename P::ikey_type)));
+                ka_.shift_by(int(sizeof(typename P::ikey_type)));
                 root = dsidle::ResolveCanonicalNode<node_base<P>>(layer_ref);
                 goto retry;
             }
-            return false;
+            // A replica is only a local read cache.  A miss in its compact
+            // snapshot is not authoritative, so preserve Masstree's canonical
+            // lookup as the correctness fallback.
         }
     }
 

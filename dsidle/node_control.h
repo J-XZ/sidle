@@ -62,6 +62,32 @@ static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
 using NodeRef = HwccOffset<NodeControl>;
 using ValueRef = SwccOffset<std::byte>;
 
+inline NodeAllocationState LoadNodeAllocationState(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    return NodeAllocationState::kFree;
+  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
+  return control->allocation_state.load(std::memory_order_acquire);
+}
+
+inline std::uint64_t LoadNodeGeneration(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null generation NodeRef");
+  latency_sim::RecordHwccRead(&control->generation,
+                              sizeof(control->generation));
+  return control->generation;
+}
+
+inline std::uint64_t LoadCanonicalSwccOffset(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null canonical NodeRef");
+  latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
+                              sizeof(control->canonical_swcc_offset));
+  return control->canonical_swcc_offset;
+}
+
 inline bool TryLockLeafLink(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
@@ -101,11 +127,8 @@ T* ResolveCanonicalNode(NodeRef ref) {
   if (!ref) return nullptr;
   void* base = SharedPoolBase();
   auto* control = ref.get(base);
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  const auto state = control
-      ? control->allocation_state.load(std::memory_order_acquire)
-      : NodeAllocationState::kFree;
+  const auto state = control ? LoadNodeAllocationState(ref)
+                             : NodeAllocationState::kFree;
   if (control)
     latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
                                 sizeof(control->canonical_swcc_offset));

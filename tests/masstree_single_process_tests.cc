@@ -258,6 +258,25 @@ int main() {
   using replica_params = Masstree::default_table::parameters_type;
   using replica_key_type = Masstree::key<typename replica_params::ikey_type>;
   using replica_node_type = Masstree::node_base<replica_params>;
+  // A layer-leaf replica must advance the key by one ikey before descending.
+  // This catches the cross-VM e2e09 path, whose 32-byte keys share prefixes.
+  const std::string layered_key =
+      "prefix--" + std::string(160, 'x') + 'A';
+  replica_key_type layered_search(layered_key.data(), layered_key.size());
+  typename replica_node_type::nodeversion_type layered_version;
+  auto* layered_leaf =
+      table.table().root()->reach_leaf(layered_search, layered_version, *ti);
+  assert(Masstree::leaf_replica<replica_params>::Promote(
+      *layered_leaf, layered_version, replicas));
+  {
+    Masstree::unlocked_tcursor<replica_params> layered_cursor(
+        table.table(), lcdf::Str(layered_key.data(), layered_key.size()));
+    assert(layered_cursor.find_unlocked(*ti));
+    const auto column = layered_cursor.value()->col(0);
+    assert(std::string(column.s, column.len) == expected.at(layered_key));
+  }
+  std::free(replicas.Invalidate(layered_leaf->control_ref()));
+
   assert(!table.table().root()->isleaf());
   auto* canonical_root = static_cast<Masstree::internode<replica_params>*>(table.table().root());
   const auto root_replica_version = canonical_root->stable();
@@ -313,6 +332,27 @@ int main() {
       replica_key, replica_value, replica_layer) == Masstree::leaf_replica<replica_params>::result::kValue);
   assert(replica_value->col(0).len == expected.begin()->second.size());
   replica_handle = {};
+  // Replica snapshots are optional local caches. A non-authoritative snapshot
+  // miss must continue through the canonical Masstree leaf.
+  auto* empty_snapshot =
+      static_cast<Masstree::leaf_replica<replica_params>::header*>(
+          Masstree::leaf_replica<replica_params>::Create(
+              *canonical_leaf, canonical_leaf->permutation()));
+  empty_snapshot->count = 0;
+  std::free(replicas.Publish(
+      canonical_leaf->control_ref(),
+      {empty_snapshot, promote_generation, promote_version.version_value(),
+       empty_snapshot->bytes, dsidle::ReplicaKind::kValueLeaf}));
+  {
+    Masstree::unlocked_tcursor<replica_params> fallback_cursor(
+        table.table(),
+        lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+    assert(fallback_cursor.find_unlocked(*ti));
+    assert(!fallback_cursor.used_replica());
+  }
+  std::free(replicas.Invalidate(canonical_leaf->control_ref()));
+  assert(Masstree::leaf_replica<replica_params>::Promote(
+      *canonical_leaf, promote_version, replicas));
   {
     Masstree::unlocked_tcursor<replica_params> replica_cursor(
         table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()));
