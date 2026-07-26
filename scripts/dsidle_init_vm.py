@@ -214,12 +214,10 @@ def validate_numa_separation(
 
 
 def validate_host_cpu_topology(
-    shared_nodes: Sequence[int],
     vm_nodes: Sequence[int],
     count: int,
     cores: int,
     reserved: Sequence[int],
-    ivshmem_cores: Sequence[int],
     vm_cores: Sequence[int],
 ) -> None:
     online = online_cpus(Path("/sys/devices/system/cpu/online").read_text())
@@ -228,17 +226,6 @@ def validate_host_cpu_topology(
         if core not in online or not cpu_is_online(core):
             raise SystemExit(f"host_cpu.reserved_cores CPU {core} invalid/offline")
         role_pairs.append(("reserved", core))
-    for core in ivshmem_cores:
-        if core not in online or not cpu_is_online(core):
-            raise SystemExit(
-                f"host_cpu.ivshmem_server_cores CPU {core} invalid/offline"
-            )
-        if cpu_numa_node(core) not in shared_nodes:
-            raise SystemExit(
-                f"host_cpu.ivshmem_server_cores CPU {core} not on "
-                f"shared_memory.numa_node {list(shared_nodes)}"
-            )
-        role_pairs.append(("ivshmem", core))
     if len(vm_cores) < count * cores:
         raise SystemExit("insufficient vm_cores")
     used = vm_cores[: count * cores]
@@ -755,6 +742,10 @@ def main() -> int:
     reserved = list(map(int, as_list(cpu["reserved_cores"])))
     ivshmem_cores = list(map(int, as_list(cpu["ivshmem_server_cores"])))
     vm_cores = list(map(int, as_list(cpu["vm_cores"])))
+    print(
+        "[init_vm] host_cpu.ivshmem_server_cores is a cxlkv-compatible "
+        f"ignored field for ivshmem-plain: {ivshmem_cores}"
+    )
 
     if count < 1:
         raise SystemExit("vm.count must be >= 1")
@@ -777,12 +768,10 @@ def main() -> int:
         shared_nodes, vm_nodes, args.allow_overlapping_numa
     )
     validate_host_cpu_topology(
-        shared_nodes,
         vm_nodes,
         count,
         cores,
         reserved,
-        ivshmem_cores,
         vm_cores,
     )
     if not args.no_host_tuning:
