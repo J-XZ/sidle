@@ -398,12 +398,23 @@ class leafvalue {
         auto* value = dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
         if (value) {
             dsidle::InvalidateSwccRange(value, dsidle::kSwccCacheLineBytes);
-            const auto bytes = value->size();
-            if (bytes > dsidle::kSwccCacheLineBytes) {
+            const auto metadata_bytes =
+                sizeof(kvtimestamp_t) +
+                sizeof(typename value_element_type::offset_type) *
+                    (static_cast<size_t>(value->ncol()) + 2);
+            if (metadata_bytes > dsidle::kSwccCacheLineBytes) {
                 dsidle::InvalidateSwccRange(
                     reinterpret_cast<const std::byte*>(value) +
                         dsidle::kSwccCacheLineBytes,
-                    bytes - dsidle::kSwccCacheLineBytes);
+                    metadata_bytes - dsidle::kSwccCacheLineBytes);
+            }
+            const auto bytes = value->size();
+            const auto visible_bytes =
+                std::max(metadata_bytes, dsidle::kSwccCacheLineBytes);
+            if (bytes > visible_bytes) {
+                dsidle::InvalidateSwccRange(
+                    reinterpret_cast<const std::byte*>(value) + visible_bytes,
+                    bytes - visible_bytes);
             }
             latency_sim::RecordSwccRead(value, bytes);
         }
