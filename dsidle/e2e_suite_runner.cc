@@ -50,10 +50,18 @@ Options Parse(int argc, char** argv) {
   if (options.phase.empty()) Fail("--phase is required");
   return options;
 }
-struct Suite { uint32_t key_bytes; uint32_t value_bytes; const char* prefix; };
+enum class SuiteKind { k08, k09 };
+struct Suite {
+  SuiteKind kind;
+  uint32_t key_bytes;
+  uint32_t value_bytes;
+  const char* prefix;
+};
 Suite ParseSuite(const std::string& phase) {
-  if (phase.rfind("e2e08_", 0) == 0) return {8, 8, "08"};
-  if (phase.rfind("e2e09_", 0) == 0) return {32, 1000, "09"};
+  if (phase.rfind("e2e08_", 0) == 0)
+    return {SuiteKind::k08, 8, 8, "08"};
+  if (phase.rfind("e2e09_", 0) == 0)
+    return {SuiteKind::k09, 32, 1000, "09"};
   Fail("phase must start with e2e08_ or e2e09_");
 }
 uint64_t StartForPart(uint64_t count, uint32_t parts, uint32_t part) { return count * part / parts; }
@@ -61,18 +69,21 @@ uint64_t CountForPart(uint64_t count, uint32_t parts, uint32_t part) { return St
 char Base36(uint64_t value) { return static_cast<char>(value < 10 ? '0' + value : 'A' + (value - 10)); }
 uint64_t SplitMix64(uint64_t value) { value += 0x9e3779b97f4a7c15ULL; value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL; value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL; return value ^ (value >> 31U); }
 std::string Key(const Suite& suite, uint64_t index) {
-  std::string result(suite.key_bytes, '0'); result[0] = suite.prefix[0] == '0' ? 'k' : 'u';
+  std::string result(suite.key_bytes, '0');
+  result[0] = suite.kind == SuiteKind::k08 ? 'k' : 'u';
   for (uint32_t pos = suite.key_bytes - 1; pos > 0; --pos) { result[pos] = Base36(index % 36ULL); index /= 36ULL; }
   return result;
 }
 std::string Value(const Suite& suite, uint64_t index, uint64_t generation) {
-  if (suite.prefix[0] == '0') { std::string result(suite.value_bytes, '0'); for (uint32_t pos = suite.value_bytes; pos > 0; --pos) { result[pos - 1] = Base36(index % 36ULL); index /= 36ULL; } return result; }
+  if (suite.kind == SuiteKind::k08) { std::string result(suite.value_bytes, '0'); for (uint32_t pos = suite.value_bytes; pos > 0; --pos) { result[pos - 1] = Base36(index % 36ULL); index /= 36ULL; } return result; }
   std::string result(suite.value_bytes, '!'); uint64_t state = SplitMix64(index ^ (generation << 48U) ^ 0xC209ULL);
-  for (uint64_t i = 0; i < result.size(); ++i) { if ((i & 7ULL) == 0) state = SplitMix64(state + i + generation); result[i] = static_cast<char>('!' + ((state >> ((i & 7ULL) * 8ULL)) % 94ULL)); }
+  for (uint64_t i = 0; i < result.size(); ++i) { if ((i & 7ULL) == 0) state = SplitMix64(state + i + generation); const uint64_t byte = (state >> ((i & 7ULL) * 8ULL)) & 0xffULL; result[i] = static_cast<char>('!' + (byte % 94ULL)); }
   return result;
 }
 uint64_t ReadIndex(const Suite& suite, uint32_t node, uint32_t worker, uint64_t seq) {
-  const uint64_t seed = (suite.prefix[0] == '0' ? 0xE2080000ULL : 0xE2090000ULL) ^ (uint64_t(node) << 32U) ^ (uint64_t(worker + 1) << 16U) ^ seq;
+  const uint64_t seed =
+      (suite.kind == SuiteKind::k08 ? 0xE2080000ULL : 0xE2090000ULL) ^
+      (uint64_t(node) << 32U) ^ (uint64_t(worker + 1) << 16U) ^ seq;
   return SplitMix64(seed) % kRecords;
 }
 uint64_t RunWorkers(Masstree::default_table& table, dsidle::SharedPool& pool, uint32_t vm_count, uint32_t node, uint32_t workers, const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
