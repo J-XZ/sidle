@@ -1096,11 +1096,6 @@ leaf<P>* leaf<P>::advance_to_key(const key_type& ka, nodeversion_type& v,
 template <typename P>
 void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     external_ksuf_type* oksuf = readable_external_ksuf();
-    if (initializing && oksuf && oksuf->assign(p, s)) {
-        latency_sim::RecordSwccWrite(oksuf, oksuf->capacity());
-        dsidle::FlushSwccRange(oksuf, oksuf->capacity());
-        return;
-    }
     if (!oksuf && extrasize64_ > 0 && iksuf_[0].assign(p, s))
         return;
 
