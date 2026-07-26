@@ -6,6 +6,7 @@
 #include "masstree_internal_replica.hh"
 #include "masstree_replica.hh"
 #include "masstree_root_replica.hh"
+#include "masstree_scan.hh"
 #include "sidle_meta.hh"
 #include "sidle_worker.hh"
 #include "dsidle/latency_simulator.h"

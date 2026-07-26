@@ -25,8 +25,8 @@ int main() {
 
   auto* first = static_cast<char*>(std::malloc(32)); assert(first); std::strcpy(first, "first");
   assert(directory.Publish(ref, {first, 1, 8, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
-  assert(directory.HasReplica(ref, 1));
-  assert(!directory.HasReplica(ref, 2));
+  assert(directory.HasLocalPlacement(ref, 1));
+  assert(!directory.HasLocalPlacement(ref, 2));
   directory.RecordAccess(ref);
   directory.RecordAccess(ref);
   assert(directory.AccessCount(ref) == 2);
@@ -47,10 +47,27 @@ int main() {
   ref.get(pool.base())->version_and_state.store(24, std::memory_order_release);
   assert(!directory.Acquire(ref, 1, 24));
   assert(directory.LocalBytes() == 0);
+  assert(directory.HasLocalPlacement(ref, 1));
   assert(!directory.Acquire(ref, 1, 16));
+  auto* refreshed = static_cast<char*>(std::malloc(32));
+  assert(refreshed);
+  std::strcpy(refreshed, "refreshed");
+  void* refreshed_old = nullptr;
+  assert(directory.TryRefresh(
+      ref, {refreshed, 1, 24, 32, dsidle::ReplicaKind::kValueLeaf},
+      true, &refreshed_old));
+  assert(refreshed_old == nullptr);
+  assert(directory.Acquire(ref, 1, 24));
   std::free(directory.Invalidate(ref));
-  assert(!directory.HasReplica(ref, 1));
+  assert(!directory.HasLocalPlacement(ref, 1));
   assert(!directory.Acquire(ref, 1, 16));
+  auto* demoted_refresh = static_cast<char*>(std::malloc(32));
+  assert(demoted_refresh);
+  assert(!directory.TryRefresh(
+      ref, {demoted_refresh, 1, 24, 32,
+            dsidle::ReplicaKind::kValueLeaf},
+      true, &refreshed_old));
+  std::free(demoted_refresh);
   directory.SetBudgetBytes(32);
   auto* budgeted = static_cast<char*>(std::malloc(32)); assert(budgeted);
   void* superseded = nullptr;

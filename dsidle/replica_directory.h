@@ -56,10 +56,9 @@ class ReplicaDirectory {
   // Acquires a stable local copy only if its generation/version match the
   // canonical control snapshot. The caller keeps the ReadHandle until copied.
   ReadHandle Acquire(NodeRef ref, std::uint64_t generation, std::uint64_t cached_version);
-  // Policy-only residency query. It does not dereference the buffer or require
-  // its cached canonical version to remain current while a writer holds the
-  // node lock.
-  bool HasReplica(NodeRef ref, std::uint64_t generation) const;
+  // Policy-only residency query. Local placement is independent of whether
+  // the currently cached snapshot still matches the canonical node version.
+  bool HasLocalPlacement(NodeRef ref, std::uint64_t generation) const;
 
   // Publishes a fully initialized local buffer and returns the superseded
   // buffer only after all local readers have left. Caller owns/free()s it.
@@ -68,6 +67,11 @@ class ReplicaDirectory {
   // owner of local-replica accounting, so an evict/publish race cannot exceed
   // the per-VM budget.  On failure it leaves snapshot.local_ptr untouched.
   bool TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** superseded);
+  // Replaces a stale snapshot only while the same generation is still
+  // selected for local placement. This prevents a foreground writer racing a
+  // demoter from resurrecting a replica that SIDLE has already evicted.
+  bool TryRefresh(NodeRef ref, ReplicaSnapshot snapshot, bool budgeted,
+                  void** superseded);
   // Marks a slot invalid, waits for local readers, and returns its old buffer.
   void* Invalidate(NodeRef ref);
   // Called when a NodeControl slot gets a new generation. This both invalidates
@@ -94,6 +98,7 @@ class ReplicaDirectory {
     std::atomic<std::uint64_t> cached_version{0};
     std::atomic<std::uint64_t> bytes{0};
     std::atomic<std::uint32_t> kind{0};
+    std::atomic<bool> desired_local{false};
     // Preserve SIDLE's uint16_t access_time modulo arithmetic while keeping
     // each VM's counter race-free and outside canonical SWCC memory.
     std::atomic<std::uint16_t> access_count{0};

@@ -209,21 +209,15 @@ result_t query<R>::run_put(T& table, Str key,
     lp.node()->mark_insert();
     auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
     const bool refresh_local =
-        replicas && replicas->HasReplica(
+        replicas && replicas->HasLocalPlacement(
                         lp.node()->control_ref(),
                         dsidle::LoadNodeGeneration(lp.node()->control_ref()));
     const bool refresh_original =
         replicas && lp.original_node() != lp.node() &&
-        replicas->HasReplica(
+        replicas->HasLocalPlacement(
             lp.original_node()->control_ref(),
             dsidle::LoadNodeGeneration(lp.original_node()->control_ref()));
     lp.finish(1, ti);
-    if (replicas) {
-        std::free(replicas->Invalidate(lp.node()->control_ref()));
-        if (lp.original_node() != lp.node())
-            std::free(
-                replicas->Invalidate(lp.original_node()->control_ref()));
-    }
     lp.publish_local_replicas(refresh_local, refresh_original);
     return inserted ? Inserted : Updated;
 }
@@ -275,21 +269,15 @@ result_t query<R>::run_replace(T& table, Str key, Str value, threadinfo& ti) {
     lp.node()->mark_insert();
     auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
     const bool refresh_local =
-        replicas && replicas->HasReplica(
+        replicas && replicas->HasLocalPlacement(
                         lp.node()->control_ref(),
                         dsidle::LoadNodeGeneration(lp.node()->control_ref()));
     const bool refresh_original =
         replicas && lp.original_node() != lp.node() &&
-        replicas->HasReplica(
+        replicas->HasLocalPlacement(
             lp.original_node()->control_ref(),
             dsidle::LoadNodeGeneration(lp.original_node()->control_ref()));
     lp.finish(1, ti);
-    if (replicas) {
-        std::free(replicas->Invalidate(lp.node()->control_ref()));
-        if (lp.original_node() != lp.node())
-            std::free(
-                replicas->Invalidate(lp.original_node()->control_ref()));
-    }
     lp.publish_local_replicas(refresh_local, refresh_original);
     return inserted ? Inserted : Updated;
 }
@@ -330,22 +318,13 @@ bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
     auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
     const bool refresh_local =
         found && replicas &&
-        replicas->HasReplica(
+        replicas->HasLocalPlacement(
             lp.node()->control_ref(),
             dsidle::LoadNodeGeneration(lp.node()->control_ref()));
     lp.finish(-1, ti);
     if (found) {
-        if (replicas)
-            std::free(replicas->Invalidate(lp.node()->control_ref()));
-        if (refresh_local) {
-            try {
-                const auto version = lp.node()->stable();
-                Masstree::leaf_replica<typename T::parameters_type>::Promote(
-                    *lp.node(), version, *replicas, !lp.node()->is_root());
-            } catch (const std::bad_alloc&) {
-                // Removal is already committed; a cache refresh is optional.
-            }
-        }
+        if (refresh_local)
+            lp.publish_current_replica();
     }
     return found;
 }

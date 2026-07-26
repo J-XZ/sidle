@@ -138,11 +138,30 @@ class leaf_replica {
     return result::kMiss;
   }
 
+  // Replica entries use the same sorted-permutation order as Masstree's scan
+  // stack, so an already positioned scan can fetch its copied value directly
+  // instead of repeating a linear key lookup for every emitted row.
+  static const value_type* ValueAt(const void* replica,
+                                   std::uint32_t sorted_index) {
+    const auto* memory = static_cast<const std::byte*>(replica);
+    const auto* data = static_cast<const header*>(replica);
+    if (sorted_index >= data->count)
+      return nullptr;
+    const auto* entries =
+        reinterpret_cast<const entry*>(memory + sizeof(header));
+    const entry& candidate = entries[sorted_index];
+    if (candidate.is_layer)
+      return nullptr;
+    return reinterpret_cast<const value_type*>(
+        memory + candidate.value_offset);
+  }
+
   // Snapshot-copy-publish protocol for a canonical leaf. The caller obtains a
   // stable version first; publication is rejected if the leaf changed while
   // its suffix/value bytes were copied.
   static bool Promote(const leaf_type& source, typename leaf_type::nodeversion_type version,
-                      dsidle::ReplicaDirectory& directory, bool budgeted = true) {
+                      dsidle::ReplicaDirectory& directory,
+                      bool budgeted = true, bool refresh = false) {
     const auto ref = source.control_ref();
     const auto generation = dsidle::LoadNodeGeneration(ref);
     // A leaf's permutation and values are changed by foreground writers.  An
@@ -170,7 +189,11 @@ class leaf_replica {
         buffer.get(), generation, published_version, bytes,
         has_layer ? dsidle::ReplicaKind::kLayerLeaf
                   : dsidle::ReplicaKind::kValueLeaf};
-    if (budgeted) {
+    if (refresh) {
+      if (!directory.TryRefresh(ref, snapshot, budgeted, &old)) {
+        return false;
+      }
+    } else if (budgeted) {
       if (!directory.TryPublish(ref, snapshot, &old)) {
         return false;
       }

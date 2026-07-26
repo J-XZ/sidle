@@ -68,12 +68,17 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     // Create a twig of nodes until the suffixes diverge
     leaf_type* twig_head = n_;
     leaf_type* twig_tail = n_;
+    auto parent_policy_type = twig_tail->replica_policy_type();
     while (kcmp == 0) {
         bool initial_local = false;
         leaf_type* nl =
-            leaf_type::make_root(0, twig_tail, ti, &initial_local);
+            leaf_type::make_root(
+                0, twig_tail, ti, &initial_local, parent_policy_type);
         if (initial_local)
             initial_replica_nodes_.push_back(nl);
+        parent_policy_type = initial_local
+            ? sidle::node_mem_type::local
+            : sidle::node_mem_type::remote;
         nl->assign_initialize_for_layer(0, oka);
         if (twig_head != n_)
             twig_tail->lv_[0] = nl;
@@ -97,7 +102,8 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
         ksufsize = 0;
     bool initial_local = false;
     leaf_type *nl =
-        leaf_type::make_root(ksufsize, twig_tail, ti, &initial_local);
+        leaf_type::make_root(
+            ksufsize, twig_tail, ti, &initial_local, parent_policy_type);
     if (initial_local)
         initial_replica_nodes_.push_back(nl);
     nl->assign_initialize(0, kcmp < 0 ? oka : ka_, ti);
@@ -162,38 +168,75 @@ inline void tcursor<P>::publish_local_replicas(bool refresh_current,
     auto* directory = dsidle::CurrentReplicaDirectoryOrNull();
     if (!directory)
         return;
-    const auto publish = [directory](node_type* node) {
+    bool needs_root_identity = new_global_root_ != nullptr;
+    for (node_type* node : initial_replica_nodes_)
+        needs_root_identity = needs_root_identity || node->is_root();
+    for (node_type* node : refresh_replica_nodes_)
+        needs_root_identity = needs_root_identity || node->is_root();
+    needs_root_identity =
+        needs_root_identity ||
+        (refresh_current && n_->is_root()) ||
+        (refresh_original && original_n_ != n_ && original_n_->is_root());
+    const auto published_root = needs_root_identity
+        ? dsidle::RootControlAccessor(
+              dsidle::CurrentSharedPool().root_control()).stable().ref
+        : dsidle::NodeRef{};
+    const auto publish =
+        [directory, published_root](
+            node_type* node, bool refresh) {
         try {
             const auto version = node->stable();
             if (version.deleted() || version.locked())
                 return;
+            const bool global_root =
+                node->is_root() &&
+                published_root == node->control_ref();
             if (node->isleaf())
                 leaf_replica<P>::Promote(
                     *static_cast<leaf_type*>(node), version, *directory,
-                    !node->is_root());
+                    !global_root, refresh);
             else
                 internode_replica<P>::Promote(
                     *static_cast<internode_type*>(node), version, *directory,
-                    !node->is_root());
+                    !global_root, refresh);
         } catch (const std::bad_alloc&) {
             // The canonical insertion has already committed. A local replica
             // is an optional cache, so local DRAM exhaustion must not turn a
             // successful write into a replay-visible failure.
         }
     };
-    for (node_type* node : refresh_replica_nodes_) {
-        std::free(directory->Invalidate(node->control_ref()));
-        publish(node);
-    }
+    for (node_type* node : refresh_replica_nodes_)
+        publish(node, true);
     bool current_was_initial = false;
     for (node_type* node : initial_replica_nodes_) {
-        publish(node);
+        publish(node, false);
         current_was_initial = current_was_initial || node == n_;
     }
     if (refresh_current && !current_was_initial)
-        publish(n_);
+        publish(n_, true);
     if (refresh_original && original_n_ != n_)
-        publish(original_n_);
+        publish(original_n_, true);
+}
+
+template <typename P>
+inline void tcursor<P>::publish_current_replica()
+{
+    auto* directory = dsidle::CurrentReplicaDirectoryOrNull();
+    if (!directory)
+        return;
+    try {
+        const auto version = n_->stable();
+        if (!version.deleted() && !version.locked()) {
+            const bool global_root = n_->is_root() &&
+                dsidle::RootControlAccessor(
+                    dsidle::CurrentSharedPool().root_control()).stable().ref ==
+                    n_->control_ref();
+            leaf_replica<P>::Promote(
+                *n_, version, *directory, !global_root, true);
+        }
+    } catch (const std::bad_alloc&) {
+        // The canonical write is already committed; this is a cache refresh.
+    }
 }
 
 template <typename P>
@@ -210,6 +253,12 @@ inline void tcursor<P>::finish(int state, threadinfo& ti)
     else
         new_nodes_.emplace_back(n_, n_->full_unlocked_version_value());
     n_->unlock();
+    if (new_global_root_)
+        dsidle::RootControlAccessor(
+            dsidle::CurrentSharedPool().root_control()).publish(
+                new_global_root_->control_ref(),
+                dsidle::LoadNodeGeneration(
+                    new_global_root_->control_ref()));
 }
 
 } // namespace Masstree

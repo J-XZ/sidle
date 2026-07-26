@@ -208,16 +208,53 @@ int main() {
       lcdf::Str("placement-b", 11), *ti);
   expected[placement_key_a] = "placement-a";
   expected[placement_key_b] = "placement-b";
-  Masstree::unlocked_tcursor<table_params> placement_cursor(
-      table.table(),
-      lcdf::Str(placement_key_b.data(), placement_key_b.size()));
-  assert(placement_cursor.find_unlocked(*ti));
-  const auto placement_ref = placement_cursor.node()->control_ref();
-  assert(placement_ref != root_ref);
-  assert(replicas.HasReplica(
-      placement_ref, dsidle::LoadNodeGeneration(placement_ref)));
-  assert(replicas.HasReplica(
+  {
+    Masstree::unlocked_tcursor<table_params> placement_cursor(
+        table.table(),
+        lcdf::Str(placement_key_b.data(), placement_key_b.size()));
+    assert(placement_cursor.find_unlocked(*ti));
+    const auto placement_ref = placement_cursor.node()->control_ref();
+    assert(placement_ref != root_ref);
+    const auto placement_version = placement_cursor.node()->stable();
+    assert(replicas.HasLocalPlacement(
+        placement_ref, dsidle::LoadNodeGeneration(placement_ref)));
+    assert(replicas.Acquire(
+        placement_ref, dsidle::LoadNodeGeneration(placement_ref),
+        placement_version.version_value()));
+  }
+  auto* initial_root =
+      dsidle::ResolveCanonicalNode<Masstree::node_base<table_params>>(
+          root_ref);
+  const auto initial_root_version = initial_root->stable();
+  assert(replicas.HasLocalPlacement(
       root_ref, dsidle::LoadNodeGeneration(root_ref)));
+  assert(replicas.Acquire(
+      root_ref, dsidle::LoadNodeGeneration(root_ref),
+      initial_root_version.version_value()));
+  {
+    Masstree::leaf_iterator<table_params> iterator(table.table().root());
+    std::uint64_t first_ikey = 0;
+    iterator.init(
+        lcdf::Str(reinterpret_cast<const char*>(&first_ikey),
+                  sizeof(first_ikey)),
+        *ti);
+    unsigned placement_layers = 0;
+    while (iterator.state() !=
+           Masstree::scanstackelt<table_params>::scan_end) {
+      if (auto* leaf = iterator.node()) {
+        ++placement_layers;
+        const auto ref = leaf->control_ref();
+        const auto version = leaf->stable();
+        assert(replicas.HasLocalPlacement(
+            ref, dsidle::LoadNodeGeneration(ref)));
+        assert(replicas.Acquire(
+            ref, dsidle::LoadNodeGeneration(ref),
+            version.version_value()));
+      }
+      iterator.next(*ti);
+    }
+    assert(placement_layers >= 4);
+  }
   query.run_replace(table.table(), lcdf::Str(cow_key_a.data(), cow_key_a.size()),
                     lcdf::Str("cow-a", 5), *ti);
   table_key cow_search(cow_key_a.data(), cow_key_a.size());
@@ -417,7 +454,7 @@ int main() {
 
   assert(!table.table().root()->isleaf());
   auto* canonical_root = static_cast<Masstree::internode<replica_params>*>(table.table().root());
-  assert(replicas.HasReplica(
+  assert(replicas.HasLocalPlacement(
       canonical_root->control_ref(),
       dsidle::LoadNodeGeneration(canonical_root->control_ref())));
   assert(dsidle::LoadCanonicalNodeBytes(canonical_root->control_ref()) ==
@@ -428,28 +465,36 @@ int main() {
   auto root_replica = replicas.Acquire(canonical_root->control_ref(), root_generation,
                                        root_replica_version.version_value());
   assert(root_replica);
-  const auto& root_key_text = expected.begin()->first;
+  const auto root_key_text = fixed_key(0);
   replica_key_type root_key(root_key_text.data(), root_key_text.size());
   const auto replica_child = Masstree::internode_replica<replica_params>::LookupChild(
       root_replica.snapshot().local_ptr, root_key);
   const auto canonical_child_index = Masstree::internode<replica_params>::bound_type::upper(root_key, *canonical_root);
   assert(replica_child == canonical_root->child_[canonical_child_index].ref());
   root_replica = {};
-  Masstree::unlocked_tcursor<replica_params> root_replica_cursor(
-      table.table(), lcdf::Str(root_key_text.data(), root_key_text.size()));
-  assert(root_replica_cursor.find_unlocked(*ti));
-  assert(replicas.InternalHits() > 0);
-  std::free(replicas.Invalidate(canonical_root->control_ref()));
-  Masstree::root_replica_pin<replica_params> root_pin(pool, replicas);
-  replicas.SetBudgetBytes(0);
-  assert(root_pin.Refresh(*ti));
-  assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
-  assert(replicas.LocalBytes() > 0);
-  replicas.SetBudgetBytes(UINT64_MAX);
+  {
+    Masstree::unlocked_tcursor<replica_params> root_replica_cursor(
+        table.table(),
+        lcdf::Str(root_key_text.data(), root_key_text.size()));
+    assert(root_replica_cursor.find_unlocked(*ti));
+    assert(replicas.InternalHits() > 0);
+  }
+  {
+    dsidle::ReplicaDirectory pinned_replicas(pool);
+    dsidle::ConfigureCurrentReplicaDirectory(pinned_replicas);
+    pinned_replicas.SetBudgetBytes(0);
+    Masstree::root_replica_pin<replica_params> pinned_root(pool,
+                                                          pinned_replicas);
+    assert(pinned_root.Refresh(*ti));
+    assert(pinned_root.ref() ==
+           dsidle::RootControlAccessor(pool.root_control()).stable().ref);
+    assert(pinned_replicas.LocalBytes() > 0);
+  }
+  dsidle::ConfigureCurrentReplicaDirectory(replicas);
 
   // Encode a stable canonical leaf into local DRAM and read its copied row
   // without following its canonical ValueRef or suffix pointer.
-  const auto& replica_key_text = expected.begin()->first;
+  const auto replica_key_text = fixed_key(0);
   replica_key_type replica_key(replica_key_text.data(), replica_key_text.size());
   typename replica_node_type::nodeversion_type replica_version;
   auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);
@@ -484,11 +529,24 @@ int main() {
       *canonical_leaf, canonical_leaf->permutation());
   const row_type* replica_value = nullptr;
   dsidle::NodeRef replica_layer;
-  assert(Masstree::leaf_replica<replica_params>::Lookup(encoded_leaf, replica_key,
-      replica_value, replica_layer) == Masstree::leaf_replica<replica_params>::result::kValue);
+  const auto replica_lookup =
+      Masstree::leaf_replica<replica_params>::Lookup(
+          encoded_leaf, replica_key, replica_value, replica_layer);
+  assert(replica_lookup ==
+         Masstree::leaf_replica<replica_params>::result::kValue);
+  const auto replica_permutation = canonical_leaf->permutation();
+  for (int sorted_index = 0;
+       sorted_index != replica_permutation.size(); ++sorted_index) {
+    const int slot = replica_permutation[sorted_index];
+    const auto* indexed =
+        Masstree::leaf_replica<replica_params>::ValueAt(
+            encoded_leaf, sorted_index);
+    assert(canonical_leaf->is_layer(slot) == (indexed == nullptr));
+  }
   const auto replica_column = replica_value->col(0);
-  assert(replica_column.len == expected.begin()->second.size());
-  assert(std::memcmp(replica_column.s, expected.begin()->second.data(), replica_column.len) == 0);
+  assert(replica_column.len == expected.at(replica_key_text).size());
+  assert(std::memcmp(replica_column.s, expected.at(replica_key_text).data(),
+                     replica_column.len) == 0);
   std::free(encoded_leaf);
   const auto promote_version = canonical_leaf->stable();
   if (latency_sim::TscSpinAvailableForTest()) {
@@ -720,8 +778,6 @@ int main() {
   for (unsigned i = 0; i != 256; ++i) replicas.RecordAccess(canonical_leaf->control_ref());
   workers.TriggerOnce(*ti);
   workers.ExecuteOnce(sidle::task_type::promotion, *ti);
-  assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
-                          promote_version.version_value()));
   workers.CoolOnce(*ti);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
   // Simulate a remote VM directory: A's writer must not touch it, while B's
@@ -1008,8 +1064,9 @@ int main() {
     assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
     assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
   }
-  assert(root_pin.Refresh(*ti));
-  assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
+  assert(initial_root_pin.Refresh(*ti));
+  assert(initial_root_pin.ref() ==
+         dsidle::RootControlAccessor(pool.root_control()).stable().ref);
 
   int scan_started[2];
   assert(pipe(scan_started) == 0);

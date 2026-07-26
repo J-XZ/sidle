@@ -172,6 +172,7 @@ class tcursor {
     inline void finish(int answer, threadinfo& ti);
     inline void publish_local_replicas(bool refresh_current,
                                        bool refresh_original);
+    inline void publish_current_replica();
 
     inline nodeversion_value_type previous_full_version_value() const;
     inline nodeversion_value_type next_full_version_value(int state) const;
@@ -189,6 +190,7 @@ class tcursor {
     new_nodes_type new_nodes_;
     initial_replica_nodes_type initial_replica_nodes_;
     initial_replica_nodes_type refresh_replica_nodes_;
+    node_type* new_global_root_{};
 
     inline node_type* reset_retry() {
         ka_.unshift_all();

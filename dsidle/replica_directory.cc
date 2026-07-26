@@ -114,8 +114,8 @@ ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_
   }
 }
 
-bool ReplicaDirectory::HasReplica(NodeRef ref,
-                                  std::uint64_t generation) const {
+bool ReplicaDirectory::HasLocalPlacement(
+    NodeRef ref, std::uint64_t generation) const {
   Slot* slot = Find(ref);
   if (!slot) return false;
   while (true) {
@@ -124,12 +124,13 @@ bool ReplicaDirectory::HasReplica(NodeRef ref,
       _mm_pause();
       continue;
     }
-    const auto local = slot->local_ptr.load(std::memory_order_relaxed);
+    const auto desired =
+        slot->desired_local.load(std::memory_order_relaxed);
     const auto slot_generation =
         slot->generation.load(std::memory_order_relaxed);
     const auto second = slot->seq.load(std::memory_order_acquire);
     if (first == second)
-      return local && slot_generation == generation;
+      return desired && slot_generation == generation;
   }
 }
 
@@ -150,6 +151,7 @@ void* ReplicaDirectory::PublishLocked(NodeRef ref, ReplicaSnapshot snapshot) {
   slot.bytes.store(snapshot.bytes, std::memory_order_relaxed);
   slot.kind.store(static_cast<std::uint32_t>(snapshot.kind), std::memory_order_relaxed);
   slot.local_ptr.store(snapshot.local_ptr, std::memory_order_relaxed);
+  slot.desired_local.store(true, std::memory_order_relaxed);
   slot.seq.store(sequence + 2, std::memory_order_release);
   return old;
 }
@@ -176,6 +178,33 @@ bool ReplicaDirectory::TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** 
   return true;
 }
 
+bool ReplicaDirectory::TryRefresh(NodeRef ref, ReplicaSnapshot snapshot,
+                                  bool budgeted, void** superseded) {
+  if (!superseded)
+    throw std::runtime_error("null ReplicaDirectory superseded output");
+  std::lock_guard<std::mutex> lock(budget_mutex_);
+  Slot* prior = Find(ref);
+  if (!prior ||
+      !prior->desired_local.load(std::memory_order_relaxed) ||
+      prior->generation.load(std::memory_order_relaxed) !=
+          snapshot.generation)
+    return false;
+  const auto old_bytes =
+      prior->bytes.load(std::memory_order_relaxed);
+  const auto current =
+      local_bytes_.load(std::memory_order_relaxed);
+  const auto budget =
+      budget_bytes_.load(std::memory_order_relaxed);
+  if (budgeted &&
+      (snapshot.bytes > budget ||
+       current - old_bytes > budget - snapshot.bytes))
+    return false;
+  *superseded = PublishLocked(ref, snapshot);
+  local_bytes_.store(current - old_bytes + snapshot.bytes,
+                     std::memory_order_release);
+  return true;
+}
+
 void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   Slot* slot = Find(ref);
   if (!slot) return nullptr;
@@ -187,10 +216,11 @@ void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   }
   WaitForReaders(*slot);
   void* old = slot->local_ptr.exchange(nullptr, std::memory_order_relaxed);
-  slot->generation.store(0, std::memory_order_relaxed);
   slot->cached_version.store(0, std::memory_order_relaxed);
   slot->bytes.store(0, std::memory_order_relaxed);
   slot->kind.store(0, std::memory_order_relaxed);
+  slot->generation.store(0, std::memory_order_relaxed);
+  slot->desired_local.store(false, std::memory_order_relaxed);
   slot->seq.store(sequence + 2, std::memory_order_release);
   return old;
 }
@@ -245,10 +275,13 @@ void* ReplicaDirectory::InvalidateOlderLocked(
   }
   *removed_bytes = slot->bytes.load(std::memory_order_relaxed);
   void* stale = slot->local_ptr.exchange(nullptr, std::memory_order_relaxed);
-  slot->generation.store(0, std::memory_order_relaxed);
   slot->cached_version.store(0, std::memory_order_relaxed);
   slot->bytes.store(0, std::memory_order_relaxed);
   slot->kind.store(0, std::memory_order_relaxed);
+  if (slot_generation != generation) {
+    slot->generation.store(0, std::memory_order_relaxed);
+    slot->desired_local.store(false, std::memory_order_relaxed);
+  }
   slot->seq.store(sequence + 2, std::memory_order_release);
   return stale;
 }

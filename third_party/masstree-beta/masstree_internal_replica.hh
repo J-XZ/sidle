@@ -48,7 +48,8 @@ class internode_replica {
   }
 
   static bool Promote(const node_type& source, typename node_type::nodeversion_type version,
-                      dsidle::ReplicaDirectory& directory, bool budgeted = true) {
+                      dsidle::ReplicaDirectory& directory,
+                      bool budgeted = true, bool refresh = false) {
     const auto ref = source.control_ref();
     const auto generation = dsidle::LoadNodeGeneration(ref);
     auto buffer = std::unique_ptr<void, decltype(&std::free)>(
@@ -59,7 +60,11 @@ class internode_replica {
     const dsidle::ReplicaSnapshot snapshot{
         buffer.get(), generation, version.version_value(), bytes,
         dsidle::ReplicaKind::kInternal};
-    if (budgeted) {
+    if (refresh) {
+      if (!directory.TryRefresh(ref, snapshot, budgeted, &old)) {
+        return false;
+      }
+    } else if (budgeted) {
       if (!directory.TryPublish(ref, snapshot, &old)) {
         return false;
       }

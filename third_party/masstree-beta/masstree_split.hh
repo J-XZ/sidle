@@ -275,7 +275,10 @@ bool tcursor<P>::make_split(threadinfo& ti)
             original_metadata.type = n->replica_policy_type();
             auto new_node_type = node_type::strategy_manager->decide_new_node_position(parent_metadata.type, cur_depth);
             internode_type *nn = internode_type::make_with_cxl_policy(height + 1, ti, cur_depth, new_node_type);  
-            if (new_node_type == node_mem_type::local)
+            if (kp < 0 && n == root_)
+                new_global_root_ = nn;
+            if (new_node_type == node_mem_type::local ||
+                new_global_root_ == nn)
                 initial_replica_nodes_.push_back(nn);
             // internode_type *nn = internode_type::make(height + 1, ti);
             nn->child_[0] = n;
