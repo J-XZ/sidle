@@ -83,7 +83,7 @@ void ReplicaDirectory::WaitForReaders(Slot& slot) {
 }
 
 ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_t generation,
-                                                        std::uint64_t cached_version) const {
+                                                        std::uint64_t cached_version) {
   Slot* slot = Find(ref);
   if (!slot) return {};
   while (true) {
@@ -100,7 +100,17 @@ ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_
         snapshot.generation == generation && snapshot.cached_version == cached_version)
       return ReadHandle(slot, snapshot);
     slot->readers.fetch_sub(1, std::memory_order_release);
-    if (first == second && !(second & 1)) return {};
+    if (first == second && !(second & 1)) {
+      std::lock_guard<std::mutex> lock(budget_mutex_);
+      std::uint64_t stale_bytes = 0;
+      void* stale = InvalidateOlderLocked(
+          ref, generation, cached_version, &stale_bytes);
+      if (stale) {
+        local_bytes_.fetch_sub(stale_bytes, std::memory_order_release);
+        std::free(stale);
+      }
+      return {};
+    }
   }
 }
 
@@ -164,6 +174,65 @@ void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   slot->kind.store(0, std::memory_order_relaxed);
   slot->seq.store(sequence + 2, std::memory_order_release);
   return old;
+}
+
+void* ReplicaDirectory::InvalidateOlderLocked(
+    NodeRef ref, std::uint64_t generation, std::uint64_t cached_version,
+    std::uint64_t* removed_bytes) {
+  if (!removed_bytes)
+    throw std::runtime_error("null stale replica byte output");
+  *removed_bytes = 0;
+  Slot* slot = Find(ref);
+  if (!slot) return nullptr;
+  auto sequence = slot->seq.load(std::memory_order_acquire);
+  while (true) {
+    if (sequence & 1) {
+      _mm_pause();
+      sequence = slot->seq.load(std::memory_order_acquire);
+      continue;
+    }
+    if (slot->seq.compare_exchange_weak(sequence, sequence + 1,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_acquire))
+      break;
+  }
+  // Lazy pruning is opportunistic: unlike an explicit publisher/evictor it
+  // must not stall a foreground miss behind another valid ReadHandle.
+  if (slot->readers.load(std::memory_order_acquire) != 0) {
+    slot->seq.store(sequence + 2, std::memory_order_release);
+    return nullptr;
+  }
+  auto* control = ref.get(SharedPoolBase());
+  const auto state = control
+      ? control->allocation_state.load(std::memory_order_acquire)
+      : NodeAllocationState::kFree;
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
+  const auto canonical_version = control
+      ? control->version_and_state.load(std::memory_order_acquire)
+      : 0;
+  if (!control ||
+      (state != NodeAllocationState::kPublished &&
+       state != NodeAllocationState::kRetiring) ||
+      control->generation != generation ||
+      canonical_version != cached_version) {
+    slot->seq.store(sequence + 2, std::memory_order_release);
+    return nullptr;
+  }
+  const auto slot_generation = slot->generation.load(std::memory_order_relaxed);
+  const auto slot_version = slot->cached_version.load(std::memory_order_relaxed);
+  if (slot_generation == generation && slot_version == cached_version) {
+    slot->seq.store(sequence + 2, std::memory_order_release);
+    return nullptr;
+  }
+  *removed_bytes = slot->bytes.load(std::memory_order_relaxed);
+  void* stale = slot->local_ptr.exchange(nullptr, std::memory_order_relaxed);
+  slot->generation.store(0, std::memory_order_relaxed);
+  slot->cached_version.store(0, std::memory_order_relaxed);
+  slot->bytes.store(0, std::memory_order_relaxed);
+  slot->kind.store(0, std::memory_order_relaxed);
+  slot->seq.store(sequence + 2, std::memory_order_release);
+  return stale;
 }
 
 void* ReplicaDirectory::Invalidate(NodeRef ref) {

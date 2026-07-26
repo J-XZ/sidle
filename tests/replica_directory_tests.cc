@@ -14,7 +14,7 @@ int main() {
   dsidle::InitializePoolMetadata(pool, {1, 1, 8192});
   dsidle::NodeControlSlab controls(pool);
   const auto ref = controls.Reserve(4ULL << 20, 2);
-  controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  controls.Publish(ref, 8);
   dsidle::ReplicaDirectory directory(pool);
   dsidle::ConfigureCurrentReplicaDirectory(directory);
   const dsidle::NodeRef second_segment(
@@ -24,25 +24,30 @@ int main() {
   assert(directory.AccessCount(second_segment) == 1);
 
   auto* first = static_cast<char*>(std::malloc(32)); assert(first); std::strcpy(first, "first");
-  assert(directory.Publish(ref, {first, 1, 7, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
+  assert(directory.Publish(ref, {first, 1, 8, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
   directory.RecordAccess(ref);
   directory.RecordAccess(ref);
   assert(directory.AccessCount(ref) == 2);
   directory.HalveAccess(ref);
   assert(directory.AccessCount(ref) == 1);
   {
-    auto handle = directory.Acquire(ref, 1, 7);
+    auto handle = directory.Acquire(ref, 1, 8);
     assert(handle && std::strcmp(static_cast<char*>(handle.snapshot().local_ptr), "first") == 0);
-    assert(!directory.Acquire(ref, 2, 7));
+    assert(!directory.Acquire(ref, 2, 8));
   }
   auto* second = static_cast<char*>(std::malloc(32)); assert(second); std::strcpy(second, "second");
-  std::free(directory.Publish(ref, {second, 1, 8, 32, dsidle::ReplicaKind::kValueLeaf}));
-  assert(!directory.Acquire(ref, 1, 7));
-  auto handle = directory.Acquire(ref, 1, 8);
+  ref.get(pool.base())->version_and_state.store(16, std::memory_order_release);
+  std::free(directory.Publish(ref, {second, 1, 16, 32, dsidle::ReplicaKind::kValueLeaf}));
+  assert(!directory.Acquire(ref, 1, 8));
+  auto handle = directory.Acquire(ref, 1, 16);
   assert(handle && std::strcmp(static_cast<char*>(handle.snapshot().local_ptr), "second") == 0);
   handle = {};
+  ref.get(pool.base())->version_and_state.store(24, std::memory_order_release);
+  assert(!directory.Acquire(ref, 1, 24));
+  assert(directory.LocalBytes() == 0);
+  assert(!directory.Acquire(ref, 1, 16));
   std::free(directory.Invalidate(ref));
-  assert(!directory.Acquire(ref, 1, 8));
+  assert(!directory.Acquire(ref, 1, 16));
   directory.SetBudgetBytes(32);
   auto* budgeted = static_cast<char*>(std::malloc(32)); assert(budgeted);
   void* superseded = nullptr;

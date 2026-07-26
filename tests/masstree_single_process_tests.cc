@@ -289,10 +289,11 @@ int main() {
     assert(column.len == replica_updated.size());
     assert(std::memcmp(column.s, replica_updated.data(), column.len) == 0);
   }
-  // VM A did not mutate VM B's process-local slot; B's read-side canonical
-  // version check, rather than cross-VM directory invalidation, rejected it.
-  assert(remote_replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
-                                 promote_version.version_value()));
+  // VM A did not mutate VM B's process-local slot. B's first read against the
+  // newer canonical version rejects and lazily reclaims its older local copy.
+  assert(!remote_replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
+                                  promote_version.version_value()));
+  assert(remote_replicas.LocalBytes() == 0);
   dsidle::ConfigureCurrentReplicaDirectory(replicas);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
 

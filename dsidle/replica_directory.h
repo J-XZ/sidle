@@ -55,7 +55,7 @@ class ReplicaDirectory {
 
   // Acquires a stable local copy only if its generation/version match the
   // canonical control snapshot. The caller keeps the ReadHandle until copied.
-  ReadHandle Acquire(NodeRef ref, std::uint64_t generation, std::uint64_t cached_version) const;
+  ReadHandle Acquire(NodeRef ref, std::uint64_t generation, std::uint64_t cached_version);
 
   // Publishes a fully initialized local buffer and returns the superseded
   // buffer only after all local readers have left. Caller owns/free()s it.
@@ -99,6 +99,9 @@ class ReplicaDirectory {
   Slot* Find(NodeRef ref) const;
   void* PublishLocked(NodeRef ref, ReplicaSnapshot snapshot);
   void* InvalidateLocked(NodeRef ref);
+  void* InvalidateOlderLocked(NodeRef ref, std::uint64_t generation,
+                              std::uint64_t cached_version,
+                              std::uint64_t* removed_bytes);
   static void WaitForReaders(Slot& slot);
 
   std::uint64_t node_control_offset_{};
