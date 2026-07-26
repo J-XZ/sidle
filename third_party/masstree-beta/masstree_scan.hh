@@ -162,7 +162,7 @@ struct reverse_scan_helper {
     N *advance(const N *n, K &k) const {
         k.assign_store_ikey(n->ikey_bound());
         k.assign_store_length(0);
-        return n->prev_;
+        return n->safe_prev();
     }
     template <typename N, typename K>
     typename N::nodeversion_type stable(N *&n, const K &k) const {

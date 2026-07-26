@@ -97,13 +97,14 @@ bool tcursor<P>::gc_layer(threadinfo& ti)
         }
 
         // child is an empty leaf: kill it
-        masstree_invariant(!lf->prev_ && !lf->next_);
+        masstree_invariant(!lf->safe_prev() && !lf->safe_next());
         masstree_invariant(!lf->deleted());
         masstree_invariant(!lf->deleted_layer());
+        const auto child_phantom_epoch = lf->phantom_epoch();
         if (P::need_phantom_epoch
-            && circular_int<typename P::phantom_epoch_type>::less(n_->phantom_epoch_[0], lf->phantom_epoch_[0])) {
-            n_->phantom_epoch_[0] = lf->phantom_epoch_[0];
-        }
+            && circular_int<typename P::phantom_epoch_type>::less(
+                n_->phantom_epoch(), child_phantom_epoch))
+            n_->raise_phantom_epoch(child_phantom_epoch);
         lf->mark_deleted_layer();   // NB DO NOT mark as deleted (see above)
         lf->unlock();
         lf->deallocate_rcu(ti);
@@ -180,8 +181,8 @@ template <typename P>
 bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type* root,
                              Str prefix, threadinfo& ti)
 {
-    if (!leaf->prev_) {
-        if (!leaf->next_ && !prefix.empty()) {
+    if (!leaf->safe_prev()) {
+        if (!leaf->safe_next() && !prefix.empty()) {
             gc_layer_rcu_callback<P>::make(root, prefix, ti);
         }
         return false;
@@ -193,15 +194,12 @@ bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type* root,
 
     // Ensure node that becomes responsible for our keys has its phantom epoch
     // kept up to date
+    const auto removed_phantom_epoch = leaf->phantom_epoch();
     while (P::need_phantom_epoch) {
-        leaf_type *prev = leaf->prev_;
-        typename P::phantom_epoch_type prev_ts = prev->phantom_epoch();
-        while (circular_int<typename P::phantom_epoch_type>::less(prev_ts, leaf->phantom_epoch())
-               && !bool_cmpxchg(&prev->phantom_epoch_[0], prev_ts, leaf->phantom_epoch())) {
-            prev_ts = prev->phantom_epoch();
-        }
+        leaf_type *prev = leaf->safe_prev();
+        prev->raise_phantom_epoch(removed_phantom_epoch);
         fence();
-        if (prev == leaf->prev_) {
+        if (prev == leaf->safe_prev()) {
             break;
         }
     }

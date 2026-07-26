@@ -74,10 +74,11 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static void link_split(N *n, N *nr, SF spin_function) {
         nr->prev_ = n;
-        flush_prev(nr);
         N *next = lock_next(n, spin_function);
         nr->next_ = next;
-        flush_next(nr);
+        // nr is not reachable yet. Publish its complete initialized body,
+        // including both links, before the predecessor edge exposes it.
+        nr->publish_body_before_edge();
         if (next) {
             next->prev_ = nr;
             flush_prev(next);

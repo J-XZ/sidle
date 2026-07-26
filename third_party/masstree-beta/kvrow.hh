@@ -144,7 +144,8 @@ void query<R>::run_get(T& table, Json& req, threadinfo& ti) {
     threadinfo::rcu_scope rcu(ti);
     typename T::unlocked_cursor_type lp(table, req[2].as_s());
     bool found = lp.find_unlocked(ti);
-    if (found && row_is_marker(lp.value()))
+    R* found_value = found ? lp.value() : nullptr;
+    if (found && row_is_marker(found_value))
         found = false;
     if (found) {
         f_.clear();
@@ -152,7 +153,7 @@ void query<R>::run_get(T& table, Json& req, threadinfo& ti) {
             f_.push_back(req[i].as_i());
         }
         req.resize(2);
-        emit_fields(lp.value(), req, ti);
+        emit_fields(found_value, req, ti);
     }
 }
 
@@ -161,10 +162,11 @@ bool query<R>::run_get1(T& table, Str key, int col, Str& value, threadinfo& ti) 
     threadinfo::rcu_scope rcu(ti);
     typename T::unlocked_cursor_type lp(table, key);
     bool found = lp.find_unlocked(ti);
-    if (found && row_is_marker(lp.value()))
+    R* found_value = found ? lp.value() : nullptr;
+    if (found && row_is_marker(found_value))
         found = false;
     if (found) {
-        const Str column = lp.value()->col(col);
+        const Str column = found_value->col(col);
         get1_value_ = lcdf::String(column.s, column.len);
         value.assign(get1_value_);
     } else {
@@ -288,7 +290,9 @@ bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
     bool found = lp.find_locked(ti);
     if (found) {
         R* slot = lp.value();
-        apply_remove(slot, lp.node()->phantom_epoch_[0], ti);
+        auto phantom_epoch = lp.node()->phantom_epoch();
+        apply_remove(slot, phantom_epoch, ti);
+        lp.node()->set_phantom_epoch(phantom_epoch);
         lp.set_value(slot);
         // dsidle: tombstone/value removal also invalidates remote leaf copies.
         lp.node()->mark_insert();

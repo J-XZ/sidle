@@ -71,10 +71,10 @@ int leaf<P>::split_into(leaf<P>* nr, tcursor<P>* cursor,
     int width = perml.size();   // == this->width or this->width - 1
     int mid = this->width / 2 + 1;
     int p = cursor->kx_.i;
-    if (p == 0 && !this->prev_) {
+    if (p == 0 && !this->safe_prev()) {
         // reverse-sequential optimization
         mid = 1;
-    } else if (p == width && !this->next_) {
+    } else if (p == width && !this->safe_next()) {
         // sequential optimization
         mid = width;
     }
@@ -162,6 +162,9 @@ int internode<P>::split_into(internode<P>* nr, int p, ikey_type ka,
         split_ikey = this->ikey0_[mid];
     }
 
+    // child.parent is an independently coherent HWCC edge. Make the complete
+    // new internode body visible before any child can point upward to it.
+    nr->publish_body_before_edge();
     for (int i = 0; i <= nr->nkeys_; ++i) {
         nr->child_[i]->set_parent(nr);
     }
@@ -258,14 +261,17 @@ bool tcursor<P>::make_split(threadinfo& ti)
             internode_type *nn = internode_type::make_with_cxl_policy(height + 1, ti, cur_depth, new_node_type);  
             // internode_type *nn = internode_type::make(height + 1, ti);
             nn->child_[0] = n;
-            nn->assign(0, xikey[sense], child);
+            nn->child_[1] = child;
+            nn->ikey0_[0] = xikey[sense];
             nn->nkeys_ = 1;
             if (kp < 0) {
                 nn->make_layer_root();
             } else {
                 nn->set_parent(p);
+                nn->publish_body_before_edge();
                 p->child_[kp] = nn;
             }
+            child->set_parent(nn);
             fence();
             n->set_parent(nn);
         } else {

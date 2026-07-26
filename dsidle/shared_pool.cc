@@ -350,6 +350,10 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset,
                                      sizeof(control->node_type));
     latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
+    control->phantom_epoch.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
+    control->parent_ref.store(0, std::memory_order_relaxed);
     latency_sim::RecordHwccAtomicStore(&control->version_and_state);
     control->version_and_state.store(0, std::memory_order_relaxed);
     if (auto* directory = CurrentReplicaDirectoryOrNull())
@@ -383,6 +387,10 @@ void NodeControlSlab::Cancel(NodeRef ref) {
                                      sizeof(control->node_type));
     latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
+    control->phantom_epoch.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
+    control->parent_ref.store(0, std::memory_order_relaxed);
     latency_sim::RecordHwccAtomicStore(&control->version_and_state);
     control->version_and_state.store(0, std::memory_order_relaxed);
     latency_sim::RecordHwccAtomicStore(&control->allocation_state);
@@ -448,6 +456,10 @@ void NodeControlSlab::Release(NodeRef ref) {
                                      sizeof(control->node_type));
     latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
+    control->phantom_epoch.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
+    control->parent_ref.store(0, std::memory_order_relaxed);
     latency_sim::RecordHwccAtomicStore(&control->allocation_state);
     control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);

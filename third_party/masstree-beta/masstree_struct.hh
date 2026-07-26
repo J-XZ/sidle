@@ -23,6 +23,7 @@
 #include "timestamp.hh"
 #include "sidle_frontend.hh"
 #include "dsidle/replica_directory.h"
+#include <array>
 #ifdef CAL_NODE_HOTNESS
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,7 @@
 namespace Masstree {
 
 template <typename P> class internode_replica;
+template <typename P> class leaf_replica;
 
 // Owns an allocated canonical SWCC body until its paired NodeControl has been
 // published. Any exception before Commit returns both resources; an
@@ -192,6 +194,10 @@ class node_base : public make_nodeversion<P>::type {
 
 
     inline base_type* parent() const {
+        if (control_ref_) {
+            const auto parent_ref = dsidle::LoadNodeParentRef(control_ref_);
+            return dsidle::ResolveCanonicalNode<base_type>(parent_ref);
+        }
         // almost always an internode
         if (this->isleaf())
             return static_cast<const leaf_type*>(this)->parent_;
@@ -206,23 +212,36 @@ class node_base : public make_nodeversion<P>::type {
     }
     inline internode_type* locked_parent(threadinfo& ti) const;
     inline void set_parent(base_type* p) {
-        if (this->isleaf())
+        if (control_ref_) {
+            const auto parent_ref = p ? p->control_ref() : dsidle::NodeRef{};
+            if (p && !parent_ref)
+                throw std::runtime_error(
+                    "canonical node cannot publish a local parent pointer");
+            dsidle::StoreNodeParentRef(control_ref_, parent_ref);
+        } else if (this->isleaf())
             static_cast<leaf_type*>(this)->parent_ = p;
         else
             static_cast<internode_type*>(this)->parent_ = p;
+    }
+    inline size_t canonical_allocation_size() const {
+        return this->isleaf()
+            ? static_cast<const leaf_type*>(this)->allocated_size()
+            : sizeof(internode_type);
+    }
+    inline void publish_body_before_edge() const {
+        if (!this->control_ref())
+            return;
+        const size_t bytes = canonical_allocation_size();
+        latency_sim::RecordSwccWrite(this, bytes);
+        dsidle::FlushSwccRange(this, bytes);
     }
     inline void make_layer_root() {
         set_parent(nullptr);
         // Split children inherit a locked version and are flushed by the
         // original unlock path. A freshly constructed layer/root is unlocked,
         // so its complete SWCC body must precede publishing root_bit in HWCC.
-        if (this->control_ref() && !this->locked()) {
-            const size_t bytes = this->isleaf()
-                ? static_cast<const leaf_type*>(this)->allocated_size()
-                : sizeof(internode_type);
-            latency_sim::RecordSwccWrite(this, bytes);
-            dsidle::FlushSwccRange(this, bytes);
-        }
+        if (this->control_ref() && !this->locked())
+            publish_body_before_edge();
         this->mark_root();
     }
     inline base_type* maybe_parent() const {
@@ -487,10 +506,19 @@ class leafvalue {
     }
 
     void prefetch(int keylenx) const {
-        if (!leaf<P>::keylenx_is_layer(keylenx))
-            prefetcher_type()(value());
-        else
-            layer()->prefetch_full();
+        if (!leaf<P>::keylenx_is_layer(keylenx)) {
+            // Preserve upstream Masstree's CPU prefetch without turning it
+            // into an eager SWCC visibility read. The later, version-checked
+            // value() call performs the one required invalidate/accounting
+            // operation; a replica hit need not touch canonical value bytes.
+            auto* opaque = dsidle::SwccOffset<value_element_type>(raw_).get(
+                dsidle::SharedPoolBase());
+            if (opaque)
+                prefetcher_type()(opaque);
+        }
+        // A layer edge stores NodeRef rather than a process-local address.
+        // Resolving it here would eagerly invalidate the next canonical node;
+        // the normal descent path (or its local replica) resolves it once.
     }
 
   private:
@@ -546,8 +574,12 @@ class leaf : public node_base<P> {
         if (extrasize64_ > 0) {
             new((void*) &iksuf_[0]) internal_ksuf_type(width, sz - sizeof(*this));
         }
-        if (P::need_phantom_epoch) {  
-            phantom_epoch_[0] = phantom_epoch;
+        if (P::need_phantom_epoch) {
+            if (this->control_ref())
+                dsidle::StoreNodePhantomEpoch(
+                    this->control_ref(), phantom_epoch);
+            else
+                phantom_epoch_[0] = phantom_epoch;
         }
     }
 
@@ -628,7 +660,36 @@ class leaf : public node_base<P> {
         return (sizeof(*this) + es * 64 + 63) & ~size_t(63);
     }
     phantom_epoch_type phantom_epoch() const {
-        return P::need_phantom_epoch ? phantom_epoch_[0] : phantom_epoch_type();
+        if (!P::need_phantom_epoch)
+            return phantom_epoch_type();
+        return this->control_ref()
+            ? static_cast<phantom_epoch_type>(
+                  dsidle::LoadNodePhantomEpoch(this->control_ref()))
+            : phantom_epoch_[0];
+    }
+    void set_phantom_epoch(phantom_epoch_type epoch) {
+        if (!P::need_phantom_epoch)
+            return;
+        if (this->control_ref())
+            dsidle::StoreNodePhantomEpoch(this->control_ref(), epoch);
+        else
+            phantom_epoch_[0] = epoch;
+    }
+    void raise_phantom_epoch(phantom_epoch_type epoch) {
+        if (!P::need_phantom_epoch)
+            return;
+        auto current = phantom_epoch();
+        while (circular_int<phantom_epoch_type>::less(current, epoch)) {
+            if (!this->control_ref()) {
+                phantom_epoch_[0] = epoch;
+                return;
+            }
+            std::uint64_t expected = current;
+            if (dsidle::CompareExchangeNodePhantomEpoch(
+                    this->control_ref(), &expected, epoch))
+                return;
+            current = static_cast<phantom_epoch_type>(expected);
+        }
     }
 
     int size() const {
@@ -780,7 +841,14 @@ class leaf : public node_base<P> {
     void print(FILE* f, const char* prefix, int depth, int kdepth) const;
 
     leaf<P>* safe_next() const {
+        dsidle::InvalidateSwccRange(&next_, sizeof(next_));
+        latency_sim::RecordSwccRead(&next_, sizeof(next_));
         return next_;
+    }
+    leaf<P>* safe_prev() const {
+        dsidle::InvalidateSwccRange(&prev_, sizeof(prev_));
+        latency_sim::RecordSwccRead(&prev_, sizeof(prev_));
+        return prev_;
     }
 
     void deallocate(threadinfo& ti) {
@@ -811,18 +879,8 @@ class leaf : public node_base<P> {
         external_ksuf_type* external = ksuf_;
         if (!external)
             return nullptr;
-        // Keep the conservative whole-object physical invalidate used by the
-        // SWCC visibility protocol. Latency accounting below is narrower: a
-        // caller reads the descriptors plus only its selected suffix, not the
-        // unused tail of the allocation.
-        dsidle::InvalidateSwccRange(external, dsidle::kSwccCacheLineBytes);
-        const size_t capacity = external->capacity();
-        if (capacity > dsidle::kSwccCacheLineBytes)
-            dsidle::InvalidateSwccRange(
-                reinterpret_cast<const std::byte*>(external) +
-                    dsidle::kSwccCacheLineBytes,
-                capacity - dsidle::kSwccCacheLineBytes);
         const size_t metadata_bytes = external_ksuf_type::overhead(width);
+        dsidle::InvalidateSwccRange(external, metadata_bytes);
         latency_sim::RecordSwccRead(external, metadata_bytes);
         return external;
     }
@@ -830,6 +888,7 @@ class leaf : public node_base<P> {
                                             int p) {
         const Str suffix = external->get(p);
         if (suffix.len) {
+            dsidle::InvalidateSwccRange(suffix.s, suffix.len);
             latency_sim::RecordSwccRead(suffix.s, suffix.len);
         }
         return suffix;
@@ -849,6 +908,8 @@ class leaf : public node_base<P> {
             assign_ksuf(p, ka.suffix(), false, ti);
         }
     }
+
+    template <typename PP> friend class leaf_replica;
     inline void assign_initialize(int p, const key_type& ka, threadinfo& ti) {
         lv_[p] = leafvalue_type::make_empty();
         ikey0_[p] = ka.ikey();
@@ -891,8 +952,9 @@ void basic_table<P>::initialize(threadinfo& ti, const int cxl_percentage) {
     masstree_precondition(!root_ref_);
     node_type* root = node_type::leaf_type::make_root(0, 0, ti);
     root_ref_ = root->control_ref();
-    const auto stable = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root_ref_).stable();
-    dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).publish(root_ref_, stable.gen);
+    dsidle::RootControlAccessor(
+        dsidle::CurrentSharedPool().root_control()).publish(
+            root_ref_, dsidle::LoadNodeGeneration(root_ref_));
 }
 
 template <typename P>
@@ -901,8 +963,9 @@ void basic_table<P>::attach() {
     const auto root = dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).stable();
     if (!root.ref)
         throw std::runtime_error("D-SIDLE pool has no published Masstree root");
-    const auto node = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root.ref).stable();
-    if (node.gen != root.generation)
+    if (dsidle::LoadNodeAllocationState(root.ref) !=
+            dsidle::NodeAllocationState::kPublished ||
+        dsidle::LoadNodeGeneration(root.ref) != root.generation)
         throw std::runtime_error("D-SIDLE RootControl generation does not match NodeControl");
     root_ref_ = root.ref;
 }
@@ -1122,10 +1185,15 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     int n = initializing ? p : perm.size();
 
     size_t csz = 0;
+    std::array<Str, width> old_suffixes{};
     for (int i = 0; i < n; ++i) {
         int mp = initializing ? i : perm[i];
-        if (mp != p && has_ksuf(mp))
-            csz += ksuf(mp).len;
+        if (mp != p && has_ksuf(mp)) {
+            old_suffixes[mp] =
+                oksuf ? readable_external_ksuf_value(oksuf, mp)
+                      : iksuf_[0].get(mp);
+            csz += old_suffixes[mp].len;
+        }
     }
 
     size_t sz = iceil_log2(external_ksuf_type::safe_size(width, csz + s.len));
@@ -1137,10 +1205,7 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     for (int i = 0; i < n; ++i) {
         int mp = initializing ? i : perm[i];
         if (mp != p && has_ksuf(mp)) {
-            const Str old_suffix =
-                oksuf ? readable_external_ksuf_value(oksuf, mp)
-                      : iksuf_[0].get(mp);
-            bool ok = nksuf->assign(mp, old_suffix);
+            bool ok = nksuf->assign(mp, old_suffixes[mp]);
             assert(ok); (void) ok;
         }
     }
@@ -1194,8 +1259,9 @@ inline node_base<P>* basic_table<P>::fix_root() {
     if (unlikely(!root->is_root())) {
         root = root->maybe_parent();
         root_ref_ = root->control_ref();
-        const auto stable = dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), root_ref_).stable();
-        dsidle::RootControlAccessor(dsidle::CurrentSharedPool().root_control()).publish(root_ref_, stable.gen);
+        dsidle::RootControlAccessor(
+            dsidle::CurrentSharedPool().root_control()).publish(
+                root_ref_, dsidle::LoadNodeGeneration(root_ref_));
     }
     return root;
 }

@@ -19,6 +19,13 @@ int main() {
   assert(ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kAllocating);
   assert(ref.get(pool.base())->generation == 1);
   slab.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(dsidle::LoadNodePhantomEpoch(ref) == 0);
+  dsidle::StoreNodePhantomEpoch(ref, 17);
+  assert(dsidle::LoadNodePhantomEpoch(ref) == 17);
+  std::uint64_t expected_epoch = 17;
+  assert(dsidle::CompareExchangeNodePhantomEpoch(
+      ref, &expected_epoch, 23));
+  assert(dsidle::LoadNodePhantomEpoch(ref) == 23);
   assert(dsidle::TryLockLeafLink(ref));
   assert(!dsidle::TryLockLeafLink(ref));
   dsidle::UnlockLeafLink(ref);
@@ -36,6 +43,9 @@ int main() {
   assert(root_view.ref == ref && root_view.generation == 1 && root_view.version == 2);
   const auto ref2 = slab.Reserve((2ULL << 20) + 64, 1);
   slab.Publish(ref2, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(!dsidle::LoadNodeParentRef(ref));
+  dsidle::StoreNodeParentRef(ref, ref2);
+  assert(dsidle::LoadNodeParentRef(ref) == ref2);
   const auto cancelled = slab.Reserve((2ULL << 20) + 128, 2, 128);
   assert(cancelled.get(pool.base())->allocation_state ==
          dsidle::NodeAllocationState::kAllocating);
@@ -116,6 +126,8 @@ int main() {
   }
   assert(retiring_lock_rejected);
   slab.Release(ref);
+  assert(ref.get(pool.base())->phantom_epoch.load() == 0);
+  assert(ref.get(pool.base())->parent_ref.load() == 0);
   slab.Retire(ref2, 7);
   slab.Release(ref2);
 

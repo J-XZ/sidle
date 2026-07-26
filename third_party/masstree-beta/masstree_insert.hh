@@ -48,7 +48,8 @@ bool tcursor<P>::find_insert(threadinfo& ti)
     if (n_->size() < n_->width) {
         kx_.p = permuter_type(n_->permutation_).back();
         // don't inappropriately reuse position 0, which holds the ikey_bound
-        if (likely(kx_.p != 0) || !n_->prev_ || n_->ikey_bound() == ka_.ikey()) {
+        if (likely(kx_.p != 0) || !n_->safe_prev() ||
+            n_->ikey_bound() == ka_.ikey()) {
             n_->assign(kx_.p, ka_, ti);
             return false;
         }
@@ -117,10 +118,7 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     // through nodeversion::unlock().  Publish their completed SWCC bodies
     // before the old leaf exposes twig_head to another VM.
     for (const auto& new_node : new_nodes_) {
-        latency_sim::RecordSwccWrite(
-            new_node.first, new_node.first->allocated_size());
-        dsidle::FlushSwccRange(
-            new_node.first, new_node.first->allocated_size());
+        new_node.first->publish_body_before_edge();
     }
     fence();
     if (twig_head != n_)

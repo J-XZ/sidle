@@ -56,7 +56,8 @@ struct alignas(64) NodeControl {
   std::uint32_t node_type{0};
   std::atomic<NodeAllocationState> allocation_state{NodeAllocationState::kFree};
   std::atomic<std::uint32_t> leaf_link_lock{0};
-  std::byte padding[20]{};
+  std::atomic<std::uint64_t> phantom_epoch{0};
+  std::atomic<std::uint64_t> parent_ref{0};
 };
 static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
 
@@ -127,6 +128,51 @@ inline void UnlockLeafLink(NodeRef ref) {
     throw std::runtime_error("null leaf link NodeRef");
   latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
   control->leaf_link_lock.store(0, std::memory_order_release);
+}
+
+inline std::uint64_t LoadNodePhantomEpoch(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null phantom-epoch NodeRef");
+  latency_sim::RecordHwccAtomicLoad(&control->phantom_epoch);
+  return control->phantom_epoch.load(std::memory_order_acquire);
+}
+
+inline void StoreNodePhantomEpoch(NodeRef ref, std::uint64_t epoch) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null phantom-epoch NodeRef");
+  latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
+  control->phantom_epoch.store(epoch, std::memory_order_release);
+}
+
+inline bool CompareExchangeNodePhantomEpoch(
+    NodeRef ref, std::uint64_t* expected, std::uint64_t desired) {
+  if (!expected)
+    throw std::runtime_error("null phantom-epoch expected value");
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null phantom-epoch NodeRef");
+  latency_sim::RecordHwccAtomicRmw(&control->phantom_epoch);
+  return control->phantom_epoch.compare_exchange_weak(
+      *expected, desired, std::memory_order_acq_rel,
+      std::memory_order_acquire);
+}
+
+inline NodeRef LoadNodeParentRef(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null parent NodeRef");
+  latency_sim::RecordHwccAtomicLoad(&control->parent_ref);
+  return NodeRef(control->parent_ref.load(std::memory_order_acquire));
+}
+
+inline void StoreNodeParentRef(NodeRef ref, NodeRef parent) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null parent NodeRef");
+  latency_sim::RecordHwccAtomicStore(&control->parent_ref);
+  control->parent_ref.store(parent.value(), std::memory_order_release);
 }
 
 // Process-local policy queues carry a persistent control reference plus its
