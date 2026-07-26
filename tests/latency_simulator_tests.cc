@@ -4,7 +4,52 @@
 #include <chrono>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 int main() {
+  {
+    latency_sim::Config invalid;
+    invalid.cache_line_bytes = 0;
+    bool rejected = false;
+    try {
+      latency_sim::LatencySimulator simulator(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+
+    invalid = {};
+    invalid.swcc_read_ns_per_line = -1.0;
+    rejected = false;
+    try {
+      latency_sim::LatencySimulator simulator(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+
+    invalid = {};
+    invalid.hwcc_atomic_rmw_ns =
+        std::numeric_limits<double>::infinity();
+    rejected = false;
+    try {
+      latency_sim::GlobalLatencySimulator().Configure(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+
+    invalid = {};
+    invalid.cache_fixed_hit_rate =
+        std::numeric_limits<double>::quiet_NaN();
+    rejected = false;
+    try {
+      latency_sim::GlobalLatencySimulator().Configure(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+
   latency_sim::Config c; c.enabled=true; c.stats_enabled=true; c.swcc_read_ns_per_line=3; c.hwcc_atomic_load_ns=7;
   latency_sim::LatencySimulator s(c); alignas(64) char value[80]{};
   s.BeginScope(latency_sim::ScopeKind::kForeground); s.BeginScope(latency_sim::ScopeKind::kForeground);

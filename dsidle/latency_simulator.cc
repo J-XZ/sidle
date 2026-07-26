@@ -120,6 +120,35 @@ void AddStats(Stats *s, PoolKind p, uint64_t raw, uint64_t hits, uint64_t misses
   if (p == PoolKind::kSwcc) add(s->swcc_raw_line_accesses,s->swcc_cache_hits,s->swcc_cache_misses,s->swcc_delayed_ns); else add(s->hwcc_raw_line_accesses,s->hwcc_cache_hits,s->hwcc_cache_misses,s->hwcc_delayed_ns);
 }
 std::mutex &StatsMutex() { static std::mutex mutex; return mutex; }
+Config ValidateConfig(Config config) {
+  if (!config.cache_line_bytes)
+    throw std::invalid_argument(
+        "latency simulator cache_line_bytes must be > 0");
+  const auto validate_delay = [](double value, const char* name) {
+    if (!std::isfinite(value) || value < 0.0)
+      throw std::invalid_argument(std::string("latency simulator ") + name +
+                                  " must be finite and >= 0");
+  };
+  validate_delay(config.swcc_read_ns_per_line, "swcc_read_ns_per_line");
+  validate_delay(config.swcc_write_ns_per_line, "swcc_write_ns_per_line");
+  validate_delay(config.swcc_flush_ns_per_line, "swcc_flush_ns_per_line");
+  validate_delay(config.hwcc_read_ns_per_line, "hwcc_read_ns_per_line");
+  validate_delay(config.hwcc_write_ns_per_line, "hwcc_write_ns_per_line");
+  validate_delay(config.hwcc_atomic_load_ns, "hwcc_atomic_load_ns");
+  validate_delay(config.hwcc_atomic_store_ns, "hwcc_atomic_store_ns");
+  validate_delay(config.hwcc_atomic_rmw_ns, "hwcc_atomic_rmw_ns");
+  validate_delay(config.cache_hit_extra_ns, "cache_hit_extra_ns");
+  if (!std::isfinite(config.cache_fixed_hit_rate) ||
+      config.cache_fixed_hit_rate < 0.0 ||
+      config.cache_fixed_hit_rate > 1.0)
+    throw std::invalid_argument(
+        "latency simulator cache_fixed_hit_rate must be finite and in [0, 1]");
+  config.cache_capacity_lines =
+      std::max<uint64_t>(1, config.cache_capacity_lines);
+  config.cache_associativity =
+      std::max<uint64_t>(1, config.cache_associativity);
+  return config;
+}
 } // namespace
 
 CacheModel ParseCacheModel(const std::string &value) { if (value == "none") return CacheModel::kNone; if (value == "fixed_hit_rate") return CacheModel::kFixedHitRate; if (value == "per_thread_lru") return CacheModel::kPerThreadLru; throw std::invalid_argument("unknown latency cache model: " + value); }
@@ -155,15 +184,14 @@ bool TscSpinAvailableForTest() {
   return g_tsc_ticks_per_ns.load(std::memory_order_acquire) > 0.0;
 }
 void DelaySpinNsForTest(uint64_t ns) { DelaySpinNs(ns); }
-LatencySimulator::LatencySimulator(Config c) : config_(c), generation_(NextGeneration()) {
-  if (c.enabled && !TscSpinAvailableForTest())
+LatencySimulator::LatencySimulator(Config c)
+    : config_(ValidateConfig(c)), generation_(NextGeneration()) {
+  if (config_.enabled && !TscSpinAvailableForTest())
     throw std::runtime_error("TSC calibration is unavailable for enabled latency injection");
-  g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed);
+  g_instrumentation_enabled.store(config_.enabled, std::memory_order_relaxed);
 }
 void LatencySimulator::Configure(Config c) {
-  if (!c.cache_line_bytes) throw std::invalid_argument("latency simulator cache_line_bytes must be > 0");
-  if (c.cache_fixed_hit_rate < 0.0 || c.cache_fixed_hit_rate > 1.0) throw std::invalid_argument("latency simulator cache_fixed_hit_rate must be in [0, 1]");
-  c.cache_capacity_lines = std::max<uint64_t>(1, c.cache_capacity_lines); c.cache_associativity = std::max<uint64_t>(1, c.cache_associativity);
+  c = ValidateConfig(c);
   if (c.enabled && !TscSpinAvailableForTest())
     throw std::runtime_error("TSC calibration is unavailable for enabled latency injection");
   config_=c; g_instrumentation_enabled.store(c.enabled, std::memory_order_relaxed); generation_=NextGeneration();
