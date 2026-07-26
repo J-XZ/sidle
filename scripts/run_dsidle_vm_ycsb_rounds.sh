@@ -20,6 +20,7 @@ while (($#)); do case "$1" in
   --ivshmem-module) (($# >= 2)) || { usage; exit 2; }; shift 2;;
   --help) usage; exit 0;; *) usage; exit 2;; esac; done
 [[ -n "$prepared_dir" && -d "$prepared_dir" && "$warmup_rounds" =~ ^[0-9]+$ && "$rounds" =~ ^[1-9][0-9]*$ && "$timeout_sec" =~ ^[1-9][0-9]*$ && "$cache_flush_mb" =~ ^[1-9][0-9]*$ ]] || { usage; exit 2; }
+prepared_dir=$(realpath "$prepared_dir")
 [[ -x "$runner" && -x "$pool_tool" ]] || { echo "missing VM runner or pool tool under build/" >&2; exit 2; }
 base="$prepared_dir/configs/experiment_config_ycsb_4vm.jsonc"
 [[ -f "$base" ]] || { echo "missing prepared config" >&2; exit 2; }
@@ -56,6 +57,30 @@ epoch_slots_per_node=${run_control[4]}
 [[ "$metadata_nodes" == "$vm_count" ]] || { echo "run metadata/config VM count mismatch" >&2; exit 2; }
 trace_manifest="$prepared_dir/trace_manifest.json"
 [[ -f "$trace_manifest" ]] || { echo "missing trace manifest: $trace_manifest" >&2; exit 2; }
+manifest_sha=$(sha256sum "$trace_manifest" | awk '{print $1}')
+recorded_manifest_sha=$(python3 - "$prepared_dir/run_meta.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))['trace_manifest_sha256'])
+PY
+)
+[[ "$manifest_sha" == "$recorded_manifest_sha" ]] || {
+  echo "trace manifest changed after run metadata was written" >&2
+  exit 1
+}
+for phase in "${phases[@]}"; do
+  python3 - "$trace_manifest" "$phase" \
+    "$prepared_dir/round_logs/trace_sha256_${phase}.txt" <<'PY'
+import json,sys
+from pathlib import Path
+manifest_path,phase,output=sys.argv[1:]
+manifest=json.load(open(manifest_path))
+workers=manifest['phases'][phase]['workers']
+Path(output).write_text(''.join(
+    f'{workers[str(worker)]["sha256"]}  worker{worker}.txt\n'
+    for worker in range(manifest['total_workers'])
+))
+PY
+done
 for phase in "${phases[@]}"; do
   python3 - "$prepared_dir/configs/experiment_config_ycsb_${phase}.jsonc" "$prepared_dir/guest_configs/${phase}.jsonc" "$phase" <<'PY'
 import json,sys
@@ -68,6 +93,13 @@ for port in "${ports[@]}"; do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'mkdir -p /root/dsidle-ycsb/traces'
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$prepared_dir/guest_configs/" root@127.0.0.1:/root/dsidle-ycsb/
+  runner_sha=$(sha256sum "$runner" | awk '{print $1}')
+  guest_runner_sha=$(ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+    'sha256sum /root/dsidle-ycsb/dsidle_e2e_trace_runner' | awk '{print $1}')
+  [[ "$runner_sha" == "$guest_runner_sha" ]] || {
+    echo "guest runner hash mismatch on port $port" >&2
+    exit 1
+  }
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
     "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c $device_path"
 done
@@ -82,11 +114,27 @@ reset_pool() {
 sync_phase_trace() {
   local phase=$1
   local port
+  local checks="$prepared_dir/round_logs/trace_sha256_${phase}.txt"
+  (
+    cd "$prepared_dir/traces/$phase"
+    sha256sum --status -c "$checks"
+  ) || {
+    echo "host trace hash mismatch: phase=$phase" >&2
+    exit 1
+  }
   for port in "${ports[@]}"; do
     ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
       "rm -rf /root/dsidle-ycsb/traces && mkdir -p /root/dsidle-ycsb/traces/$phase"
     rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
       "$prepared_dir/traces/$phase/" "root@127.0.0.1:/root/dsidle-ycsb/traces/$phase/"
+    rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
+      "$checks" "root@127.0.0.1:/root/dsidle-ycsb/traces/$phase/.manifest.sha256"
+    ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+      "cd /root/dsidle-ycsb/traces/$phase && sha256sum --status -c .manifest.sha256" \
+      >"$prepared_dir/logs/trace_verify_${phase}_port${port}.log" 2>&1 || {
+      echo "guest trace hash mismatch: phase=$phase port=$port" >&2
+      exit 1
+    }
   done
 }
 

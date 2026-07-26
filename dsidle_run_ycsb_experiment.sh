@@ -287,6 +287,10 @@ if normalization_path.is_file():
         'output_trace_set_sha256': normalization.get('output_trace_set_sha256'),
         'phases': normalization.get('phases'),
     }
+elif formal_contract:
+    raise SystemExit(
+        'formal 4VM x 4-worker 100k traces require trace_normalization.json'
+    )
 Path(output).write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
 PY
 python3 - "$experiment_config" "$out_dir/configs" "$out_dir/traces" "${requested[@]}" <<'PY'
