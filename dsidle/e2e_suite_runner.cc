@@ -20,8 +20,6 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
-#include <pthread.h>
-#include <sched.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -112,16 +110,6 @@ RunResult RunWorkers(
     threads.emplace_back([&, worker] {
       threadinfo* ti = nullptr;
       try {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(worker, &cpuset);
-        const int affinity_error = pthread_setaffinity_np(
-            pthread_self(), sizeof(cpuset), &cpuset);
-        if (affinity_error != 0)
-          throw std::runtime_error(
-              "cannot pin foreground worker " + std::to_string(worker) +
-              " to guest CPU " + std::to_string(worker) + ": " +
-              std::strerror(affinity_error));
         dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node);
         dsidle::ConfigureCurrentReplicaDirectory(replicas);
         ti = threadinfo::make(threadinfo::TI_MAIN, worker);
