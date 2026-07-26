@@ -157,7 +157,11 @@ int internode<P>::split_into(internode<P>* nr, int p, ikey_type ka,
     } else {
         nr->child_[0] = this->child_[mid + 1];
         nr->shift_from(0, this, mid + 1, p - (mid + 1));
-        nr->assign(p - (mid + 1), ka, value);
+        // This is initialization, not a live edge update. Fill the SWCC body
+        // directly; the common loop below publishes child parent_ref only
+        // after the complete new internode is visible.
+        nr->ikey0_[p - (mid + 1)] = ka;
+        nr->child_[p - mid] = value;
         nr->shift_from(p + 1 - (mid + 1), this, p, this->width - p);
         split_ikey = this->ikey0_[mid];
     }
