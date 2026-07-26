@@ -120,6 +120,10 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     for (const auto& new_node : new_nodes_) {
         new_node.first->publish_body_before_edge();
     }
+    // nl is locked but not dirty. Upstream readers may consume that stable
+    // pre-insert snapshot without waiting for the lock, so its initialized
+    // body must be visible before the old leaf publishes the layer edge.
+    nl->publish_body_before_edge();
     fence();
     if (twig_head != n_)
         n_->lv_[kx_.p] = twig_head;
