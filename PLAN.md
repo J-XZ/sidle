@@ -18,10 +18,11 @@ agent）的直接指令。执行协议见紧随其后的「施工执行协议」
    完成）即使在里程碑中途也应单独 commit。
 2. **测试失败**：定位修复 → commit → 只重跑失败的测试目标及其直接相关
    目标；不必全量重跑已通过的无关套件。
-3. **收官 = 多轮 e2e 循环**（M8）：跑 `run_dsidle_e2e_rounds.sh` 三套主
-   套件各 ≥10 轮 + 四套补充各 ≥3 轮（§6.0/§6.3）。任一套件任一轮失败：
-   修 bug → commit → 该套件从第 1 轮重跑满额；其余已达标套件不重跑。
-   循环直到全部套件达标，然后执行 **§7.4 最终基线差异校验与清扫**
+3. **收官 = 连续多轮验收**（M8）：全体单元测试 10 轮、真实
+   `e2e_08/09` 各 10 轮，以及 4 VM×4 foreground worker 的 100k
+   YCSB 独立 load 与 A/B/C/D/E 各 10 轮。任一阶段发现 bug：修 bug →
+   commit → 从全体验收第 1 项重新开始，不继承此前通过轮次。不存在以 phase
+   名称冒充独立负载的“补充套件”。全部连续达标后执行 **§7.4 最终基线差异校验与清扫**
    （对基线全量 diff 审计、删除死代码与脚手架、复验），再完成 §6.5
    清单与文档收尾。
 4. **构建配置**：默认与验收一律用 **RelWithDebInfo =
@@ -179,8 +180,8 @@ SIDLE 策略（直方图、水位、五 worker）**保留选择逻辑**，仅把
 ## 1.2 公平性硬约束
 
 1. 与 cxlkv 使用同一套 `experiment_config.jsonc` **拓扑**语义：相同
-   `shared_memory.size_mb`（须为 2 的幂；正式 5M YCSB 另按 §1.11 覆盖为
-   65536）、相同 `shared_memory.hwcc/swcc`、相同 `path`/`device_path`、
+   `shared_memory.size_mb`（须为 2 的幂；本轮 100k YCSB 使用根配置
+   32768）、相同 `shared_memory.hwcc/swcc`、相同 `path`/`device_path`、
    相同 VM 数/核数/NUMA、相同 worker 数、**同一份** YCSB-cpp 生成的
    trace（正式 YCSB fixed **32/32**）。`latency_inject` / `fixed_*` 在
    cxlkv 位于 delta_policy；本仓放在 `dsidle` 段但字段同构。路径取值以本
@@ -194,7 +195,7 @@ SIDLE 策略（直方图、水位、五 worker）**保留选择逻辑**，仅把
    `ops_per_sec = ops_sum / (max(duration_us) / 1e6)`；多轮字段名按套件
    （§1.11 / §6.3），与 cxlkv 同口径。
 6. 延迟注入开启仅允许 `RelWithDebInfo + verbose=false + extra_check=false`，
-   否则 hard fail。正式 5M YCSB 主表使用 `--no-latency`（§1.11）。
+   否则 hard fail。本轮正式 100k YCSB 使用 `--no-latency`（§1.11）。
 
 ## 1.3 实验模型术语
 
@@ -350,6 +351,8 @@ experiment_config 段）与根 `experiment_config.jsonc`。
     "fixed_key_size": 32,             // 正式 YCSB/e2e_ycsb 默认 32；e2e_08 覆盖为 8；e2e_09 value=1000
     "fixed_value_size": 32,
     "trace_dir": "...",               // 本仓 runner 配置；非 cxlkv 根 e2e 字段
+    "verbose": false,                 // cxlkv policy 同名必填键；延迟注入开启时必须 false
+    "extra_check": false,             // cxlkv policy 同名必填键；延迟注入开启时必须 false
     "latency_inject": { /* §4.6 全字段；schema ≡ cxlkv LatencyInjectPolicyConfig */ }
   }
 }
@@ -493,14 +496,14 @@ trace/YCSB 同构）外：
 | 构建 | 默认与验收 = RelWithDebInfo `-O3 -g3 -march=native -flto=full`（与 cxlkv 对齐；禁关 LTO 做正式对比）；Debug/ASAN 可选、非门槛 |
 | HWCC 占用 | 静态核算 ≈128MB（NodeControl slab 128MB 预留为主，见 §4.1 预算表）；上限 1024MB，倾向更小，剩余保持未用 |
 
-### 正式 5M YCSB 公平对比（对齐 cxlkv `doc/YCSB指南.md` §5.1 / runbook；覆盖根配置）
+### 本轮正式 100k YCSB 公平对比（与 cxlkv 使用相同回放合同）
 
 | 项 | 钉死值 |
 |----|--------|
-| record/operation | 5000000 / 5000000 |
-| threads_per_node / workloads | 4 / `a,b,c,d`（zipfian 常数取库默认 0.99） |
+| record/operation | 100000 / 100000 |
+| threads_per_node / workloads | 4 / `a,b,c,d,e`（zipfian 常数取库默认 0.99；D 为 latest） |
 | `fixed_key_size` / `fixed_value_size` | **32 / 32**（cxlkv e2e_trace / e2e_10 / YCSB 默认；**不是** e2e_08 的 8/8） |
-| `--shared-size-mb` | **65536**（HWCC 仍 1024，SWCC = 64512；一键脚本按此改写本轮 experiment_config） |
+| `--shared-size-mb` | **32768**（沿用公平根配置；HWCC 1024，SWCC 31744） |
 | `--shared-numa`（2-NUMA 正式机） | `1`（VM∈0；与 cxlkv r6525 2-NUMA runbook 一致） |
 | 延迟 | **`--no-latency`**（正式主表；与 cxlkv 指南正式命令一致） |
 | 一键脚本副作用 | 与 cxlkv `run_ycsb_trace_experiment.sh` 相同：**无条件**把生成 policy 的 `cache_model` 置 `none`、`cache_hits_enabled=false`；`--no-latency` 仅关闭 `enabled`/`foreground_enabled`/`merge_enabled`/`stats_enabled`（无计费） |
@@ -512,13 +515,15 @@ trace/YCSB 同构）外：
 |------|-----------|------|
 | `dsidle_e2e_08` | 8 / 8 | 按该套件 policy；非正式 YCSB |
 | `dsidle_e2e_09` | 32 / 1000 | 同上 |
-| `dsidle_e2e_ycsb`（≡e2e_10） | 32 / 32 | 冒烟可用默认；正式 5M 见上表 |
-| e2e_11 延迟参考档 | （cxlkv 专用） | swcc 25ns/线、hwcc 117ns/线、原子 117ns、`per_thread_lru` 4096×8；**仅**作注入对比附录，**不是**正式 5M YCSB 默认 |
+| `dsidle_e2e_ycsb`（e2e_10 接口冒烟） | 32 / 32 | 仅 load→A 集成冒烟；正式 A–E 矩阵走 `dsidle_run_ycsb_experiment.sh` |
+| e2e_11 延迟参考档 | （cxlkv 专用） | swcc 25ns/线、hwcc 117ns/线、原子 117ns、`per_thread_lru` 4096×8；**仅**作注入对比附录，**不是**本轮正式 100k YCSB 默认 |
 | e2e_08/09 多轮主字段 | — | `ops_per_sec_from_avg_round_max` |
 
 ### 验收轮数 vs cxlkv 脚本默认
 
-本仓 §6.0 强制 ≥10 轮（补充套件 ≥3）是**本仓验收门槛**；cxlkv `run_e2e08/09/10_rounds.sh` 默认 3、YCSB 一键默认 1——施工时对本仓脚本显式传 `--rounds 10`，勿把 cxlkv 脚本默认当成验收轮数。
+本仓 §6.0 的连续 10 轮是**本仓验收门槛**；cxlkv
+`run_e2e08/09/10_rounds.sh` 默认 3、YCSB 一键默认 1——施工时显式传
+`--rounds 10`，勿把 cxlkv 脚本默认当成验收轮数。
 
 唯一方案速查（正文已展开，此处防漏）：副本目录 per-slot seqlock；
 `access_count` 分配时清零（无双键）；线程退出自排空 limbo（30s 超时
@@ -1126,7 +1131,7 @@ cache_capacity_lines, cache_associativity, cache_fixed_hit_rate,
 cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关。提供
 `configs/latency/cxlkv_e2e11_reference.jsonc`（25ns SWCC、117ns HWCC、
 `per_thread_lru`——**仅**注入对比附录）与全零 / `--no-latency` 正式档。
-正式 5M YCSB 默认走 `--no-latency`（§1.11），不得把 e2e_11 档冒充正式主表。
+本轮正式 100k YCSB 默认走 `--no-latency`（§1.11），不得把 e2e_11 档冒充正式主表。
 
 **与 cxlkv 机制同一性（施工核对用）**：
 
@@ -1164,7 +1169,7 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
 
 | 资产 | 要求 |
 |------|------|
-| `experiment_config.jsonc` | **拓扑 schema 见 §1.6.1**（与 cxlkv 根配置同构的部分）；选择器 `DSIDLE_EXPERIMENT_CONFIG_JSONC`。`e2e` 仅强制 `foreground_worker_count_per_vm`（同 cxlkv）。`dsidle{replica_budget_mb,hot_percentage_seed,fixed_key_size,fixed_value_size,trace_dir,latency_inject}` 为本仓策略/runner 段（字段名对齐 cxlkv policy，**位置不同**）。未知/缺字段 hard fail |
+| `experiment_config.jsonc` | **拓扑 schema 见 §1.6.1**（与 cxlkv 根配置同构的部分）；选择器 `DSIDLE_EXPERIMENT_CONFIG_JSONC`。`e2e` 仅强制 `foreground_worker_count_per_vm`（同 cxlkv）。`dsidle{replica_budget_mb,hot_percentage_seed,fixed_key_size,fixed_value_size,trace_dir,verbose,extra_check,latency_inject}` 为本仓策略/runner 段（字段名对齐 cxlkv policy，**位置不同**）。未知/缺字段 hard fail |
 | trace 格式 | **与 cxlkv 逐字节同构**：`<OP> <KEY_LEN> <LEN><KEY>`（`LEN` 与 `KEY` 紧挨、无空格）；文件 `<trace_dir>/worker<N>.txt`；OP∈PUT/GET/DELETE/SCAN；GET/DELETE 要求 `LEN=0`；SCAN 的 `LEN`=limit。解析器对齐 cxlkv `ParseTraceLine` 语义（本仓库可命名为 `ParseTraceLine`，勿另造格式） |
 | PUT 值 | trace **不含 value 正文**；runner 用与 cxlkv 相同的 `FixedTraceValue`（字符集 `'!'..'~'`，长度=`fixed_value_size`，每 worker 独立 RNG）；忽略 PUT 行内 `LEN` 作为实际写入长度 |
 | key 定长 | runner 将 key 右填空格至 `fixed_key_size`（与 cxlkv `FixedTraceKey` 一致） |
@@ -1260,16 +1265,15 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
 逐节对齐 `../cxlkv` 的 `scripts/run_ycsb_trace_experiment.sh` 的选项、步骤与
 产物布局（允许照搬 bash 后替换项目路径；记入搬运清单）：
 
-- **选项集（与 cxlkv 同名；默认值以本列表钉死，与 cxlkv 的差异仅
-  record/operation 冒烟默认）**：`--rounds`(1)、
-  `--record-count`(冒烟默认 100000，正式对比显式传 5000000)、
+- **选项集（与 cxlkv 同名；默认值以本列表钉死）**：`--rounds`(1)、
+  `--record-count`(默认与本轮正式合同 100000)、
   `--operation-count`(同上)、`--threads-per-node`(4)、
   `--out-dir`(`exp_data/ycsb_dsidle_<timestamp>`)、`--round-timeout`(7200)、
   `--base-config`(experiment_config.jsonc)、`--shared-numa`、
   `--shared-reserve-mb`(4096，同 cxlkv)、
-  `--shared-size-mb`(自动向上取 2 的幂；**正式 5M 对比显式传 65536**)、
-  `--workloads`(默认 **`a,b,c,d`**；允许集合 **`a,b,c,d,e`**)、
-  `--no-latency`（**正式 5M 主表必须加此开关**，对齐 cxlkv 指南）、
+  `--shared-size-mb`(自动向上取 2 的幂；本轮正式合同使用根配置 32768)、
+  `--workloads`(默认 **`a,b,c,d,e`**；封闭集合相同)、
+  `--no-latency`（**本轮正式主表必须加此开关**，对齐 cxlkv 指南）、
   `--cache-flush-mb`(512)、`--skip-build`、`--skip-vm-init`、
   `--skip-trace-gen`、`--skip-standalone-load`、`--prepare-only`。
   固定 4 VM；HWCC 固定 1024MB、其余给 SWCC。生成 policy 时**无条件**像
@@ -1278,10 +1282,9 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
 - **workload 封闭集合**：小写、逗号分隔、不去重；非法输入在任何副作用前
   stderr 报错退出 2。必须支持 load + A/B/C/D/E 全阶段回放；E 映射为
   `SCAN`+单条 `PUT`；UPDATE/INSERT 均映射为独立单条 `PUT`。D-SIDLE 有 Scan，
-  **禁止**将 E 标为 unsupported。正式对比默认跑 A–D，E 用
-  `--workloads a,b,c,d,e` 显式打开。
-- **步骤**：清旧进程 → 生成本轮 `experiment_config_ycsb_4vm.jsonc`（正式
-  对比时按 §1.11 覆盖 `size_mb=65536` / SWCC=64512 / `--shared-numa`）→
+  **禁止**将 E 标为 unsupported。本轮正式默认直接跑 A–E。
+- **步骤**：清旧进程 → 生成本轮 `experiment_config_ycsb_4vm.jsonc`（本轮
+  正式合同按 §1.11 使用 `size_mb=32768` / SWCC=31744 / `--shared-numa`）→
   生成 trace config 与 `run_meta.json`
   （参数 + git SHA + 复现命令 + 配置 SHA256）→ 调本仓库 YCSB-cpp 生成
   load + 所选 workload（**fixed 32/32**）→ 只读校验 trace → RelWithDebInfo
@@ -1361,11 +1364,12 @@ benchmark 语义）、选项表、load 说明、快速命令、中断恢复、�
 “关键路径无已知 bug / 可进入正式对比”：
 
 1. **全部单元测试通过**（§6.1，RelWithDebInfo；CTest 零失败）。
-2. **三套强制端到端测试各连续通过 ≥10 轮**（§6.3；任一轮失败即整套不计
-   通过，须修 bug 后从第 1 轮重计）。轮数默认脚本参数不得低于 10；禁止用
-   冒烟规模冒充正式 e2e。
-3. **四套强制补充 e2e 各连续通过 ≥3 轮**（§6.3 补充表：replica /
-   scan_stress / reclaim / concurrency）。
+2. **真实 `e2e_08/09` 各连续通过 ≥10 轮**（§6.3；禁止用 CTest smoke
+   冒充真实 VM 100k e2e）。
+3. **100k YCSB 独立 load 与 A/B/C/D/E 各连续通过 ≥10 轮**：4 VM×每 VM
+   4 foreground worker、每 VM 8 vCPU、固定 32B key/value；每个 workload
+   轮次使用新池并重新 load。单测、e2e 或 YCSB 任一阶段发现 bug，修复后整个
+   验收从第 1 项重跑。
 4. 轮次日志（每轮 exit code、关键统计行、git SHA、配置哈希）写入
    `修改日志.md`；缺记录视为未验收。
 
@@ -1430,19 +1434,20 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 
 在 4 VM（与 `experiment_config.jsonc` 正式拓扑一致）上交付并可一键复跑：
 
-1. **`dsidle_e2e_08`**：见 §6.0 表；输出对齐 cxlkv 风格的相位耗时 /
-   延迟采样 / 内存统计行；断言跨 VM 读一致性与无泄漏；**必须含跨 VM
-   Delete→Get miss** 与至少一轮 Scan 抽样校验（可在 fill/read 相位外附加
-   短相位，不得缩小 100k 口径）。
+1. **`dsidle_e2e_08`**：见 §6.0 表；严格对齐 cxlkv 的 fill→随机 read
+   workflow、base36 8B key/value、分片与读索引；输出对齐相位耗时 /
+   延迟采样 / 内存统计行。cxlkv e2e08 不含 Delete/Scan，本仓不得擅自加入
+   后再把额外工作计入公平性吞吐。
 2. **`dsidle_e2e_09`**：见 §6.0 表；大 value 路径必须真实分配/拷贝/读回。
-3. **`dsidle_e2e_ycsb`**：见 §6.0 表（等价 cxlkv e2e_10）；断言 load 与
-   workloada 均成功、`E2E_TRACE_TIME_US` 可汇总、无 hard fail。
+3. **YCSB 集成**：`--suite ycsb` 仅验证 load→A 两相位接口；
+   正式完成判定必须使用 `dsidle_run_ycsb_experiment.sh` 对独立 load 和
+   A/B/C/D/E 执行完整矩阵并严格校验 trace manifest。
 
 编排要求：唯一交付
-`scripts/run_dsidle_e2e_rounds.sh --suite {08|09|ycsb|replica|scan_stress|reclaim|concurrency}`，
-默认 `--rounds 10`（补充四套默认 3）；禁止再拆平行 rounds 脚本；失败立即
-停并保留该轮日志。失败修复后只从第 1 轮重跑**该套件**，其余达标套件不
-重跑（见「施工执行协议」）。
+`scripts/run_dsidle_e2e_rounds.sh --suite {08|09|ycsb}`，默认
+`--rounds 10`；通用开发回放可显式指定 `--phase`，但不得把 phase 标签称为
+独立套件。正式 YCSB 矩阵由 `dsidle_run_ycsb_experiment.sh` 唯一编排。
+失败立即停止并保留日志；修 bug 后从全体验收第 1 项重新开始。
 
 吞吐口径（按套件；勿混用字段名）：
 - **单轮**（所有套件）：`ops_sum / (max-across-nodes duration_us / 1e6)`；
@@ -1454,14 +1459,15 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 应力相位不含 init/barrier/drain。本仓 rounds 默认 ≥10 是验收门槛（cxlkv
 脚本默认 3/1，见 §1.11）。
 
-**强制补充集成（计入完成判定；各 ≥3 轮；不替代上表三套）**：
+**专项覆盖（真实测试资产，不设置伪 suite 标签）**：
 
-| 套件 | 断言 |
-|------|------|
-| `dsidle_e2e_replica` | 副本命中∥跨 VM Put：无陈旧读；promote/demote∥Get 无崩溃/无错值 |
-| `dsidle_e2e_scan_stress` | Scan∥Put/Delete/SMO；YCSB-E 冒烟 `--workloads e` 1 轮通过 |
-| `dsidle_e2e_reclaim` | 大量 Delete 后 epoch drain，SWCC/HWCC used 回基线±缓存界；控制项复用 generation 单调 |
-| `dsidle_e2e_concurrency` | 4 VM × 每 VM 满 `foreground_worker_count` 混合负载 ≥60s 无死锁 |
+- 副本：replica-directory/Masstree 单测、runner replica activation，以及真实
+  08/09/YCSB 中的副本统计与跨 VM 值校验。
+- Scan：Masstree materialized-scan 单测和正式 YCSB-E；marker 不计 live limit。
+- 回收：node-control、shard allocator、epoch 与 Masstree 的 retire/reuse/drain
+  单测。
+- 并发：真实 4 VM×4 foreground worker 的完整 YCSB 矩阵。`--min-duration-sec`
+  是 runner 的显式压力参数，不构成名为 concurrency 的独立负载。
 
 ### 6.3.1 公平性核对表（相对 cxlkv `origin/my-work`；数据面可不同）
 
@@ -1470,13 +1476,13 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 
 | 项 | 要求 |
 |----|------|
-| 拓扑 | `shared_memory`/`vm`/`host_cpu` 字段同名；默认根配置 32G；**正式 5M YCSB 覆盖 64G**（§1.11）；4×8、HWCC 1024MB、跨 NUMA |
+| 拓扑 | `shared_memory`/`vm`/`host_cpu` 字段同名；本轮正式 100k YCSB 使用根配置 32G；4×8、HWCC 1024MB、跨 NUMA |
 | 构建 | RelWithDebInfo = `-O3 -g3 -march=native -flto=full`（与 cxlkv `CxlkvBuildOptions.cmake` 一致）；**禁止**关 LTO 做正式对比 |
 | worker 文件 | `worker{node*N+t}.txt` 命名与数量；正式 YCSB fixed **32/32**；trace 字节可与 cxlkv 互换 |
 | 屏障相位 | 屏障耗时不计入应力吞吐；机制可为 ivshmem/host 编排（**刻意**与 cxlkv tap+TCP `sdl::notify` 不同，见 §4.7） |
 | 统计行 | `E2E_TRACE_TIME_US` / `E2E_TRACE_HEARTBEAT` 与 cxlkv 同名；e2e_08/09 多轮用 `ops_per_sec_from_avg_round_max`；YCSB 用 `ops_sum`/`duration_*`/`avg_*`（§6.3） |
 | 读校验 | e2e_08 read 相位**逐字节**校验 value（cxlkv `VerifyValue` 同构），非仅存在性 |
-| `latency_inject` | 字段全集同构（位置可在 `dsidle.`）；正式 5M YCSB = `--no-latency`；e2e_11 档仅附录；仅 RelWithDebInfo+verbose=false+extra_check=false 可 enable |
+| `latency_inject` | 字段全集同构（位置可在 `dsidle.`）；本轮正式 100k YCSB = `--no-latency`；e2e_11 档仅附录；仅 RelWithDebInfo+verbose=false+extra_check=false 可 enable |
 | Scan 合同 | `(start, limit)`，`limit==0` 不限制；trace 无端键（cxlkv 公开 API 的 `end_exclusive` 在 trace 中恒为空，语义兼容） |
 | CPU 预算 | 报告 foreground worker 数；对照 cxlkv 前台 + merge 池（e2e_08 leader 另有 4 aux 线程）说明两侧后台线程预算 |
 | host tuning / check | host tuning 默认只检查（与 cxlkv 应用分歧）；`check_vms`+`numa_maps` 为本仓增强 |
@@ -1485,12 +1491,11 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 ## 6.4 性能矩阵（与 cxlkv 并列对比；在 §6.0 通过之后）
 
 - 同宿主机、同 VM 拓扑、**同一份 trace**；
-- **正式主表**：对齐 cxlkv 指南——`--no-latency`、`--shared-size-mb 65536`、
-  record/operation=5000000、fixed 32/32、workloads A–D（§1.11）；
+- **本轮正式主表**：`--no-latency`、`--shared-size-mb 32768`、
+  record/operation=100000、fixed 32/32、workloads A–E（§1.11）；
 - **注入附录**（可选，不进正式主表）：关闭计费 / e2e_11 档（25ns SWCC+
   117ns HWCC + LRU）/ 仅 SWCC / 仅 HWCC；
-- 维度：YCSB load + A/B/C/D（主对比表）；另必须交付一组
-  `--workloads a,b,c,d,e` 单轮冒烟产物（不进主表，证明 E 能力）；
+- 维度：YCSB 独立 load + A/B/C/D/E（主对比表）；
   1/2/4 VM；每 VM 1/2/4 线程；不同副本预算；
 - 每配置预热 1 轮 + 正式 ≥5 轮；YCSB 主字段用 `avg_ops_sum`/
   `avg_duration_sec`（或等价）；e2e_08/09 才用
@@ -1515,7 +1520,8 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
    独立完备；load/A/B/C/D/E 与 Put/Get/Delete/Scan 语义对齐；
 10. VM 四脚本 dry-run + 实跑全绿；YCSB 冒烟与非法输入矩阵全过；`--workloads e`
     冒烟通过；`check_vms`（本仓增强）验证 shared 页 NUMA 符合配置；
-    正式 5M 命令含 `--no-latency --shared-size-mb 65536`（§1.11）；
+    本轮正式 100k 命令含 `--no-latency --record-count 100000
+    --operation-count 100000 --workloads a,b,c,d,e`（§1.11）；
 11. 文档与最终代码一致；改造范围未引入 ART 或第二套树；
 12. 分配器 SWCC 链/remote-free 可见性专项（跨进程 free→realloc→读）通过；
 13. Get 值拷贝严格落在叶版本双检与同一 epoch 内（注入“验版后延迟读值”的
@@ -1525,10 +1531,10 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 16. **并发正确性**：无全局树锁；Get 乐观；Put/Delete 仅锁必要节点；叶链无
     SWCC CAS；多线程/多 VM 下线性一致（§4.3 + §6.1/6.3）；
 17. **安全回收**：epoch 槽 INACTIVE 语义正确；retire 后仅 quiesce 才复用；
-    控制项与 SWCC 体成对；`dsidle_e2e_reclaim` 通过；
-18. **高并发**：§6.1-13 与 `dsidle_e2e_concurrency` 通过；热路径无每 op
+    控制项与 SWCC 体成对；回收专项单测通过；
+18. **高并发**：§6.1-13 与真实 4 VM×4 worker YCSB 矩阵通过；热路径无每 op
     全局 quiesce、无虚调用兜底；
-19. §6.3.1 公平性核对表全部打勾；§6.0 全部门槛（含补充四套）满足；
+19. §6.3.1 公平性核对表全部打勾；§6.0 全部门槛满足；
     §1.10 三条红线在里程碑日志中有核对记录。
 20. §7.4 最终基线差异校验与清扫完成：对基线全量 diff 逐文件核对、死代码
     与脚手架已删、清扫后复验通过、清单入 `修改日志.md`。
@@ -1588,8 +1594,8 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
    - 里程碑过渡桩与双路径残留；未被任何交付路径或 §六 测试引用的新增
      函数/头文件/CMake target；
    - 一次性实验脚本与中间产物（§7.1 交付文档与 §六 测试集除外）。
-4. **清扫后复验**：RelWithDebInfo 全量重编 + CTest 全绿 + 三套 e2e 各
-   1 轮冒烟（清扫不改语义，不必重跑 10 轮；复验失败则修复后重验）。
+4. **清扫后复验**：RelWithDebInfo 全量重编 + CTest 全绿 + 08/09 与 YCSB
+   集成各 1 轮冒烟；随后仍须执行 §6.0 的最终连续 10 轮验收。
 5. 清扫以**独立 commit** 提交；删除清单与差异审计结论记入
    `修改日志.md`。本节完成前不得声称"改造完成 / 可交付"。
 
@@ -1616,7 +1622,7 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 | M5 副本与策略 | 副本目录（seqlock）、replicate/evict、五 worker、per-VM 计数 | 策略对拍 + **副本命中双检/目录 UAF/根钉住跟随** 专项过；commit + 日志 |
 | M6 延迟模拟 | 照搬移植 + 插入点 + scope | 4.6 验证项全过；commit + 日志 |
 | M7 实验设施 | e2e_trace_runner、VM 四脚本、YCSB 脚本 + 指南；落地 `dsidle_e2e_08/09/ycsb` 与 rounds 脚本 | 4.8/4.9 验证过；三套 e2e 可跑通 1 轮冒烟；commit + 日志 |
-| M8 对比与收尾 | §6.0 硬门槛（单测全绿 + 三套 e2e 各 ≥10 轮 + 补充四套各 ≥3 轮，按「施工执行协议」第 3 条循环至达标）、性能矩阵、**§7.4 基线差异校验与死代码/脚手架清扫**、文档 | §6.0 + §6.5 全绿 + §7.4 完成；commit + 日志 |
+| M8 对比与收尾 | §6.0 硬门槛（全体单测 10 轮 + 真实 08/09 各 10 轮 + 100k 4 VM×4 worker YCSB 独立 load/A–E 各 10 轮；遇 bug 后完整重启验收）、性能矩阵、**§7.4 基线差异校验与死代码/脚手架清扫**、文档 | §6.0 + §6.5 全绿 + §7.4 完成；commit + 日志 |
 
 依赖严格线性（M5 依赖 M4；脚本骨架可自 M2 后并行起草）。禁止跨阶段堆未
 验证且未提交的代码。
@@ -1634,9 +1640,9 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 | 控制项复用污染直方图 | generation 绑定清零 access_count（§4.5） |
 | layer 叶误当 value 复制 | §4.5 类型表 + 单测 |
 | 半成品 NodeRef 入树 | 成对分配/回滚（§4.1/§4.3.4） |
-| 副本陈旧读 / 目录 UAF | §4.3.2 命中后双检 + §4.5 seqlock；`dsidle_e2e_replica` |
+| 副本陈旧读 / 目录 UAF | §4.3.2 命中后双检 + §4.5 seqlock；副本目录/Masstree/activation 专项 |
 | SWCC 叶链误用 CAS | §4.3.7 持锁写+flush；多进程链更新单测 |
-| epoch 槽/每 op quiesce | §4.3.6 INACTIVE + 每 50 op；`dsidle_e2e_reclaim` |
+| epoch 槽/每 op quiesce | §4.3.6 INACTIVE + 每 50 op；epoch/allocator/Masstree 回收专项 |
 | Scan 值 UAF | §4.3.5 整 Scan 同 epoch + 值契约 |
 | 策略移植走样 | 对拍测试以基线 worktree 为准绳 |
 | 模拟延迟未真实生效 | TSC 校准单测 + wall time 方向验证 |

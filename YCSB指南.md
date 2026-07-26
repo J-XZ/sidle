@@ -14,16 +14,21 @@ VM 回放编排。镜像只构建一次；二进制和 ivshmem 模块在宿主�
   Scan 路径。
 - 派生配置的 VM 数由 `--vm-count 1|2|4` 指定（默认 4），HWCC 为 1024MiB，SWCC 使用共享池其余空间；共享池大小
   必须是至少 2048MiB 的 2 的幂。
-- 正式性能对比使用 RelWithDebInfo、32B key/value、4 worker/节点、5M
-  record/operation、`--shared-size-mb 65536 --no-latency`。在运行这一合同前，
-  应以派生的 64GiB 配置重新启动 VM；不能让 32GiB VM 映射回放 64GiB 配置。
+- 本轮与 cxlkv 的默认验收合同使用 RelWithDebInfo、固定 32B key/value、
+  4 worker/节点、100,000 record/operation、每 VM 8 vCPU。更大数据集属于另行
+  声明的扩展实验，不能混入本轮 100k 结果。
 - 派生配置会将延迟缓存模型设为 `none` 且关闭 cache hit；`--no-latency` 还会
   关闭所有延迟计费开关。
 - 默认先执行 1 个不计入汇总的预热轮次，再执行 `--rounds` 指定的正式轮次；可用
   `--warmup-rounds 0` 仅用于开发冒烟，不能用于 §6.4 正式性能结果。
-- 每 VM 还保留 2 个核/epoch slot 给 SIDLE 的 Trigger 与 Cooler worker，因此
-  `--threads-per-node + 2` 不得超过 `vm.core_count_per_vm`；正式 4 worker/8 vCPU
-  合同满足该约束。
+- 每 VM 保留原 SIDLE 的 5 个后台角色（Trigger、Promotion、Demotion、Cooler、
+  Adjuster），另有 1 个 heartbeat 线程。4 foreground/8 vCPU 合同因此实际有
+  10 个回放进程线程，会发生明确披露的 guest 调度过订；为尊重原实现，不通过
+  删除后台角色来隐藏该成本。只有前四个后台角色进入 epoch，所以共享池精确分配
+  `--threads-per-node + 4` 个 epoch slot，而不是旧文档所写的 `+2`。
+- 独立 load（除非指定 `--skip-standalone-load`）和每个 workload 的每一轮都会
+  使用新的共享池；workload 轮执行 `reset pool → clear VM caches → load → run`，
+  不会让 A–E 在同一棵累积状态的树上连续回放。
 
 ## 已验证命令
 
@@ -38,15 +43,17 @@ out=$(mktemp -d /tmp/dsidle-ycsb-guide.XXXXXX)
   --prepare-only --out-dir "$out/result" \
   --workloads a,e --record-count 10 --operation-count 20 \
   --threads-per-node 2 --round-timeout 30 \
-  --shared-numa 1,2 --shared-size-mb 4096 --no-latency
+  --shared-numa 1 --shared-size-mb 4096 --no-latency
 ```
 
 成功时会输出 `DSIDLE_YCSB_PREPARED`。目录内包含 `configs/`、`traces/`、
 `logs/`、`round_logs/`、派生的 `experiment_config_ycsb_4vm.jsonc` 和
-`run_meta.json`。本示例会生成 4 个 load、A 和 E worker trace；A 的 UPDATE 会
-展开为独立 GET 与 PUT。后者记录 git SHA、配置 SHA256、参数和复现命令。
+`run_meta.json` 与 `trace_manifest.json`。本示例会分别生成 8 个 load、A 和 E
+worker trace；A 的 UPDATE 会展开为独立 GET 与 PUT。manifest 记录每个 worker
+的物理命令数、操作类型、固定 32B key/value、value seed 和生成参数；
+`run_meta.json` 还记录 git/config/manifest SHA256、线程与 epoch 槽预算及复现命令。
 
-实际 100k 验收回放（4 VM × 4 worker、load/workloada、连续 10 轮）的命令为：
+实际 100k 验收回放（4 VM × 4 worker、独立 load 与 A–E 各 10 个正式轮）的命令为：
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -54,7 +61,7 @@ cmake --build build -j"$(nproc)" --target dsidle_e2e_trace_runner dsidle_shared_
 ./dsidle_run_ycsb_experiment.sh \
   --vm-count 4 --warmup-rounds 1 --rounds 10 \
   --record-count 100000 --operation-count 100000 \
-  --threads-per-node 4 --workloads a --no-latency
+  --threads-per-node 4 --workloads a,b,c,d,e --no-latency
 ```
 
 runner 日志可用下列命令生成 JSON、CSV 与报告：
@@ -70,7 +77,9 @@ python3 scripts/summarize_ycsb_experiment.py \
 
 ## 中断与失败处理
 
-准备模式只创建指定输出目录；中断后可以选择新的 `--out-dir` 重跑。若只需物化
-配置，可加 `--skip-trace-gen`。非法数值、非法 NUMA 列表、非 2 的幂共享大小或
-空/重复/非法 workload 会以退出码 2 失败。完整执行失败后保留远端和本地日志；
-先以 `dsidle_check_vms.sh` 检查 VM，再用新的输出目录重跑，不在 VM 内编译。
+准备模式只创建指定输出目录；中断后可以选择新的 `--out-dir` 重跑。
+`--skip-trace-gen` 只用于复用同一输出目录中已经存在且通过 manifest 命令数校验
+的 trace，不能在空目录中充当“仅物化配置”。非法数值、非法 NUMA 列表、非 2
+的幂共享大小、缺失/不匹配 trace 或空/重复/非法 workload 会失败。完整执行失败后
+保留远端和本地日志；先以 `dsidle_check_vms.sh` 检查 VM，再用新的输出目录重跑，
+不在 VM 内编译。
