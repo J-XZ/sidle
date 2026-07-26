@@ -181,8 +181,6 @@ int main() {
     assert(value.len == expected_value.size());
     assert(std::memcmp(value.s, expected_value.data(), value.len) == 0);
   }
-  assert(replicas.AccessCount(table.table().root()->control_ref()) > 0);
-
   using replica_params = Masstree::default_table::parameters_type;
   using replica_key_type = Masstree::key<typename replica_params::ikey_type>;
   using replica_node_type = Masstree::node_base<replica_params>;
@@ -216,6 +214,7 @@ int main() {
   replica_key_type replica_key(replica_key_text.data(), replica_key_text.size());
   typename replica_node_type::nodeversion_type replica_version;
   auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);
+  assert(replicas.AccessCount(canonical_leaf->control_ref()) > 0);
   void* encoded_leaf = Masstree::leaf_replica<replica_params>::Create(
       *canonical_leaf, canonical_leaf->permutation());
   const row_type* replica_value = nullptr;

@@ -324,6 +324,12 @@ class internode : public node_base<P> {
 
 #ifdef CAL_NODE_HOTNESS
     void record_access() const {
+        if (this->control_ref()) {
+            if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull()) {
+                replicas->RecordAccess(this->control_ref());
+                return;
+            }
+        }
         ++access_count_;
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(this)] = access_count_;
     }
@@ -528,6 +534,12 @@ class leaf : public node_base<P> {
     }
 
     inline void record_access() {
+        if (this->control_ref()) {
+            if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull()) {
+                replicas->RecordAccess(this->control_ref());
+                return;
+            }
+        }
         ++sidle_meta.access_time;
 #ifdef CAL_NODE_HOTNESS
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(this)] = sidle_meta.access_time;
@@ -906,8 +918,6 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
  retry:
     sense = 0;
     n[sense] = this;
-    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
-        replicas->RecordAccess(n[sense]->control_ref());
 #ifdef CAL_NODE_HOTNESS
     n[sense]->record_access();
 #endif
@@ -918,8 +928,6 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
         }
         ti.mark(tc_root_retry);
         n[sense] = n[sense]->maybe_parent();
-        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
-            replicas->RecordAccess(n[sense]->control_ref());
 #ifdef CAL_NODE_HOTNESS
         n[sense]->record_access();
 #endif
@@ -945,10 +953,6 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
             child = in->child_[kp];
         }
         n[sense ^ 1] = child;
-        if (n[sense ^ 1]) {
-            if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
-                replicas->RecordAccess(n[sense ^ 1]->control_ref());
-        }
 #ifdef CAL_NODE_HOTNESS
         n[sense ^ 1]->record_access();
 #endif
