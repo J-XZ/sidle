@@ -15,12 +15,8 @@
  */
 #ifndef VALUE_BAG_HH
 #define VALUE_BAG_HH
-// #define DEBUG 1
 #include "kvthread.hh"
 #include "json.hh"
-#ifdef DEBUG
-#include <iostream>
-#endif
 
 template <typename O>
 class value_bag {
@@ -128,17 +124,11 @@ inline lcdf::Str value_bag<O>::row_string() const {
 
 template <typename O> template <typename ALLOC>
 inline void value_bag<O>::deallocate(ALLOC& ti) {
-    #ifdef DEBUG
-    std::cout << "[value_bag::deallocate] deallocate size: " << size() << " end" << std::endl;
-    #endif
     ti.deallocate(this, size(), memtag_value);
 }
 
 template <typename O> template <typename ALLOC>
 inline void value_bag<O>::deallocate_rcu(ALLOC& ti) {
-    #ifdef DEBUG
-    std::cout << "[value_bag::deallocate_rcu] deallocate size: " << size() << " end" << std::endl;
-    #endif
     ti.deallocate_rcu(this, size(), memtag_value);
 }
 
@@ -235,10 +225,6 @@ inline value_bag<O>* value_bag<O>::create(const Json* first, const Json* last,
 template <typename O> template <typename ALLOC>
 inline value_bag<O>* value_bag<O>::create1(Str str, kvtimestamp_t ts,
                                            ALLOC& ti) {
-    // #ifdef DEBUG
-    // int size = sizeof(kvtimestamp_t) + sizeof(bagdata) + sizeof(O) + str.length();
-    // std::cout << "[value_bag::create1] alloc size: " << size  << " end"<< std::endl;
-    // #endif
     value_bag<O>* row = (value_bag<O>*) ti.allocate(sizeof(kvtimestamp_t) + sizeof(bagdata) + sizeof(O) + str.length(), memtag_value);
     row->ts_ = ts;
     row->d_.ncol_ = 1;

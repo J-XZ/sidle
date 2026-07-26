@@ -1,3 +1,7 @@
+#ifndef DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE
+#error "src/helper.* is archived upstream benchmark support, not a D-SIDLE API"
+#else
+
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -234,3 +238,5 @@ inline const bool little_endian() {
 }
 
 #endif  // HELPER_H
+
+#endif  // DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE

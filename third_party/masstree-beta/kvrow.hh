@@ -15,7 +15,6 @@
  */
 #ifndef KVROW_HH
 #define KVROW_HH 1
-// #define DEBUG 1
 #include "kvthread.hh"
 #include "kvproto.hh"
 #include "log.hh"
@@ -23,9 +22,6 @@
 #include "dsidle/replica_directory.h"
 #include <algorithm>
 #include <cstdlib>
-#ifdef DEBUG
-#include <iostream>
-#endif
 
 #if MASSTREE_ROW_TYPE_ARRAY
 # include "value_array.hh"
@@ -277,9 +273,6 @@ inline bool query<R>::apply_replace(R*& value, bool found, Str new_value,
         assign_timestamp(ti, value->timestamp());
         value->deallocate_rcu(ti);
     }
-    #ifdef DEBUG
-    std::cout << "[apply_replace] new value length: " << new_value.len << std::endl; 
-    #endif
     value = R::create1(new_value, qtimes_.ts, ti);
     return inserted;
 }

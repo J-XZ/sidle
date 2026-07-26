@@ -1,3 +1,7 @@
+#ifndef DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE
+#error "src/kv/masstree.h is an archived upstream facade; use the dsidle runners"
+#else
+
 #include <cstdlib>
 #include <memory>
 #include <set>
@@ -230,3 +234,5 @@ template <typename K, typename V>
 void MasstreeKV<K, V>::terminate_bg() {}
 
 #endif  // MASSTREE_H
+
+#endif  // DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE

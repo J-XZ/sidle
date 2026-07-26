@@ -1,5 +1,13 @@
 # SIDLE: Tree-structure Aware Indexes for CXL-based Heterogeneous Memory
 
+> D-SIDLE status: the upstream single-node `benchmark/`, `src/kv/`, and
+> `src/helper.*` facade below is retained only as architecture reference. It is
+> intentionally not built because it still assumes the retired allocator,
+> fixed host-core map, and pre-distributed constructor contracts. D-SIDLE/cxlkv
+> comparisons must use the root CMake targets `dsidle_e2e_trace_runner` and
+> `dsidle_e2e_suite_runner`. The remaining upstream instructions are historical
+> and do not describe the current distributed experiment path.
+
 <!-- > This repository is fully anonymized.  -->
 This repository contains the implementation of SIDLE. The baselines can be found in the [sidle-baselines](https://github.com/sidle-project/sidle-baselines) repo.
 
@@ -250,4 +258,3 @@ We develop *Unimalloc* (the source code is under `third_party/cxl_utils/`), a un
 Unimalloc offers equivalent replacements for commonly used libc memory allocation interfaces.
 It provides two types of interfaces: one for allocating memory between CXL and local DRAM in a specified ratio, and another for allocating memory specifically to CXL.
 Please check the [Unimalloc Interface](./third_party/cxl_utils/cxl_allocator.h) for more details.
-

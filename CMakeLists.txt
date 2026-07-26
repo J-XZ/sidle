@@ -17,6 +17,15 @@ if(NOT DEFINED CMAKE_CXX_COMPILER)
 endif()
 project(D_SIDLE LANGUAGES C CXX)
 
+option(DSIDLE_BUILD_LEGACY_SIDLE_BENCHMARKS
+  "Build the archived single-node SIDLE benchmark facade" OFF)
+if(DSIDLE_BUILD_LEGACY_SIDLE_BENCHMARKS)
+  message(FATAL_ERROR
+    "The upstream benchmark/, src/kv/, and src/helper.* facade is archived "
+    "reference code and is not a supported D-SIDLE/cxlkv comparison path. "
+    "Use dsidle_e2e_trace_runner or dsidle_e2e_suite_runner.")
+endif()
+
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   message(FATAL_ERROR "D-SIDLE requires Clang for the mandated -flto=full acceptance build")
 endif()

@@ -1,6 +1,11 @@
 cmake_minimum_required (VERSION 3.5)
 project (Sidle-benchmark)
 
+message(FATAL_ERROR
+  "benchmark/ is archived upstream SIDLE reference source. Its retired "
+  "src/kv and src/helper facade is intentionally isolated from D-SIDLE. "
+  "Configure the repository root and use the dsidle runners instead.")
+
 ###############################################################################
 # read_latest
 ###############################################################################

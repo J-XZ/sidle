@@ -1,3 +1,7 @@
+#ifndef DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE
+#error "src/kv/art_wrapper.h is archived upstream code and is not supported by D-SIDLE"
+#else
+
 #if !defined(ART_H)
 #define ART_H
 
@@ -216,3 +220,5 @@ void ARTKV<K, V>::stop() {
 }
 
 #endif  // ART_H
+
+#endif  // DSIDLE_ENABLE_ARCHIVED_UPSTREAM_BENCHMARK_SOURCE

@@ -313,7 +313,6 @@ void loginfo::record(int command, const query_times& qtimes,
     size_t n = logrec_kvdelta::size(key.len, value.len)
         + logrec_epoch::size() + logrec_base::size();
     waitlist wait = { &wait };
-    int stalls = 0;
     while (1) {
         if (len_ - pos_ >= n
             && (wait.next == &wait || f_.waiting_ == &wait)) {
@@ -373,11 +372,6 @@ void loginfo::record(int command, const query_times& qtimes,
             wait.next = 0;
         }
         release();
-        if (stalls == 0)
-            printf("stall\n");
-        else if (stalls % 25 == 0)
-            printf("stall %d\n", stalls);
-        ++stalls;
         napms(50);
         acquire();
     }
@@ -569,9 +563,6 @@ inline void logrecord::apply(row_type*& value, bool found,
 
     // actually apply change
     if (command == logcmd_replace) {
-        #ifdef DEBUG
-        std::cout << "[logrecord::apply] logcmd_replace create1 is called" << std::endl;
-        #endif
         *cur_value = row_type::create1(val, ts, ti);
     }
     else if (command != logcmd_modify
@@ -588,9 +579,6 @@ inline void logrecord::apply(row_type*& value, bool found,
     } else {
         val.s -= sizeof(row_delta_marker<row_type>);
         val.len += sizeof(row_delta_marker<row_type>);
-        #ifdef DEBUG
-        std::cout << "[logrecord::apply] ugly interface create1 is called" << std::endl;
-        #endif
         row_type* new_value = row_type::create1(val, ts | 1, ti);
         row_delta_marker<row_type>* dm = row_get_delta_marker(new_value, true);
         dm->marker_type_ = row_marker::mt_delta;
