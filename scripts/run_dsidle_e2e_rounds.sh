@@ -9,7 +9,6 @@ suite=""
 load_config=""
 run_config=""
 rounds=10
-rounds_set=0
 round_timeout=7200
 out_dir=""
 runner="$repo_root/build/dsidle_e2e_trace_runner"
@@ -20,7 +19,7 @@ execute=0
 smoke=0
 
 usage() {
-  echo "usage: $0 [--suite 08|09|ycsb|replica|scan_stress|reclaim|concurrency] [--config PATH] [--load-config PATH --run-config PATH] [--phase NAME] [--rounds N] [--round-timeout SEC] [--out-dir DIR] [--runner PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--smoke] [--execute] [--dry-run]" >&2
+  echo "usage: $0 [--suite 08|09|ycsb] [--config PATH] [--load-config PATH --run-config PATH] [--phase NAME] [--rounds N] [--round-timeout SEC] [--out-dir DIR] [--runner PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--smoke] [--execute] [--dry-run]" >&2
 }
 
 need_value() { (($# >= 2)) || { usage; exit 2; }; }
@@ -30,7 +29,7 @@ while (($#)); do
       need_value "$@"
       case "$1" in
         --suite) suite=$2;; --config) config=$2;; --load-config) load_config=$2;; --run-config) run_config=$2;;
-        --phase) phase=$2;; --rounds) rounds=$2; rounds_set=1;; --round-timeout) round_timeout=$2;;
+        --phase) phase=$2;; --rounds) rounds=$2;; --round-timeout) round_timeout=$2;;
         --out-dir) out_dir=$2;; --runner) runner=$2;; --pool-tool) pool_tool=$2;;
         --node-control-capacity) node_control_capacity=$2;; --max-threads-per-vm) max_threads=$2;;
       esac
@@ -44,17 +43,15 @@ for value in "$rounds" "$round_timeout" "$node_control_capacity" "$max_threads";
 done
 [[ "$phase" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "invalid phase name" >&2; exit 2; }
 if [[ -n "$suite" ]]; then
-  case "$suite" in 08|09|ycsb|replica|scan_stress|reclaim|concurrency) ;; *) echo "unknown suite: $suite" >&2; exit 2;; esac
+  case "$suite" in 08|09|ycsb) ;; *) echo "unknown suite: $suite" >&2; exit 2;; esac
   if [[ "$suite" == ycsb ]]; then
     [[ -n "$load_config" && -n "$run_config" ]] || { echo "--suite ycsb requires --load-config and --run-config" >&2; exit 2; }
     config=$load_config
   elif [[ "$phase" == load ]]; then
     phase="e2e_$suite"
   fi
-  if (( ! rounds_set )) && [[ "$suite" == replica || "$suite" == scan_stress || "$suite" == reclaim || "$suite" == concurrency ]]; then rounds=3; fi
 fi
 minimum_rounds=10
-[[ "$suite" == replica || "$suite" == scan_stress || "$suite" == reclaim || "$suite" == concurrency ]] && minimum_rounds=3
 ((smoke || rounds >= minimum_rounds)) || { echo "--rounds must be at least $minimum_rounds unless --smoke is set" >&2; exit 2; }
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 if [[ -n "$suite" && "$suite" == ycsb ]]; then
@@ -113,7 +110,6 @@ if (( ! execute )); then
   for ((part = 0; part < ${#phase_names[@]}; ++part)); do
     for ((node = 0; node < vm_count; ++node)); do
       cmd=("$runner" --config "${phase_configs[$part]}" --phase "${phase_names[$part]}" --node "$node")
-      [[ "$suite" == concurrency ]] && cmd+=(--min-duration-sec 60)
       ((node == 0 && phase_bootstrap[part])) && cmd+=(--bootstrap)
       print_command timeout "$round_timeout" "${cmd[@]}"
     done
@@ -138,7 +134,6 @@ for ((round = 1; round <= rounds; ++round)); do
     for ((node = 0; node < vm_count; ++node)); do
       log="$out_dir/logs/${phase_names[$part]}_round_${round}_${phase_stages[$part]}_node${node}.log"
       cmd=("$runner" --config "${phase_configs[$part]}" --phase "${phase_names[$part]}" --node "$node")
-      [[ "$suite" == concurrency ]] && cmd+=(--min-duration-sec 60)
       ((node == 0 && phase_bootstrap[part])) && cmd+=(--bootstrap)
       timeout "$round_timeout" "${cmd[@]}" >"$log" 2>&1 & pids+=("$!")
     done
