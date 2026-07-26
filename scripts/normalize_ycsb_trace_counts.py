@@ -227,13 +227,13 @@ def main():
             )
         else:
             changed = 0
+        after = counts(paths, lines)
+        if after != target:
+            raise SystemExit(f"{phase}: expected {dict(target)}, got {dict(after)}")
         for path in paths:
             path.write_text(
                 "\n".join(line for line in lines[path] if line is not None) + "\n"
             )
-        after = counts(paths, lines)
-        if after != target:
-            raise SystemExit(f"{phase}: expected {dict(target)}, got {dict(after)}")
         report["phases"][phase] = {
             "before": dict(sorted(before.items())),
             "target": dict(sorted(target.items())),
