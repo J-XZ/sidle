@@ -193,13 +193,14 @@ class replica_workers {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       after_cooling = true;
     }
-    if (after_cooling) histogram_->decrease_tolerance_for_cold();
+    if (forced_demotion && after_cooling)
+      histogram_->decrease_tolerance_for_cold();
     root_pin_.Refresh(ti);
     std::uint64_t nodes = 0;
     std::uint64_t accesses = 0;
     {
       threadinfo::rcu_scope rcu(ti);
-      ForEachLeaf(table_.root(),
+      ForEachLeaf(table_.root(), ti,
                   [this, &nodes, &accesses, forced_demotion](leaf<P>* leaf) {
         const auto ref = leaf->control_ref();
         const auto version = leaf->stable();
@@ -240,7 +241,7 @@ class replica_workers {
     histogram_->notify_cooling();
     {
       threadinfo::rcu_scope rcu(ti);
-      ForEachLeaf(table_.root(), [this](leaf<P>* leaf) {
+      ForEachLeaf(table_.root(), ti, [this](leaf<P>* leaf) {
         directory_.HalveAccess(leaf->control_ref());
       });
     }
@@ -342,18 +343,21 @@ class replica_workers {
   }
 
   template <typename Callback>
-  static void ForEachLeaf(node_base<P>* node, Callback&& callback) {
-    if (!node) return;
-    const auto version = node->stable();
-    if (version.deleted() || version.locked()) return;
-    if (node->isleaf()) { callback(static_cast<leaf<P>*>(node)); return; }
-    auto* internal = static_cast<internode<P>*>(node);
-    const int count = internal->size();
-    dsidle::NodeRef children[internode<P>::width + 1];
-    for (int index = 0; index <= count; ++index) children[index] = internal->child_[index].ref();
-    if (internal->has_changed(version)) return;
-    for (int index = 0; index <= count; ++index)
-      ForEachLeaf(dsidle::ResolveCanonicalNode<node_base<P>>(children[index]), callback);
+  static void ForEachLeaf(node_base<P>* root, threadinfo& ti,
+                          Callback&& callback) {
+    if (!root) return;
+    // Reuse SIDLE's Masstree leaf iterator. Unlike a child-only B-tree DFS,
+    // its scan stack follows layer values as well as internal-node edges.
+    leaf_iterator<P> iterator(root);
+    std::uint64_t first_ikey = 0;
+    iterator.init(
+        Str(reinterpret_cast<const char*>(&first_ikey), sizeof(first_ikey)),
+        ti);
+    while (iterator.state() != scanstackelt<P>::scan_end) {
+      if (auto* current = iterator.node())
+        callback(current);
+      iterator.next(ti);
+    }
   }
 
   void BindCurrentThread() { dsidle::ConfigureCurrentSwccAllocator(pool_, shard_count_, local_shard_); dsidle::ConfigureCurrentReplicaDirectory(directory_); }

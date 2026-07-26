@@ -86,6 +86,10 @@ bool unlocked_tcursor<P>::find_unlocked(threadinfo& ti)
                     break;
                 }
                 if (cached == leaf_replica<P>::result::kValue) {
+                    // A local SIDLE leaf hit is still an access to that leaf.
+                    // Keep the per-VM counter semantics without touching its
+                    // canonical SWCC metadata.
+                    directory->RecordAccess(replica_ref);
                     // `n_` preserves the cursor's identity API only. The value
                     // comes from the protected local snapshot, so do not
                     // establish SWCC visibility for the canonical leaf.
@@ -101,6 +105,7 @@ bool unlocked_tcursor<P>::find_unlocked(threadinfo& ti)
                     return true;
                 }
                 if (cached == leaf_replica<P>::result::kLayer) {
+                    directory->RecordAccess(replica_ref);
                     ka_.shift_by(int(sizeof(typename P::ikey_type)));
                     root_ref = layer_ref;
                     replica_ref = layer_ref;

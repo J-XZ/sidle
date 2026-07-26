@@ -616,6 +616,56 @@ int main() {
       1, 0, 1,
       std::chrono::milliseconds(1), std::chrono::hours(1),
       std::chrono::hours(1));
+  // The original SIDLE traversal follows Masstree layer edges. Exercise more
+  // than the top-level B-tree so a child-only DFS cannot silently omit the
+  // leaves holding long/fixed-width keys.
+  std::vector<replica_node_type*> policy_leaves;
+  {
+    Masstree::leaf_iterator<replica_params> iterator(table.table().root());
+    std::uint64_t first_ikey = 0;
+    iterator.init(
+        lcdf::Str(reinterpret_cast<const char*>(&first_ikey),
+                  sizeof(first_ikey)),
+        *ti);
+    while (iterator.state() !=
+           Masstree::scanstackelt<replica_params>::scan_end) {
+      if (auto* current = iterator.node()) {
+        if (std::find(policy_leaves.begin(), policy_leaves.end(), current) ==
+            policy_leaves.end())
+          policy_leaves.push_back(current);
+      }
+      iterator.next(*ti);
+    }
+  }
+  assert(policy_leaves.size() > 1);
+  for (auto* policy_leaf : policy_leaves)
+    for (unsigned i = 0; i != 256; ++i)
+      replicas.RecordAccess(policy_leaf->control_ref());
+  workers.TriggerOnce(*ti);
+  workers.ExecuteOnce(sidle::task_type::promotion, *ti);
+  for (auto* policy_leaf : policy_leaves) {
+    const auto policy_version = policy_leaf->stable();
+    const auto policy_ref = policy_leaf->control_ref();
+    assert(replicas.Acquire(
+        policy_ref, dsidle::LoadNodeGeneration(policy_ref),
+        policy_version.version_value()));
+  }
+  const auto policy_access_sum = [&] {
+    std::uint64_t sum = 0;
+    for (auto* policy_leaf : policy_leaves)
+      sum += replicas.AccessCount(policy_leaf->control_ref());
+    return sum;
+  };
+  const auto accesses_before_local_get = policy_access_sum();
+  lcdf::Str local_layered_value;
+  assert(query.run_get1(
+      table.table(), lcdf::Str(layered_key.data(), layered_key.size()), 0,
+      local_layered_value, *ti));
+  // The long key crosses multiple Masstree layers; each local leaf traversed
+  // by the all-replica fast path retains the original leaf access semantics.
+  assert(policy_access_sum() >= accesses_before_local_get + 2);
+  for (auto* policy_leaf : policy_leaves)
+    std::free(replicas.Invalidate(policy_leaf->control_ref()));
   const auto resident_bytes = replicas.LocalBytes();
   assert(resident_bytes > 0);
   replicas.SetBudgetBytes(resident_bytes);
