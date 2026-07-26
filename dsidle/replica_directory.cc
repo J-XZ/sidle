@@ -159,7 +159,8 @@ void* ReplicaDirectory::PublishLocked(NodeRef ref, ReplicaSnapshot snapshot) {
 void* ReplicaDirectory::Publish(NodeRef ref, ReplicaSnapshot snapshot) {
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* prior = Find(ref);
-  const auto old_bytes = prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+  auto old_bytes =
+      prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
   void* old = PublishLocked(ref, snapshot);
   local_bytes_.fetch_add(snapshot.bytes - old_bytes, std::memory_order_release);
   return old;
@@ -169,10 +170,21 @@ bool ReplicaDirectory::TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** 
   if (!superseded) throw std::runtime_error("null ReplicaDirectory superseded output");
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* prior = Find(ref);
-  const auto old_bytes = prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
-  const auto current = local_bytes_.load(std::memory_order_relaxed);
+  auto old_bytes =
+      prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+  auto current = local_bytes_.load(std::memory_order_relaxed);
   const auto budget = budget_bytes_.load(std::memory_order_relaxed);
-  if (snapshot.bytes > budget || current - old_bytes > budget - snapshot.bytes) return false;
+  if (snapshot.bytes > budget)
+    return false;
+  if (current - old_bytes > budget - snapshot.bytes) {
+    ReclaimRetiredLocked();
+    current = local_bytes_.load(std::memory_order_relaxed);
+    prior = Find(ref);
+    old_bytes =
+        prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+    if (current - old_bytes > budget - snapshot.bytes)
+      return false;
+  }
   *superseded = PublishLocked(ref, snapshot);
   local_bytes_.store(current - old_bytes + snapshot.bytes, std::memory_order_release);
   return true;
@@ -191,14 +203,20 @@ bool ReplicaDirectory::TryRefresh(NodeRef ref, ReplicaSnapshot snapshot,
     return false;
   const auto old_bytes =
       prior->bytes.load(std::memory_order_relaxed);
-  const auto current =
+  auto current =
       local_bytes_.load(std::memory_order_relaxed);
   const auto budget =
       budget_bytes_.load(std::memory_order_relaxed);
-  if (budgeted &&
-      (snapshot.bytes > budget ||
-       current - old_bytes > budget - snapshot.bytes))
-    return false;
+  if (budgeted) {
+    if (snapshot.bytes > budget)
+      return false;
+    if (current - old_bytes > budget - snapshot.bytes) {
+      ReclaimRetiredLocked();
+      current = local_bytes_.load(std::memory_order_relaxed);
+      if (current - old_bytes > budget - snapshot.bytes)
+        return false;
+    }
+  }
   *superseded = PublishLocked(ref, snapshot);
   local_bytes_.store(current - old_bytes + snapshot.bytes,
                      std::memory_order_release);
@@ -223,6 +241,48 @@ void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   slot->desired_local.store(false, std::memory_order_relaxed);
   slot->seq.store(sequence + 2, std::memory_order_release);
   return old;
+}
+
+void ReplicaDirectory::ReclaimRetiredLocked() {
+  for (std::uint64_t segment_index = 0;
+       segment_index < segment_count_; ++segment_index) {
+    Segment* segment =
+        segments_[segment_index].load(std::memory_order_acquire);
+    if (!segment)
+      continue;
+    for (std::uint64_t slot_index = 0;
+         slot_index < kSlotsPerSegment; ++slot_index) {
+      const auto index =
+          segment_index * kSlotsPerSegment + slot_index;
+      if (index >= capacity_)
+        return;
+      Slot& slot = segment->slots[slot_index];
+      const auto generation =
+          slot.generation.load(std::memory_order_relaxed);
+      if (!generation &&
+          !slot.local_ptr.load(std::memory_order_relaxed))
+        continue;
+      const NodeRef ref(
+          node_control_offset_ + index * sizeof(NodeControl));
+      auto* control = ref.get(SharedPoolBase());
+      latency_sim::RecordHwccAtomicLoad(
+          &control->allocation_state);
+      const auto state =
+          control->allocation_state.load(std::memory_order_acquire);
+      latency_sim::RecordHwccRead(
+          &control->generation, sizeof(control->generation));
+      if (state == NodeAllocationState::kPublished &&
+          control->generation == generation)
+        continue;
+      const auto bytes =
+          slot.bytes.load(std::memory_order_relaxed);
+      void* stale = InvalidateLocked(ref);
+      if (stale) {
+        local_bytes_.fetch_sub(bytes, std::memory_order_release);
+        std::free(stale);
+      }
+    }
+  }
 }
 
 void* ReplicaDirectory::InvalidateOlderLocked(

@@ -113,6 +113,7 @@ class ReplicaDirectory {
   void* InvalidateOlderLocked(NodeRef ref, std::uint64_t generation,
                               std::uint64_t cached_version,
                               std::uint64_t* removed_bytes);
+  void ReclaimRetiredLocked();
   static void WaitForReaders(Slot& slot);
 
   std::uint64_t node_control_offset_{};

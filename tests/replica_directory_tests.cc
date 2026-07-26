@@ -103,9 +103,31 @@ int main() {
       &retiring_old));
   assert(retiring_old == nullptr);
   assert(directory.HasLocalPlacement(ref, 1));
+  const auto pressure_ref =
+      controls.Reserve((4ULL << 20) + 128, 2);
+  controls.Publish(pressure_ref, 24);
+  dsidle::ReplicaDirectory remote_directory(pool);
+  remote_directory.SetBudgetBytes(32);
+  auto* remote_retiring = static_cast<char*>(std::malloc(32));
+  assert(remote_retiring);
+  assert(remote_directory.Publish(
+             ref, {remote_retiring, 1, 24, 32,
+                   dsidle::ReplicaKind::kValueLeaf}) == nullptr);
   controls.Retire(ref, 9);
   assert(!directory.HasLocalPlacement(ref, 1));
   assert(directory.LocalBytes() == 0);
+  assert(remote_directory.HasLocalPlacement(ref, 1));
+  auto* pressure_replica = static_cast<char*>(std::malloc(32));
+  assert(pressure_replica);
+  void* pressure_old = nullptr;
+  assert(remote_directory.TryPublish(
+      pressure_ref, {pressure_replica, 1, 24, 32,
+                     dsidle::ReplicaKind::kValueLeaf},
+      &pressure_old));
+  assert(pressure_old == nullptr);
+  assert(!remote_directory.HasLocalPlacement(ref, 1));
+  assert(remote_directory.LocalBytes() == 32);
+  std::free(remote_directory.Invalidate(pressure_ref));
   controls.Release(ref);
   const auto reused = controls.Reserve((4ULL << 20) + 64, 2);
   assert(reused == ref && directory.AccessCount(reused) == 0);
