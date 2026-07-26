@@ -18,6 +18,8 @@ image/root.img.manifest
 unready_script
 script
 .git_backup
+__pycache__/
+*.py[cod]
 
 third_party/ivshmem-kernel/*.ko
 third_party/ivshmem-kernel/*.o
