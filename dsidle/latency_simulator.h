@@ -88,6 +88,8 @@ const char *CacheModelName(CacheModel model);
 Config ValidateConfig(Config config);
 LatencySimulator &GlobalLatencySimulator();
 bool InstrumentationEnabledFast();
+void BeginActiveScope(ScopeKind scope);
+void EndActiveScopeAndDelay();
 void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag);
 bool TscSpinAvailableForTest();
 void DelaySpinNsForTest(uint64_t ns);
@@ -116,8 +118,15 @@ private:
 // after all Masstree locks and RCU scopes have been released.
 class ScopeGuard {
  public:
-  explicit ScopeGuard(ScopeKind scope);
-  ~ScopeGuard();
+  __attribute__((always_inline)) explicit ScopeGuard(ScopeKind scope)
+      : active_(InstrumentationEnabledFast()) {
+    if (active_)
+      BeginActiveScope(scope);
+  }
+  __attribute__((always_inline)) ~ScopeGuard() {
+    if (active_)
+      EndActiveScopeAndDelay();
+  }
   ScopeGuard(const ScopeGuard&) = delete;
   ScopeGuard& operator=(const ScopeGuard&) = delete;
  private:

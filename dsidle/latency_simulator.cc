@@ -160,6 +160,12 @@ Config ValidateConfig(Config config) {
 }
 LatencySimulator &GlobalLatencySimulator() { static LatencySimulator simulator; return simulator; }
 bool InstrumentationEnabledFast() { return g_instrumentation_enabled.load(std::memory_order_relaxed); }
+__attribute__((noinline)) void BeginActiveScope(ScopeKind scope) {
+  GlobalLatencySimulator().BeginScope(scope);
+}
+__attribute__((noinline)) void EndActiveScopeAndDelay() {
+  GlobalLatencySimulator().EndScopeAndDelay();
+}
 void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag) {
   auto& sim = GlobalLatencySimulator();
   const auto& config = sim.config();
@@ -214,9 +220,4 @@ void LatencySimulator::RecordRange(PoolKind p, AccessKind k, const void *address
 Stats LatencySimulator::SnapshotStats() const { std::lock_guard<std::mutex> lock(StatsMutex()); return stats_; }
 Stats LatencySimulator::TakeStatsAndReset() { std::lock_guard<std::mutex> lock(StatsMutex()); Stats out=stats_;stats_={};return out; }
 uint64_t LatencySimulator::PendingDelayNsForTest() const { auto it=g_tls.find(this); return it==g_tls.end()?0:it->second.pending; }
-ScopeGuard::ScopeGuard(ScopeKind scope) {
-  active_ = InstrumentationEnabledFast();
-  if (active_) GlobalLatencySimulator().BeginScope(scope);
-}
-ScopeGuard::~ScopeGuard() { if (active_) GlobalLatencySimulator().EndScopeAndDelay(); }
 } // namespace latency_sim

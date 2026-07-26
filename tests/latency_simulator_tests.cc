@@ -7,6 +7,24 @@
 #include <stdexcept>
 int main() {
   {
+    latency_sim::Config disabled;
+    disabled.stats_enabled = true;
+    disabled.swcc_read_ns_per_line = 11;
+    disabled.hwcc_atomic_load_ns = 13;
+    latency_sim::LatencySimulator simulator(disabled);
+    alignas(64) char value[64]{};
+    simulator.BeginScope(latency_sim::ScopeKind::kForeground);
+    simulator.RecordLine(latency_sim::PoolKind::kSwcc,
+                         latency_sim::AccessKind::kRead, value);
+    simulator.RecordLine(latency_sim::PoolKind::kHwcc,
+                         latency_sim::AccessKind::kAtomicLoad, value);
+    simulator.EndScopeAndDelay();
+    const auto stats = simulator.TakeStatsAndReset();
+    assert(stats.TotalDelayedNs() == 0);
+    assert(stats.swcc_raw_line_accesses == 0);
+    assert(stats.hwcc_raw_line_accesses == 0);
+  }
+  {
     latency_sim::Config invalid;
     invalid.cache_line_bytes = 0;
     bool rejected = false;
