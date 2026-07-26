@@ -248,11 +248,19 @@ int main() {
   }
   // D-SIDLE executor candidates are generation-qualified NodeRefs. It only
   // publishes/evicts local buffers and leaves the canonical node untouched.
-  Masstree::replica_executor<replica_params> replica_executor(replicas);
+  sidle::sidle_threshold replica_thresholds;
+  Masstree::replica_executor<replica_params> replica_executor(
+      replicas, replica_thresholds);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
+  std::free(replicas.Invalidate(canonical_root->control_ref()));
+  assert(!replicas.Acquire(canonical_root->control_ref(), root_generation,
+                           root_replica_version.version_value()));
   assert(replica_executor.Promote({canonical_leaf->control_ref(), promote_generation}, *ti));
   assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                           promote_version.version_value()));
+  const auto promoted_root_version = canonical_root->stable();
+  assert(replicas.Acquire(canonical_root->control_ref(), root_generation,
+                          promoted_root_version.version_value()));
   assert(!replica_executor.Promote({canonical_leaf->control_ref(), promote_generation + 1}, *ti));
   assert(replica_executor.Demote({canonical_leaf->control_ref(), promote_generation}, *ti));
   assert(!replicas.Acquire(canonical_leaf->control_ref(), promote_generation,

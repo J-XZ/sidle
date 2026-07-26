@@ -25,7 +25,10 @@ namespace Masstree {
 template <typename P>
 class replica_executor {
  public:
-  explicit replica_executor(dsidle::ReplicaDirectory& directory) : directory_(directory) {}
+  replica_executor(dsidle::ReplicaDirectory& directory,
+                   sidle::sidle_threshold& thresholds,
+                   sidle::replica_queue* queue = nullptr)
+      : directory_(directory), thresholds_(thresholds), queue_(queue) {}
 
   static dsidle::QueuedNodeRef Candidate(const node_base<P>& node) {
     const auto ref = node.control_ref();
@@ -37,26 +40,23 @@ class replica_executor {
     node_base<P>* node = Resolve(candidate);
     if (!node) return false;
     bool published = false;
-    // A queued candidate is a process-independent NodeRef.  Its `parent()`
-    // link, however, is a SWCC raw pointer and is not valid in another VM's
-    // mapping.  Promote this one canonical node only; RootReplicaPin handles
-    // the root independently without following raw parent pointers.
+    // Preserve original SIDLE promotion semantics: promote the selected leaf
+    // and every nonlocal ancestor. Parent links are NodeRef-backed and are
+    // therefore valid at every VM mapping.
     while (node) {
       const auto version = node->stable();
       if (version.deleted() || version.locked()) return published;
       const auto ref = node->control_ref();
-      // Some Masstree ancestors (notably temporary/root plumbing in the
-      // lightweight runners) are not D-SIDLE allocations and therefore have
-      // no NodeControl slot.  They are not eligible for a local replica.
       if (!ref) return published;
       const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
       if (directory_.Acquire(ref, generation, version.version_value())) break;
+      node_base<P>* parent = node->parent();
       const bool one = node->isleaf()
           ? leaf_replica<P>::Promote(*static_cast<leaf<P>*>(node), version, directory_)
           : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_);
       if (!one) return published;
       published = true;
-      return published;
+      node = parent;
     }
     return published;
   }
@@ -65,8 +65,36 @@ class replica_executor {
     typename P::threadinfo_type::rcu_scope rcu(ti);
     node_base<P>* node = Resolve(candidate);
     if (!node || node->is_root()) return false;  // root is pinned per VM.
-    std::free(directory_.Invalidate(node->control_ref()));
-    return true;
+    bool demoted = false;
+    int has_demoted = 0;
+    while (node && !node->is_root()) {
+      const auto version = node->stable();
+      if (version.deleted() || version.locked()) break;
+      const auto ref = node->control_ref();
+      const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+      auto local = directory_.Acquire(ref, generation, version.version_value());
+      if (!local) break;
+      local = {};
+      if (!node->isleaf()) {
+        auto* internal = static_cast<internode<P>*>(node);
+        if (internal->sidle_meta.depth <=
+                thresholds_.get_demotion_depth_threshold() ||
+            internal->sidle_meta.depth == 1)
+          break;
+        if (HasLocalChild(*internal)) {
+          if (has_demoted && queue_)
+            queue_->add(sidle::task_type::demotion,
+                        Candidate(*internal));
+          break;
+        }
+      }
+      node_base<P>* parent = node->parent();
+      std::free(directory_.Invalidate(ref));
+      demoted = true;
+      ++has_demoted;
+      node = parent;
+    }
+    return demoted;
   }
 
   bool ExecuteOne(sidle::task_type type, dsidle::QueuedNodeRef candidate,
@@ -77,6 +105,30 @@ class replica_executor {
   }
 
  private:
+  bool HasLocalChild(internode<P>& node) {
+    const auto version = node.stable();
+    const int count = node.size();
+    dsidle::NodeRef children[internode<P>::width + 1];
+    for (int index = 0; index <= count; ++index)
+      children[index] = node.child_[index].ref();
+    if (node.has_changed(version))
+      return true;
+    for (int index = 0; index <= count; ++index) {
+      if (!children[index])
+        continue;
+      node_base<P>* child =
+          dsidle::ResolveCanonicalNode<node_base<P>>(children[index]);
+      const auto child_version = child->stable();
+      const auto child_ref = child->control_ref();
+      const auto generation =
+          child_ref.get(dsidle::SharedPoolBase())->generation;
+      if (directory_.Acquire(
+              child_ref, generation, child_version.version_value()))
+        return true;
+    }
+    return false;
+  }
+
   static node_base<P>* Resolve(dsidle::QueuedNodeRef candidate) {
     if (!candidate) return nullptr;
     auto* control = candidate.ref.get(dsidle::SharedPoolBase());
@@ -87,6 +139,8 @@ class replica_executor {
   }
 
   dsidle::ReplicaDirectory& directory_;
+  sidle::sidle_threshold& thresholds_;
+  sidle::replica_queue* queue_;
 };
 
 // The five original SIDLE roles, with migration actions replaced by local
@@ -160,7 +214,7 @@ class replica_workers {
 
   void ExecuteOnce(sidle::task_type type, threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
-    replica_executor<P> executor(directory_);
+    replica_executor<P> executor(directory_, thresholds_, &queue_);
     dsidle::QueuedNodeRef candidate;
     while (queue_.get(type, candidate)) executor.ExecuteOne(type, candidate, ti);
   }
