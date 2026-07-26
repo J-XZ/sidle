@@ -143,10 +143,11 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
           }
         }
         ++total;
+        // cxlkv's corresponding trace runner publishes one shared heartbeat
+        // increment per replayed physical command. Keep this in the same hot
+        // path so progress accounting costs remain symmetric.
+        heartbeat->fetch_add(1, std::memory_order_relaxed);
       }
-      // Keep progress accounting out of the per-operation hot path.  The
-      // prefetched batch is the existing TLS aggregation boundary.
-      heartbeat->fetch_add(batch.size(), std::memory_order_relaxed);
     }
   } while (std::chrono::steady_clock::now() < deadline);
   ti->rcu_drain(); return total;
