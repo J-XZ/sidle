@@ -125,9 +125,6 @@ class nodeversion {
         // lock does not make a previously cached body coherent.
         invalidate_canonical();
         acquire_fence();
-        if (expected.v_ != load()) {
-            fprintf(stderr, "expected: %u, v_: %u, the address: %p\n", expected.v_, load(), this);
-        }
         masstree_invariant(expected.v_ == load());
         return expected;
     }
