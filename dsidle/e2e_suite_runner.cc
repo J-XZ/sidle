@@ -20,6 +20,8 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <pthread.h>
+#include <sched.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -110,6 +112,11 @@ RunResult RunWorkers(
     threads.emplace_back([&, worker] {
       threadinfo* ti = nullptr;
       try {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(worker, &cpuset);
+        (void)pthread_setaffinity_np(
+            pthread_self(), sizeof(cpuset), &cpuset);
         dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node);
         dsidle::ConfigureCurrentReplicaDirectory(replicas);
         ti = threadinfo::make(threadinfo::TI_MAIN, worker);
