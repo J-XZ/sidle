@@ -61,9 +61,11 @@ class SharedPhaseBarrierView {
 class EpochTable {
  public:
   EpochTable(std::uint32_t vms, std::uint32_t threads) : slots_(vms * threads), threads_(threads) {}
-  void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) { auto& slot=Slot(vm, thread); latency_sim::RecordHwccAtomicStore(&slot.value); slot.value.store(epoch, std::memory_order_release); }
-  void Leave(std::uint32_t vm, std::uint32_t thread) { auto& slot=Slot(vm, thread); latency_sim::RecordHwccAtomicStore(&slot.value); slot.value.store(kEpochInactive, std::memory_order_release); }
-  std::uint64_t MinimumActive() const { std::uint64_t min=kEpochInactive; for (const auto& s: slots_) { latency_sim::RecordHwccAtomicLoad(&s.value); auto v=s.value.load(std::memory_order_acquire); if (v != kEpochInactive && v < min) min=v; } return min; }
+  // Process-local reference implementation used by unit tests. Its vector is
+  // ordinary DRAM, not the shared pool, so it must not create HWCC traffic.
+  void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) { Slot(vm, thread).value.store(epoch, std::memory_order_release); }
+  void Leave(std::uint32_t vm, std::uint32_t thread) { Slot(vm, thread).value.store(kEpochInactive, std::memory_order_release); }
+  std::uint64_t MinimumActive() const { std::uint64_t min=kEpochInactive; for (const auto& s: slots_) { auto v=s.value.load(std::memory_order_acquire); if (v != kEpochInactive && v < min) min=v; } return min; }
  private:
   EpochSlot& Slot(std::uint32_t vm, std::uint32_t thread) { if(thread>=threads_ || vm>=slots_.size()/threads_) throw std::runtime_error("invalid epoch slot"); return slots_[vm*threads_+thread]; }
   std::vector<EpochSlot> slots_; std::uint32_t threads_;

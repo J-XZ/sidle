@@ -7,6 +7,23 @@
 
 int main() {
   dsidle::EpochTable table(2,2);
+  if (latency_sim::TscSpinAvailableForTest()) {
+    latency_sim::Config latency;
+    latency.enabled = true;
+    latency.stats_enabled = true;
+    latency_sim::GlobalLatencySimulator().Configure(latency);
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      assert(table.MinimumActive()==dsidle::kEpochInactive);
+      table.Enter(0,0,8);
+      table.Leave(0,0);
+    }
+    const auto stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(stats.hwcc_raw_line_accesses == 0);
+    assert(stats.swcc_raw_line_accesses == 0);
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   assert(table.MinimumActive()==dsidle::kEpochInactive);
   table.Enter(0,0,8); table.Enter(1,1,3); assert(table.MinimumActive()==3);
   table.Leave(1,1); assert(table.MinimumActive()==8);
