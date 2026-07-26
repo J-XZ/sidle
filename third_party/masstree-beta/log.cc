@@ -871,7 +871,6 @@ logreplay::replay(int which, threadinfo *ti)
     if (buf_) {
         ti->rcu_start();
         uint64_t nr = replayandclean1(rec_replay_min_epoch, rec_replay_max_epoch, ti);
-        printf("call replay\n");
         ti->rcu_stop();
         printf("recovered %" PRIu64 " records from %s\n", nr, filename_.c_str());
     }

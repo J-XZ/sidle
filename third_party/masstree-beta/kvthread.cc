@@ -88,13 +88,9 @@ void threadinfo::refill_rcu() {
         limbo_tail_->next_ = new(limbo_space) limbo_group;
     }
     limbo_tail_ = limbo_tail_->next_;
-    if (limbo_tail_->head_ != 0) {
-        fprintf(stderr, "[DEBUG] limbo_tail_'s head not empty\n");
-    }
-    if (limbo_tail_->tail_ != 0) {
-        fprintf(stderr, "[DEBUG] limbo_tail_'s tail not empty\n");
-    }   
-//    assert(limbo_tail_->head_ == 0 && limbo_tail_->tail_ == 0);
+    always_assert(
+        limbo_tail_->head_ == 0 && limbo_tail_->tail_ == 0,
+        "reused RCU limbo group is not empty");
 }
 
 inline unsigned limbo_group::clean_until(threadinfo& ti, mrcu_epoch_type epoch_bound,

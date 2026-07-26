@@ -222,9 +222,8 @@ bool tcursor<P>::make_split(threadinfo& ti)
     } else if (original_metadata.type != node_mem_type::unknown) {
         cur_depth = original_metadata.depth;
     } else {
-        // FIXME: there maybe something wrong
-        fprintf(stderr, "parent_metadata and original_metadata are both nullptr\n");
-        cur_depth = 1;
+        always_assert(false,
+            "split node has neither parent nor original SIDLE placement");
     }
 
     // get the node position for the original node and new node

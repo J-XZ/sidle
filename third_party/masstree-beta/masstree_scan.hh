@@ -15,8 +15,6 @@
  */
 #ifndef MASSTREE_SCAN_HH
 #define MASSTREE_SCAN_HH
-#include <queue>
-
 #include "masstree_replica.hh"
 #include "masstree_tcursor.hh"
 #include "masstree_struct.hh"
@@ -221,37 +219,6 @@ private:
     key_type ka_;
     int state_;
 };
-
-/// @brief the tree iterator need to traverse all tree node, include leaf node and internode
-/// @note it is thread-unsafe
-/// @tparam P 
-template <typename P>
-class tree_iterator {
-public:
-    using tracker_t = scanstackelt<P>;
-    using node_type = node_base<P>;
-    using leaf_type = typename node_type::leaf_type;
-    using internode_type = typename node_type::internode_type;
-    using permuter_type = typename leaf_type::permuter_type;
-
-    tree_iterator(node_type* root): cur_node_(root), root_(root) {
-        if (root) {
-            node_queue_.push(root);
-        }
-    }
-
-    node_type* node() const {
-        return cur_node_;
-    }
-
-    void next();
-
-private:
-    std::queue<node_type*> node_queue_;
-    node_type* cur_node_;
-    node_type* root_;
-};
-
 
 template <typename P> template <typename H>
 int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal,
@@ -579,66 +546,5 @@ void leaf_iterator<P>::next(threadinfo& ti)
     }
 }
 
-/// @brief  traverse in the level-order way
-/// @tparam P 
-template <typename P>
-void tree_iterator<P>::next() 
-{
-    if (node_queue_.empty()) {
-        cur_node_ = nullptr;
-        return;
-    }
-    node_type* new_cur_node = nullptr;
-    try {
-         while (true) {
-            if (node_queue_.empty()) {
-                cur_node_ = nullptr;
-            return;
-            }
-            new_cur_node = node_queue_.front();
-            node_queue_.pop();
-            if (new_cur_node && !new_cur_node->deleted()) {
-                break;
-            }
-        } 
-        
-        if (new_cur_node->isleaf()) {
-            auto leaf_instance = static_cast<leaf_type*>(new_cur_node);
-            if (leaf_instance) {
-                typename node_base<P>::nodeversion_type v;
-                permuter_type perm;
-                do {
-                    v = *leaf_instance;
-                    fence();
-                    perm = leaf_instance->permutation_;
-                } while (leaf_instance->has_changed(v));
-                int leaf_size = perm.size();
-                for (int idx = 0; idx < leaf_size; ++idx) {
-                    if (leaf_instance->has_changed(v, false)) {
-                        break;
-                    }
-                    int p = perm[idx];
-                    if (leaf_instance->is_layer(p)) {
-                        node_base<P> *n = leaf_instance->lv_[p].layer();
-                        while (!n->is_root()) {
-                            n = n->maybe_parent();
-                        }
-                        node_queue_.emplace(n);
-                    }
-                }
-            }
-        } else {
-            auto internode_instance = static_cast<internode_type*>(new_cur_node);
-            for (int idx = 0; idx <= internode_instance->nkeys_; ++idx) {
-                node_queue_.emplace(internode_instance->child_[idx]);
-            }
-        }
-    } catch (...) {
-        cur_node_ = nullptr;
-        fprintf(stderr, "tree_iterator next error\n");
-    }
-   
-    cur_node_ = new_cur_node;
-}
 } // namespace Masstree
 #endif
