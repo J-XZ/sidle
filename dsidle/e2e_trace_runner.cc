@@ -59,6 +59,37 @@ TraceOp ParseTraceLine(const std::string& line, const std::filesystem::path& pat
   if ((kind == TraceOpKind::kGet || kind == TraceOpKind::kDelete) && len != 0) fail("GET/DELETE require LEN=0");
   return out;
 }
+class TracePrefetcher {
+ public:
+  TracePrefetcher(std::filesystem::path path, uint32_t batch_ops)
+      : path_(std::move(path)), batch_ops_(batch_ops), input_(path_, std::ios::binary) {
+    if (!input_) Fail("cannot open trace file: " + path_.string());
+  }
+  std::vector<TraceOp> NextBatch() {
+    std::vector<TraceOp> batch;
+    batch.reserve(batch_ops_);
+    std::string line;
+    while (batch.size() < batch_ops_ && std::getline(input_, line)) {
+      ++line_no_;
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      const auto first = line.find_first_not_of(" \t");
+      if (first == std::string::npos || line[first] == '#') continue;
+      batch.push_back(ParseTraceLine(line, path_, line_no_));
+    }
+    if (!input_) eof_ = true;
+    return batch;
+  }
+  bool DoneAfter(const std::vector<TraceOp>& batch) const {
+    return batch.empty() && eof_;
+  }
+
+ private:
+  std::filesystem::path path_;
+  uint32_t batch_ops_;
+  std::ifstream input_;
+  uint64_t line_no_{};
+  bool eof_{false};
+};
 std::string FixedTraceKey(const std::string& key, uint32_t fixed_size) {
   if (key.size() > fixed_size) Fail("trace key exceeds fixed_key_size");
   std::string out = key; out.resize(fixed_size, ' '); return out;
@@ -86,29 +117,30 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
                     Masstree::default_table* table, threadinfo* ti, uint32_t batch_ops,
                     uint64_t seed, std::atomic<uint64_t>* heartbeat,
                     std::chrono::steady_clock::time_point deadline) {
-  query<row_type> query; std::mt19937_64 rng(seed); uint64_t total = 0, line_no = 0;
-  std::string line;
+  query<row_type> query; std::mt19937_64 rng(seed); uint64_t total = 0;
   do {
-    std::ifstream input(path, std::ios::binary); if (!input) Fail("cannot open trace file: " + path.string());
-    while (std::getline(input, line)) {
-      ++line_no; if (!line.empty() && line.back() == '\r') line.pop_back();
-      if (line.find_first_not_of(" \t") == std::string::npos || line.find_first_not_of(" \t") == line.find('#')) continue;
-      const TraceOp op = ParseTraceLine(line, path, line_no); const std::string key = FixedTraceKey(op.key, cfg.fixed_key_size);
-      { latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-        switch (op.kind) {
-          case TraceOpKind::kPut: { const std::string value = FixedTraceValue(cfg.fixed_value_size, &rng); query.run_replace(table->table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), *ti); break; }
-          case TraceOpKind::kGet: { lcdf::Str value; (void)query.run_get1(table->table(), lcdf::Str(key.data(), key.size()), 0, value, *ti); break; }
-          case TraceOpKind::kDelete: (void)query.run_remove(table->table(), lcdf::Str(key.data(), key.size()), *ti); break;
-          case TraceOpKind::kScan: {
-            lcdf::Json request =
-                lcdf::Json::array(0, 0, lcdf::Str(key.data(), key.size()), op.len);
-            query.run_scan(table->table(), request, *ti);
-            break;
+    TracePrefetcher prefetcher(path, batch_ops);
+    while (true) {
+      const auto batch = prefetcher.NextBatch();
+      if (prefetcher.DoneAfter(batch)) break;
+      for (const TraceOp& op : batch) {
+        const std::string key = FixedTraceKey(op.key, cfg.fixed_key_size);
+        {
+          latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+          switch (op.kind) {
+            case TraceOpKind::kPut: { const std::string value = FixedTraceValue(cfg.fixed_value_size, &rng); query.run_replace(table->table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), *ti); break; }
+            case TraceOpKind::kGet: { lcdf::Str value; (void)query.run_get1(table->table(), lcdf::Str(key.data(), key.size()), 0, value, *ti); break; }
+            case TraceOpKind::kDelete: (void)query.run_remove(table->table(), lcdf::Str(key.data(), key.size()), *ti); break;
+            case TraceOpKind::kScan: {
+              lcdf::Json request =
+                  lcdf::Json::array(0, 0, lcdf::Str(key.data(), key.size()), op.len);
+              query.run_scan(table->table(), request, *ti);
+              break;
+            }
           }
         }
+        ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
       }
-      ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
-      (void)batch_ops;
     }
   } while (std::chrono::steady_clock::now() < deadline);
   ti->rcu_drain(); return total;
