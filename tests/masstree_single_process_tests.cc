@@ -132,6 +132,21 @@ int main() {
   assert(std::string(old_suffix.s, old_suffix.len) == old_suffix_copy);
   expected[cow_key_a] = "cow-a";
   expected[cow_key_b] = "cow-b";
+  lcdf::Str held_value;
+  assert(query.run_get1(table.table(), lcdf::Str(cow_key_a.data(), cow_key_a.size()),
+                        0, held_value, *ti));
+  assert(reinterpret_cast<std::uintptr_t>(held_value.s) <
+             reinterpret_cast<std::uintptr_t>(pool.base()) ||
+         reinterpret_cast<std::uintptr_t>(held_value.s) >=
+             reinterpret_cast<std::uintptr_t>(pool.base()) + kPoolBytes);
+  for (unsigned update = 0; update != 128; ++update) {
+    const std::string value = "cow-update-" + std::to_string(update);
+    query.run_replace(table.table(), lcdf::Str(cow_key_a.data(), cow_key_a.size()),
+                      lcdf::Str(value.data(), value.size()), *ti);
+    expected[cow_key_a] = value;
+  }
+  ti->rcu_drain();
+  assert(std::string(held_value.s, held_value.len) == "cow-a");
   const auto fixed_key = [](std::uint64_t number) {
     std::string key(8, 'k');
     key[0] = static_cast<char>('A' + number);

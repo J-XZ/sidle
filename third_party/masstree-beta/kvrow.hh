@@ -90,6 +90,9 @@ class query {
     std::vector<typename R::index_type> f_;
     loginfo::query_times qtimes_;
     query_helper<R> helper_;
+    // Owns run_get1's result after its RCU scope ends. The returned Str stays
+    // valid until the next run_get1 on this query object.
+    lcdf::String get1_value_;
     lcdf::String scankey_;
     int scankeypos_;
 
@@ -164,8 +167,14 @@ bool query<R>::run_get1(T& table, Str key, int col, Str& value, threadinfo& ti) 
     bool found = lp.find_unlocked(ti);
     if (found && row_is_marker(lp.value()))
         found = false;
-    if (found)
-        value = lp.value()->col(col);
+    if (found) {
+        const Str column = lp.value()->col(col);
+        get1_value_ = lcdf::String(column.s, column.len);
+        value.assign(get1_value_);
+    } else {
+        get1_value_ = lcdf::String();
+        value.assign();
+    }
     return found;
 }
 
