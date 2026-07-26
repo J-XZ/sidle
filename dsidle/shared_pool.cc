@@ -433,6 +433,8 @@ void NodeControlSlab::Retire(NodeRef ref, std::uint64_t retire_epoch) {
   latency_sim::RecordHwccAtomicStore(&control->allocation_state);
   control->allocation_state.store(NodeAllocationState::kRetiring, std::memory_order_release);
   std::atomic_thread_fence(std::memory_order_release);
+  if (auto* directory = CurrentReplicaDirectoryOrNull())
+    std::free(directory->Invalidate(ref));
 }
 
 void NodeControlSlab::Release(NodeRef ref) {

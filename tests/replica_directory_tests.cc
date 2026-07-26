@@ -95,7 +95,17 @@ int main() {
   publishing.store(false, std::memory_order_release);
   reader.join();
   std::free(directory.Invalidate(ref));
+  auto* retiring = static_cast<char*>(std::malloc(32));
+  assert(retiring);
+  void* retiring_old = nullptr;
+  assert(directory.TryPublish(
+      ref, {retiring, 1, 24, 32, dsidle::ReplicaKind::kValueLeaf},
+      &retiring_old));
+  assert(retiring_old == nullptr);
+  assert(directory.HasLocalPlacement(ref, 1));
   controls.Retire(ref, 9);
+  assert(!directory.HasLocalPlacement(ref, 1));
+  assert(directory.LocalBytes() == 0);
   controls.Release(ref);
   const auto reused = controls.Reserve((4ULL << 20) + 64, 2);
   assert(reused == ref && directory.AccessCount(reused) == 0);
