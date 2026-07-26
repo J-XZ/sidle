@@ -442,12 +442,9 @@ int basic_table<P>::scan(H helper,
             ++scancount;
             typename P::value_type value = nullptr;
             if (scan_replica) {
-                const typename leaf_replica<P>::value_type* local_value = nullptr;
-                dsidle::NodeRef layer_ref;
-                if (leaf_replica<P>::Lookup(scan_replica.snapshot().local_ptr,
-                                            ka, local_value, layer_ref) ==
-                    leaf_replica<P>::result::kValue)
-                    value = const_cast<typename P::value_type>(local_value);
+                const auto* local_value = leaf_replica<P>::ValueAt(
+                    scan_replica.snapshot().local_ptr, stack.ki_);
+                value = const_cast<typename P::value_type>(local_value);
             }
             if (!value)
                 value = entry.value();
