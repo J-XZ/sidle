@@ -89,6 +89,7 @@ class leaf_replica {
     for (int index = 0; index < count; ++index) {
       const source_entry& item = snapshot[static_cast<std::size_t>(index)];
       entry& destination = entries[index];
+      destination = entry{};
       destination.ikey = item.ikey;
       destination.keylenx = item.keylenx;
       destination.is_layer = item.is_layer;
