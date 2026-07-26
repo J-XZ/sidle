@@ -143,10 +143,12 @@ Config ValidateConfig(Config config) {
       config.cache_fixed_hit_rate > 1.0)
     throw std::invalid_argument(
         "latency simulator cache_fixed_hit_rate must be finite and in [0, 1]");
-  config.cache_capacity_lines =
-      std::max<uint64_t>(1, config.cache_capacity_lines);
-  config.cache_associativity =
-      std::max<uint64_t>(1, config.cache_associativity);
+  if (!config.cache_capacity_lines)
+    throw std::invalid_argument(
+        "latency simulator cache_capacity_lines must be > 0");
+  if (!config.cache_associativity)
+    throw std::invalid_argument(
+        "latency simulator cache_associativity must be > 0");
   return config;
 }
 } // namespace

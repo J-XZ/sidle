@@ -18,6 +18,26 @@ int main() {
     assert(rejected);
 
     invalid = {};
+    invalid.cache_capacity_lines = 0;
+    rejected = false;
+    try {
+      latency_sim::LatencySimulator simulator(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+
+    invalid = {};
+    invalid.cache_associativity = 0;
+    rejected = false;
+    try {
+      latency_sim::LatencySimulator simulator(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    assert(rejected);
+
+    invalid = {};
     invalid.swcc_read_ns_per_line = -1.0;
     rejected = false;
     try {
