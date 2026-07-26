@@ -90,7 +90,9 @@ class ReplicaDirectory {
     std::atomic<std::uint64_t> cached_version{0};
     std::atomic<std::uint64_t> bytes{0};
     std::atomic<std::uint32_t> kind{0};
-    std::atomic<std::uint64_t> access_count{0};
+    // Preserve SIDLE's uint16_t access_time modulo arithmetic while keeping
+    // each VM's counter race-free and outside canonical SWCC memory.
+    std::atomic<std::uint16_t> access_count{0};
   };
   struct Segment { Slot slots[kSlotsPerSegment]; };
 

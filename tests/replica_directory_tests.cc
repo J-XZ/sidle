@@ -79,6 +79,9 @@ int main() {
   controls.Release(ref);
   const auto reused = controls.Reserve((4ULL << 20) + 64, 2);
   assert(reused == ref && directory.AccessCount(reused) == 0);
+  for (std::uint32_t access = 0; access != 65536; ++access)
+    directory.RecordAccess(reused);
+  assert(directory.AccessCount(reused) == 0);
   pool.Close();
   assert(unlink(path) == 0);
 }
