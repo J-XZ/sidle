@@ -229,14 +229,15 @@ int main() {
            cow_leaf_type::external_ksuf_type::overhead(cow_leaf_type::width) +
                static_cast<std::uint64_t>(new_suffix.len));
 
-    std::uint64_t expected_swcc_lines = 0;
+    std::uint64_t expected_swcc_lines =
+        CacheLinesTouched(
+            external,
+            cow_leaf_type::external_ksuf_type::overhead(
+                cow_leaf_type::width));
     for (int index = 0; index < cow_permutation.size(); ++index) {
       const int slot = cow_permutation[index];
       if (cow_leaf->has_ksuf(slot)) {
         const auto suffix = cow_leaf->ksuf_storage(slot);
-        expected_swcc_lines += CacheLinesTouched(
-            external,
-            cow_leaf_type::external_ksuf_type::overhead(cow_leaf_type::width));
         expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
       }
       if (!cow_leaf->is_layer(slot)) {
@@ -336,21 +337,20 @@ int main() {
   if (latency_sim::TscSpinAvailableForTest()) {
     const auto permutation = layered_leaf->permutation();
     std::uint64_t expected_swcc_lines = 0;
+    if (layered_leaf->ksuf_external()) {
+      using layered_leaf_type = Masstree::leaf<replica_params>;
+      const auto* external =
+          static_cast<typename layered_leaf_type::external_ksuf_type*>(
+              layered_leaf->ksuf_);
+      expected_swcc_lines += CacheLinesTouched(
+          external,
+          layered_leaf_type::external_ksuf_type::overhead(
+              layered_leaf_type::width));
+    }
     for (int index = 0; index < permutation.size(); ++index) {
       const int slot = permutation[index];
       if (layered_leaf->has_ksuf(slot)) {
         const auto suffix = layered_leaf->ksuf_storage(slot);
-        if (layered_leaf->ksuf_external()) {
-          using layered_leaf_type =
-              Masstree::leaf<replica_params>;
-          const auto* external =
-              static_cast<typename layered_leaf_type::external_ksuf_type*>(
-                  layered_leaf->ksuf_);
-          expected_swcc_lines += CacheLinesTouched(
-              external,
-              layered_leaf_type::external_ksuf_type::overhead(
-                  layered_leaf_type::width));
-        }
         expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
       }
       if (!layered_leaf->is_layer(slot)) {
@@ -422,6 +422,32 @@ int main() {
   typename replica_node_type::nodeversion_type replica_version;
   auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);
   assert(replicas.AccessCount(canonical_leaf->control_ref()) > 0);
+  if (latency_sim::TscSpinAvailableForTest()) {
+    const int slot = find_slot(canonical_leaf, replica_key_text);
+    assert(slot >= 0 && !canonical_leaf->is_layer(slot));
+    latency_sim::Config prefetch_latency;
+    prefetch_latency.enabled = true;
+    prefetch_latency.stats_enabled = true;
+    prefetch_latency.cache_line_bytes = 1;
+    latency_sim::GlobalLatencySimulator().Configure(prefetch_latency);
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      canonical_leaf->lv_[slot].prefetch(canonical_leaf->keylenx_[slot]);
+    }
+    assert(latency_sim::GlobalLatencySimulator()
+               .TakeStatsAndReset()
+               .swcc_raw_line_accesses == 0);
+    std::size_t value_bytes = 0;
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      const auto value = canonical_leaf->lv_[slot].value();
+      value_bytes = value->size();
+    }
+    assert(latency_sim::GlobalLatencySimulator()
+               .TakeStatsAndReset()
+               .swcc_raw_line_accesses == value_bytes);
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   void* encoded_leaf = Masstree::leaf_replica<replica_params>::Create(
       *canonical_leaf, canonical_leaf->permutation());
   const row_type* replica_value = nullptr;
@@ -433,6 +459,25 @@ int main() {
   assert(std::memcmp(replica_column.s, expected.begin()->second.data(), replica_column.len) == 0);
   std::free(encoded_leaf);
   const auto promote_version = canonical_leaf->stable();
+  if (latency_sim::TscSpinAvailableForTest()) {
+    latency_sim::Config promotion_latency;
+    promotion_latency.enabled = true;
+    promotion_latency.stats_enabled = true;
+    promotion_latency.swcc_write_ns_per_line = 3;
+    promotion_latency.swcc_flush_ns_per_line = 5;
+    latency_sim::GlobalLatencySimulator().Configure(promotion_latency);
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
+      assert(Masstree::leaf_replica<replica_params>::Promote(
+          *canonical_leaf, promote_version, replicas));
+    }
+    const auto promotion_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(promotion_stats.swcc_raw_line_accesses > 0);
+    assert(promotion_stats.swcc_delayed_ns == 0);
+    std::free(replicas.Invalidate(canonical_leaf->control_ref()));
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   assert(Masstree::leaf_replica<replica_params>::Promote(*canonical_leaf, promote_version, replicas));
   const auto promote_generation = canonical_leaf->control_ref().get(pool.base())->generation;
   auto replica_handle = replicas.Acquire(canonical_leaf->control_ref(), promote_generation,

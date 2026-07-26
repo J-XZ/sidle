@@ -53,6 +53,7 @@ class leaf_replica {
 
     const int count = permutation.size();
     std::array<source_entry, leaf_type::width> snapshot{};
+    auto* external_suffixes = source.readable_external_ksuf();
     std::size_t bytes = sizeof(header) + static_cast<std::size_t>(count) * sizeof(entry);
     for (int index = 0; index < count; ++index) {
       const int slot = permutation[index];
@@ -61,7 +62,10 @@ class leaf_replica {
       item.keylenx = source.keylenx_[slot];
       item.is_layer = source.is_layer(slot);
       if (source.has_ksuf(slot)) {
-        item.suffix = source.ksuf_storage(slot);
+        item.suffix = external_suffixes
+            ? leaf_type::readable_external_ksuf_value(
+                  external_suffixes, slot)
+            : source.ksuf_storage(slot);
         bytes += item.suffix.len;
       }
       if (item.is_layer) {
@@ -149,14 +153,14 @@ class leaf_replica {
     const auto locked_version = mutable_source;
     const auto published_version = locked_version.unlocked_version_value();
     if (published_version != version.unlocked_version_value()) {
-      mutable_source.unlock();
+      mutable_source.unlock_readonly_snapshot();
       return false;
     }
     void* buffer = nullptr;
     try {
       buffer = Create(source, source.permutation());
     } catch (...) {
-      mutable_source.unlock();
+      mutable_source.unlock_readonly_snapshot();
       throw;
     }
     bool has_layer = false;
@@ -172,7 +176,7 @@ class leaf_replica {
     if (budgeted) {
       if (!directory.TryPublish(ref, snapshot, &old)) {
         std::free(buffer);
-        mutable_source.unlock();
+        mutable_source.unlock_readonly_snapshot();
         return false;
       }
     } else {
@@ -181,7 +185,7 @@ class leaf_replica {
     // Publishing before unlock is safe: readers cannot acquire this replica
     // while the canonical version is locked, and unlock releases exactly the
     // version recorded above.
-    mutable_source.unlock();
+    mutable_source.unlock_readonly_snapshot();
     std::free(old);
     return true;
   }

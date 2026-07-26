@@ -155,6 +155,17 @@ class nodeversion {
         unlock(*this);
     }
     void unlock(nodeversion<P> x) {
+        unlock_impl(x, true);
+    }
+    // D-SIDLE replica publication locks a canonical leaf only to copy a
+    // consistent snapshot. It must release the HWCC version without
+    // pretending that the untouched SWCC body was written and flushed.
+    void unlock_readonly_snapshot() {
+        unlock_impl(*this, false);
+    }
+
+  private:
+    void unlock_impl(nodeversion<P> x, bool publish_canonical) {
         const value_type current = load();
         masstree_invariant((fence(), x.v_ == current || x.v_ ^ current == P::migration_bit));
         masstree_invariant(x.v_ & P::lock_bit);
@@ -162,7 +173,7 @@ class nodeversion {
             x.v_ = (x.v_ + P::vsplit_lowbit) & P::split_unlock_mask;
         else
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
-        if (control_ref_) {
+        if (control_ref_ && publish_canonical) {
             // dsidle: publish the exact canonical allocation before releasing
             // the matching HWCC version. RecordSwccWrite intentionally uses
             // the same node-envelope upper bound as the original Masstree
@@ -188,6 +199,7 @@ class nodeversion {
         store(x.v_);
     }
 
+  public:
     void mark_insert() {
         masstree_invariant(locked());
         store(load() | P::inserting_bit);
