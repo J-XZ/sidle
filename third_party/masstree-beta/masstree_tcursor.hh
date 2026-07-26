@@ -33,31 +33,33 @@ class unlocked_tcursor {
 
     inline unlocked_tcursor(const basic_table<P>& table, Str str)
         : ka_(str), lv_(leafvalue<P>::make_empty()),
-          root_(table.root()) {
+          root_(nullptr), root_ref_(table.stable_root_ref()) {
     }
     inline unlocked_tcursor(basic_table<P>& table, Str str)
         : ka_(str), lv_(leafvalue<P>::make_empty()),
-          root_(table.fix_root()) {
+          root_(nullptr), root_ref_(table.stable_root_ref()) {
     }
     inline unlocked_tcursor(const basic_table<P>& table,
                             const char* s, int len)
         : ka_(s, len), lv_(leafvalue<P>::make_empty()),
-          root_(table.root()) {
+          root_(nullptr), root_ref_(table.stable_root_ref()) {
     }
     inline unlocked_tcursor(basic_table<P>& table,
                             const char* s, int len)
         : ka_(s, len), lv_(leafvalue<P>::make_empty()),
-          root_(table.fix_root()) {
+          root_(nullptr), root_ref_(table.stable_root_ref()) {
     }
     inline unlocked_tcursor(const basic_table<P>& table,
                             const unsigned char* s, int len)
         : ka_(reinterpret_cast<const char*>(s), len),
-          lv_(leafvalue<P>::make_empty()), root_(table.root()) {
+          lv_(leafvalue<P>::make_empty()), root_(nullptr),
+          root_ref_(table.stable_root_ref()) {
     }
     inline unlocked_tcursor(basic_table<P>& table,
                             const unsigned char* s, int len)
         : ka_(reinterpret_cast<const char*>(s), len),
-          lv_(leafvalue<P>::make_empty()), root_(table.fix_root()) {
+          lv_(leafvalue<P>::make_empty()), root_(nullptr),
+          root_ref_(table.stable_root_ref()) {
     }
 
     bool find_unlocked(threadinfo& ti);
@@ -93,6 +95,7 @@ class unlocked_tcursor {
     value_type replica_value_{};
     bool replica_enabled_{true};
     const node_base<P>* root_;
+    dsidle::NodeRef root_ref_;
 };
 
 template <typename P>

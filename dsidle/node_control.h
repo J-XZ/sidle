@@ -89,6 +89,17 @@ inline std::uint64_t LoadCanonicalSwccOffset(NodeRef ref) {
   return control->canonical_swcc_offset;
 }
 
+// Compute an opaque canonical address after the caller has validated this
+// NodeRef's HWCC generation/version. This does not establish SWCC visibility:
+// the returned pointer may be stored for API identity only and must not be
+// dereferenced until ResolveCanonicalNode() or an equivalent invalidate.
+template <typename T>
+inline T* CanonicalNodeAddressFromStableIdentity(NodeRef ref) {
+  const auto offset = LoadCanonicalSwccOffset(ref);
+  return reinterpret_cast<T*>(
+      static_cast<std::byte*>(SharedPoolBase()) + offset);
+}
+
 inline std::size_t LoadCanonicalNodeBytes(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
@@ -183,6 +194,47 @@ struct MasstreeNodeVersionBits {
   static constexpr std::uint64_t unlock_mask = ~(migration_bit | (vinsert_lowbit - 1));
 };
 
+struct StableNodeIdentity {
+  std::uint64_t generation{};
+  std::uint64_t version{};
+};
+
+// Read only the HWCC identity needed to validate an immutable local replica.
+// This deliberately does not resolve or invalidate the canonical SWCC body.
+// A before/after version check closes a concurrent writer window, while the
+// allocation-state checks reject a NodeControl that is being retired/reused.
+inline bool TryLoadStableNodeIdentity(NodeRef ref, StableNodeIdentity* identity) {
+  if (!identity)
+    throw std::runtime_error("null stable NodeIdentity output");
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    return false;
+  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
+  if (control->allocation_state.load(std::memory_order_acquire) !=
+      NodeAllocationState::kPublished)
+    return false;
+  latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
+  const auto first =
+      control->version_and_state.load(std::memory_order_acquire);
+  if (first & MasstreeNodeVersionBits::dirty_mask)
+    return false;
+  latency_sim::RecordHwccRead(&control->generation,
+                              sizeof(control->generation));
+  const auto generation = control->generation;
+  latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
+  const auto second =
+      control->version_and_state.load(std::memory_order_acquire);
+  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
+  const auto state =
+      control->allocation_state.load(std::memory_order_acquire);
+  if (first != second ||
+      (second & MasstreeNodeVersionBits::dirty_mask) ||
+      state != NodeAllocationState::kPublished)
+    return false;
+  *identity = {generation, second};
+  return true;
+}
+
 // dsidle: the sole read/write gateway for a canonical node's HWCC control
 // line. The canonical offset and generation are read only after the acquire
 // version load; writers publish them before an unlocked release store.
@@ -204,6 +256,9 @@ class NodeVersionAccessor {
     auto* canonical =
         static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset;
     const auto canonical_bytes = LoadCanonicalNodeBytes(ref_);
+    // Match nodeversion::invalidate_canonical's exact-allocation envelope.
+    // This accessor is used by control-plane paths that may inspect arbitrary
+    // canonical fields after the stable HWCC snapshot.
     InvalidateSwccRange(canonical, canonical_bytes);
     latency_sim::RecordSwccRead(canonical, canonical_bytes);
     return {version, control->generation, control->canonical_swcc_offset};

@@ -132,6 +132,7 @@ public:
 
   inline node_type *root() const;
   inline node_type *fix_root();
+  inline dsidle::NodeRef stable_root_ref() const;
 
   bool get(Str key, value_type &value, threadinfo &ti) const;
 

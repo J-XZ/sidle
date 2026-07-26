@@ -4,6 +4,7 @@
 #include "masstree_struct.hh"
 #include "dsidle/replica_directory.h"
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -41,17 +42,38 @@ class leaf_replica {
   };
 
   static void* Create(const leaf_type& source, typename leaf_type::permuter_type permutation) {
+    struct source_entry {
+      ikey_type ikey{};
+      std::uint8_t keylenx{};
+      bool is_layer{};
+      lcdf::Str suffix{};
+      value_pointer value{};
+      dsidle::NodeRef layer_ref{};
+    };
+
     const int count = permutation.size();
+    std::array<source_entry, leaf_type::width> snapshot{};
     std::size_t bytes = sizeof(header) + static_cast<std::size_t>(count) * sizeof(entry);
     for (int index = 0; index < count; ++index) {
       const int slot = permutation[index];
-      if (source.has_ksuf(slot)) bytes += source.ksuf_storage(slot).len;
-      if (!source.is_layer(slot)) {
-        const value_pointer value = source.lv_[slot].value();
-        if (!value) throw std::runtime_error("cannot replicate null Masstree value");
-        bytes = Align(bytes, alignof(value_type));
-        bytes += value->size();
+      source_entry item;
+      item.ikey = source.ikey(slot);
+      item.keylenx = source.keylenx_[slot];
+      item.is_layer = source.is_layer(slot);
+      if (source.has_ksuf(slot)) {
+        item.suffix = source.ksuf_storage(slot);
+        bytes += item.suffix.len;
       }
+      if (item.is_layer) {
+        item.layer_ref = source.lv_[slot].layer()->control_ref();
+      } else {
+        item.value = source.lv_[slot].value();
+        if (!item.value)
+          throw std::runtime_error("cannot replicate null Masstree value");
+        bytes = Align(bytes, alignof(value_type));
+        bytes += item.value->size();
+      }
+      snapshot[static_cast<std::size_t>(index)] = item;
     }
     if (bytes > UINT32_MAX) throw std::runtime_error("Masstree leaf replica exceeds 4GiB");
     auto* memory = static_cast<std::byte*>(std::malloc(bytes));
@@ -60,27 +82,26 @@ class leaf_replica {
     auto* entries = reinterpret_cast<entry*>(memory + sizeof(header));
     std::size_t cursor = sizeof(header) + static_cast<std::size_t>(count) * sizeof(entry);
     for (int index = 0; index < count; ++index) {
-      const int slot = permutation[index];
+      const source_entry& item = snapshot[static_cast<std::size_t>(index)];
       entry& destination = entries[index];
-      destination.ikey = source.ikey(slot);
-      destination.keylenx = source.keylenx_[slot];
-      destination.is_layer = source.is_layer(slot);
-      if (source.has_ksuf(slot)) {
-        const lcdf::Str suffix = source.ksuf_storage(slot);
-        destination.suffix_bytes = static_cast<std::uint16_t>(suffix.len);
+      destination.ikey = item.ikey;
+      destination.keylenx = item.keylenx;
+      destination.is_layer = item.is_layer;
+      if (item.suffix.len) {
+        destination.suffix_bytes = static_cast<std::uint16_t>(item.suffix.len);
         destination.suffix_offset = static_cast<std::uint32_t>(cursor);
-        std::memcpy(memory + cursor, suffix.s, suffix.len);
-        cursor += suffix.len;
+        std::memcpy(memory + cursor, item.suffix.s, item.suffix.len);
+        cursor += item.suffix.len;
       }
       if (destination.is_layer) {
-        destination.layer_ref = source.lv_[slot].layer()->control_ref();
+        destination.layer_ref = item.layer_ref;
       } else {
-        const value_pointer value = source.lv_[slot].value();
         cursor = Align(cursor, alignof(value_type));
         destination.value_offset = static_cast<std::uint32_t>(cursor);
-        destination.value_bytes = static_cast<std::uint32_t>(value->size());
-        std::memcpy(memory + cursor, value, value->size());
-        cursor += value->size();
+        destination.value_bytes =
+            static_cast<std::uint32_t>(item.value->size());
+        std::memcpy(memory + cursor, item.value, item.value->size());
+        cursor += item.value->size();
       }
     }
     if (cursor != bytes) { std::free(memory); throw std::runtime_error("Masstree leaf replica size mismatch"); }

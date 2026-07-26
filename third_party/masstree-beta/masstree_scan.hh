@@ -411,11 +411,15 @@ int basic_table<P>::scan(H helper,
         if (!directory)
             return;
         const auto ref = stack.n_->control_ref();
-        const auto stable =
-            dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), ref).stable();
-        if (stable.v != stack.v_.version_value())
-            return;
-        auto handle = directory->Acquire(ref, stable.gen, stable.v);
+        const auto generation = dsidle::LoadNodeGeneration(ref);
+        auto handle =
+            directory->Acquire(ref, generation, stack.v_.version_value());
+        // Acquiring a local immutable snapshot needs only the HWCC
+        // generation/version contract. The canonical body was already made
+        // stable by find_initial/find_next; do not invalidate and charge the
+        // whole leaf a second time merely to consult the local directory.
+        if (handle && stack.n_->has_changed(stack.v_))
+            handle = {};
         if (handle &&
             handle.snapshot().kind != dsidle::ReplicaKind::kInternal)
             scan_replica = std::move(handle);
@@ -433,7 +437,7 @@ int basic_table<P>::scan(H helper,
         switch (state) {
         case mystack_type::scan_emit: {
             ++scancount;
-            typename P::value_type value = entry.value();
+            typename P::value_type value = nullptr;
             if (scan_replica) {
                 const typename leaf_replica<P>::value_type* local_value = nullptr;
                 dsidle::NodeRef layer_ref;
@@ -442,6 +446,8 @@ int basic_table<P>::scan(H helper,
                     leaf_replica<P>::result::kValue)
                     value = const_cast<typename P::value_type>(local_value);
             }
+            if (!value)
+                value = entry.value();
             if (!scanner.visit_value(ka, value, ti))
                 goto done;
             stack.ki_ = helper.next(stack.ki_);

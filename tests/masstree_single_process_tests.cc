@@ -1,6 +1,7 @@
 #include "dsidle/shared_pool.h"
 #include "dsidle/shard_allocator.h"
 #include "dsidle/replica_directory.h"
+#include "dsidle/latency_simulator.h"
 
 #include "query_masstree.hh"
 #include "masstree_struct.hh"
@@ -24,6 +25,15 @@
 #include <vector>
 
 namespace {
+std::uint64_t CacheLinesTouched(const void* address, std::size_t bytes,
+                                std::size_t line_bytes = 64) {
+  if (!address || !bytes) return 0;
+  const auto first = reinterpret_cast<std::uintptr_t>(address) / line_bytes;
+  const auto last =
+      (reinterpret_cast<std::uintptr_t>(address) + bytes - 1) / line_bytes;
+  return last - first + 1;
+}
+
 struct ScanCollector {
   std::vector<std::pair<std::string, std::string>> rows;
   template <typename S, typename K>
@@ -74,7 +84,7 @@ int main() {
 
   constexpr std::uint64_t kPoolBytes = 128ULL << 20;
   auto pool = dsidle::SharedPool::Create(path, {kPoolBytes, 0, 32ULL << 20, 32ULL << 20, 96ULL << 20});
-  dsidle::InitializePoolMetadata(pool, {1, 2, 1024});
+  dsidle::InitializePoolMetadata(pool, {1, 5, 1024});
   dsidle::FixedBlockShardAllocator::InitializeAll(pool, 1);
   dsidle::FinalizePoolInitialization(pool);
   dsidle::ConfigureCurrentSwccAllocator(pool, 1, 0);
@@ -196,6 +206,61 @@ int main() {
   const lcdf::Str new_suffix = cow_leaf->ksuf_storage(new_cow_slot);
   assert(new_suffix.s != old_suffix.s);
   assert(std::string(old_suffix.s, old_suffix.len) == old_suffix_copy);
+  if (latency_sim::TscSpinAvailableForTest()) {
+    const auto cow_permutation = cow_leaf->permutation();
+    using cow_leaf_type = Masstree::leaf<table_params>;
+    using cow_replica_type = Masstree::leaf_replica<table_params>;
+    auto* external =
+        static_cast<typename cow_leaf_type::external_ksuf_type*>(cow_leaf->ksuf_);
+    assert(external);
+    latency_sim::Config suffix_latency;
+    suffix_latency.enabled = true;
+    suffix_latency.stats_enabled = true;
+    suffix_latency.cache_line_bytes = 1;
+    latency_sim::GlobalLatencySimulator().Configure(suffix_latency);
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      const auto measured_suffix = cow_leaf->ksuf_storage(new_cow_slot);
+      assert(measured_suffix.len == new_suffix.len);
+    }
+    const auto suffix_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(suffix_stats.swcc_raw_line_accesses ==
+           cow_leaf_type::external_ksuf_type::overhead(cow_leaf_type::width) +
+               static_cast<std::uint64_t>(new_suffix.len));
+
+    std::uint64_t expected_swcc_lines = 0;
+    for (int index = 0; index < cow_permutation.size(); ++index) {
+      const int slot = cow_permutation[index];
+      if (cow_leaf->has_ksuf(slot)) {
+        const auto suffix = cow_leaf->ksuf_storage(slot);
+        expected_swcc_lines += CacheLinesTouched(
+            external,
+            cow_leaf_type::external_ksuf_type::overhead(cow_leaf_type::width));
+        expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
+      }
+      if (!cow_leaf->is_layer(slot)) {
+        const auto value = cow_leaf->lv_[slot].value();
+        assert(value);
+        expected_swcc_lines += CacheLinesTouched(value, value->size());
+      }
+    }
+    latency_sim::Config latency;
+    latency.enabled = true;
+    latency.stats_enabled = true;
+    latency_sim::GlobalLatencySimulator().Configure(latency);
+    void* measured_replica = nullptr;
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
+      measured_replica =
+          cow_replica_type::Create(*cow_leaf, cow_permutation);
+    }
+    const auto stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(stats.swcc_raw_line_accesses == expected_swcc_lines);
+    std::free(measured_replica);
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   expected[cow_key_a] = "cow-a";
   expected[cow_key_b] = "cow-b";
   lcdf::Str held_value;
@@ -281,6 +346,8 @@ int main() {
 
   assert(!table.table().root()->isleaf());
   auto* canonical_root = static_cast<Masstree::internode<replica_params>*>(table.table().root());
+  assert(dsidle::LoadCanonicalNodeBytes(canonical_root->control_ref()) ==
+         sizeof(*canonical_root));
   const auto root_replica_version = canonical_root->stable();
   assert(Masstree::internode_replica<replica_params>::Promote(*canonical_root, root_replica_version, replicas));
   const auto root_generation = canonical_root->control_ref().get(pool.base())->generation;
@@ -362,6 +429,73 @@ int main() {
     assert(replica_cursor.used_replica());
     assert(replica_cursor.value()->col(0).len == expected.begin()->second.size());
   }
+  if (latency_sim::TscSpinAvailableForTest()) {
+    latency_sim::Config latency;
+    latency.enabled = true;
+    latency.stats_enabled = true;
+    latency_sim::GlobalLatencySimulator().Configure(latency);
+    dsidle::ReplicaDirectory empty_replicas(pool);
+    dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
+    bool canonical_get_used_replica = false;
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      Masstree::unlocked_tcursor<replica_params> cursor(
+          table.table(),
+          lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+      assert(cursor.find_unlocked(*ti));
+      canonical_get_used_replica = cursor.used_replica();
+    }
+    const auto canonical_get_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(!canonical_get_used_replica);
+
+    dsidle::ConfigureCurrentReplicaDirectory(replicas);
+    bool local_get_used_replica = false;
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      Masstree::unlocked_tcursor<replica_params> cursor(
+          table.table(),
+          lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+      assert(cursor.find_unlocked(*ti));
+      local_get_used_replica = cursor.used_replica();
+    }
+    const auto local_get_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(local_get_used_replica);
+    assert(local_get_stats.swcc_raw_line_accesses == 0);
+    assert(canonical_get_stats.swcc_raw_line_accesses > 0);
+
+    dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
+    ReplicaPointerScanCollector canonical_scan{
+        static_cast<const std::byte*>(pool.base()),
+        static_cast<const std::byte*>(pool.base()) + kPoolBytes};
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      table.table().scan(
+          lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
+          canonical_scan, *ti);
+    }
+    const auto canonical_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(!canonical_scan.used_replica);
+
+    dsidle::ConfigureCurrentReplicaDirectory(replicas);
+    ReplicaPointerScanCollector measured_replica_scan{
+        static_cast<const std::byte*>(pool.base()),
+        static_cast<const std::byte*>(pool.base()) + kPoolBytes};
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+      table.table().scan(
+          lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
+          measured_replica_scan, *ti);
+    }
+    const auto replica_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(measured_replica_scan.used_replica);
+    assert(replica_stats.swcc_raw_line_accesses <
+           canonical_stats.swcc_raw_line_accesses);
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   ReplicaPointerScanCollector replica_scan{
       static_cast<const std::byte*>(pool.base()),
       static_cast<const std::byte*>(pool.base()) + kPoolBytes};
@@ -393,14 +527,24 @@ int main() {
   Masstree::replica_workers<replica_params> workers(
       table.table(), pool, replicas, worker_thresholds,
       1, 0, 1,
-      std::chrono::milliseconds(1), std::chrono::milliseconds(1), std::chrono::milliseconds(1));
+      std::chrono::milliseconds(1), std::chrono::hours(1),
+      std::chrono::hours(1));
   const auto resident_bytes = replicas.LocalBytes();
   assert(resident_bytes > 0);
   replicas.SetBudgetBytes(resident_bytes);
+  for (unsigned i = 0; i != 256; ++i)
+    replicas.RecordAccess(canonical_leaf->control_ref());
+  const auto cold_watermark = worker_thresholds.get_cold_watermark();
+  workers.Start();
   workers.AdjustOnce();
-  assert(!workers.PromotionEnabled());
-  assert(workers.ForcedDemotionRounds() ==
-         sidle::default_threshold_adjust_times);
+  const auto stop_started = std::chrono::steady_clock::now();
+  workers.Stop();
+  assert(std::chrono::steady_clock::now() - stop_started <
+         std::chrono::seconds(5));
+  assert(workers.PromotionEnabled());
+  assert(workers.ForcedDemotionRounds() == 0);
+  // Three shortage rounds plus the original SIDLE post-loop adjustment.
+  assert(worker_thresholds.get_cold_watermark() == cold_watermark + 4);
   replicas.SetBudgetBytes(UINT64_MAX);
   workers.AdjustOnce();
   assert(workers.PromotionEnabled());
@@ -425,6 +569,16 @@ int main() {
              put_change, put_change + 2, *ti) == Updated);
   expected[replica_key_text] = put_updated;
   dsidle::ConfigureCurrentReplicaDirectory(remote_replicas);
+  {
+    ReplicaPointerScanCollector stale_scan{
+        static_cast<const std::byte*>(pool.base()),
+        static_cast<const std::byte*>(pool.base()) + kPoolBytes};
+    table.table().scan(
+        lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
+        stale_scan, *ti);
+    assert(!stale_scan.used_replica);
+    assert(remote_replicas.LocalBytes() == 0);
+  }
   {
     Masstree::unlocked_tcursor<replica_params> remote_cursor(
         table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()));

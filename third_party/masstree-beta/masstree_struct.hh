@@ -482,6 +482,9 @@ class leafvalue {
     node_base<P>* layer() const {
         return dsidle::ResolveCanonicalNode<node_base<P> >(dsidle::NodeRef(raw_));
     }
+    dsidle::NodeRef layer_ref() const {
+        return dsidle::NodeRef(raw_);
+    }
 
     void prefetch(int keylenx) const {
         if (!leaf<P>::keylenx_is_layer(keylenx))
@@ -696,7 +699,8 @@ class leaf : public node_base<P> {
         (void) keylenx;
         masstree_precondition(keylenx_has_ksuf(keylenx));
         external_ksuf_type* external = readable_external_ksuf();
-        return external ? external->get(p) : iksuf_[0].get(p);
+        return external ? readable_external_ksuf_value(external, p)
+                        : iksuf_[0].get(p);
     }
     Str ksuf(int p) const {
         return ksuf(p, keylenx_[p]);
@@ -750,7 +754,7 @@ class leaf : public node_base<P> {
     }
     Str ksuf_storage(int p) const {
         if (external_ksuf_type* external = readable_external_ksuf())
-            return external->get(p);
+            return readable_external_ksuf_value(external, p);
         else if (extrasize64_ > 0)
             return iksuf_[0].get(p);
         else
@@ -807,14 +811,28 @@ class leaf : public node_base<P> {
         external_ksuf_type* external = ksuf_;
         if (!external)
             return nullptr;
+        // Keep the conservative whole-object physical invalidate used by the
+        // SWCC visibility protocol. Latency accounting below is narrower: a
+        // caller reads the descriptors plus only its selected suffix, not the
+        // unused tail of the allocation.
         dsidle::InvalidateSwccRange(external, dsidle::kSwccCacheLineBytes);
         const size_t capacity = external->capacity();
         if (capacity > dsidle::kSwccCacheLineBytes)
             dsidle::InvalidateSwccRange(
-                reinterpret_cast<const std::byte*>(external) + dsidle::kSwccCacheLineBytes,
+                reinterpret_cast<const std::byte*>(external) +
+                    dsidle::kSwccCacheLineBytes,
                 capacity - dsidle::kSwccCacheLineBytes);
-        latency_sim::RecordSwccRead(external, capacity);
+        const size_t metadata_bytes = external_ksuf_type::overhead(width);
+        latency_sim::RecordSwccRead(external, metadata_bytes);
         return external;
+    }
+    static Str readable_external_ksuf_value(external_ksuf_type* external,
+                                            int p) {
+        const Str suffix = external->get(p);
+        if (suffix.len) {
+            latency_sim::RecordSwccRead(suffix.s, suffix.len);
+        }
+        return suffix;
     }
 
     inline void mark_deleted_layer() {
@@ -1119,7 +1137,9 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     for (int i = 0; i < n; ++i) {
         int mp = initializing ? i : perm[i];
         if (mp != p && has_ksuf(mp)) {
-            const Str old_suffix = oksuf ? oksuf->get(mp) : iksuf_[0].get(mp);
+            const Str old_suffix =
+                oksuf ? readable_external_ksuf_value(oksuf, mp)
+                      : iksuf_[0].get(mp);
             bool ok = nksuf->assign(mp, old_suffix);
             assert(ok); (void) ok;
         }
@@ -1156,6 +1176,16 @@ inline basic_table<P>::basic_table()
 template <typename P>
 inline node_base<P>* basic_table<P>::root() const {
     return dsidle::ResolveCanonicalNode<node_base<P> >(root_ref_);
+}
+
+template <typename P>
+inline dsidle::NodeRef basic_table<P>::stable_root_ref() const {
+    const auto root =
+        dsidle::RootControlAccessor(
+            dsidle::CurrentSharedPool().root_control()).stable();
+    if (!root.ref)
+        throw std::runtime_error("D-SIDLE pool has no published Masstree root");
+    return root.ref;
 }
 
 template <typename P>

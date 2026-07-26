@@ -27,10 +27,94 @@ bool unlocked_tcursor<P>::find_unlocked(threadinfo& ti)
     int match;
     key_indexed_position kx;
     node_base<P>* root = const_cast<node_base<P>*>(root_);
+    dsidle::NodeRef root_ref = root_ref_;
 
-retry:
+ retry:
     replica_handle_ = {};
     replica_value_ = nullptr;
+    if (replica_enabled_) {
+        if (auto* directory = dsidle::CurrentReplicaDirectoryOrNull()) {
+            dsidle::NodeRef replica_ref = root_ref;
+            while (replica_ref) {
+                dsidle::StableNodeIdentity identity;
+                if (!dsidle::TryLoadStableNodeIdentity(replica_ref, &identity)) {
+                    root = dsidle::ResolveCanonicalNode<node_base<P>>(replica_ref);
+                    break;
+                }
+                auto handle =
+                    directory->Acquire(replica_ref, identity.generation,
+                                       identity.version);
+                if (!handle) {
+                    root = dsidle::ResolveCanonicalNode<node_base<P>>(replica_ref);
+                    break;
+                }
+                const auto snapshot = handle.snapshot();
+                if (snapshot.kind == dsidle::ReplicaKind::kInternal) {
+                    const auto child_ref =
+                        internode_replica<P>::LookupChild(snapshot.local_ptr,
+                                                         ka_);
+                    dsidle::StableNodeIdentity after;
+                    if (!dsidle::TryLoadStableNodeIdentity(replica_ref, &after) ||
+                        after.generation != identity.generation ||
+                        after.version != identity.version) {
+                        root =
+                            dsidle::ResolveCanonicalNode<node_base<P>>(replica_ref);
+                        break;
+                    }
+                    directory->RecordInternalHit();
+                    if (!child_ref) {
+                        root = dsidle::ResolveCanonicalNode<node_base<P>>(
+                            replica_ref);
+                        break;
+                    }
+                    replica_ref = child_ref;
+                    continue;
+                }
+
+                const typename leaf_replica<P>::value_type* local_value =
+                    nullptr;
+                dsidle::NodeRef layer_ref;
+                const auto cached =
+                    leaf_replica<P>::Lookup(snapshot.local_ptr, ka_,
+                                            local_value, layer_ref);
+                dsidle::StableNodeIdentity after;
+                if (!dsidle::TryLoadStableNodeIdentity(replica_ref, &after) ||
+                    after.generation != identity.generation ||
+                    after.version != identity.version) {
+                    root =
+                        dsidle::ResolveCanonicalNode<node_base<P>>(replica_ref);
+                    break;
+                }
+                if (cached == leaf_replica<P>::result::kValue) {
+                    // `n_` preserves the cursor's identity API only. The value
+                    // comes from the protected local snapshot, so do not
+                    // establish SWCC visibility for the canonical leaf.
+                    n_ = dsidle::CanonicalNodeAddressFromStableIdentity<
+                        leaf<P>>(replica_ref);
+                    v_ = nodeversion_type::make_snapshot(
+                        static_cast<nodeversion_value_type>(identity.version));
+                    perm_ = permuter_type(permuter_type::make_sorted(
+                        static_cast<const typename leaf_replica<P>::header*>(
+                            snapshot.local_ptr)->count));
+                    replica_value_ = const_cast<value_type>(local_value);
+                    replica_handle_ = std::move(handle);
+                    return true;
+                }
+                if (cached == leaf_replica<P>::result::kLayer) {
+                    ka_.shift_by(int(sizeof(typename P::ikey_type)));
+                    root_ref = layer_ref;
+                    replica_ref = layer_ref;
+                    continue;
+                }
+                root =
+                    dsidle::ResolveCanonicalNode<node_base<P>>(replica_ref);
+                break;
+            }
+        }
+    }
+
+    if (!root)
+        root = dsidle::ResolveCanonicalNode<node_base<P>>(root_ref);
     n_ = root->reach_leaf(ka_, v_, ti);
 
  forward:
@@ -57,7 +141,8 @@ retry:
             }
             if (cached == Masstree::leaf_replica<P>::result::kLayer) {
                 ka_.shift_by(int(sizeof(typename P::ikey_type)));
-                root = dsidle::ResolveCanonicalNode<node_base<P>>(layer_ref);
+                root_ref = layer_ref;
+                root = dsidle::ResolveCanonicalNode<node_base<P>>(root_ref);
                 goto retry;
             }
             // A replica is only a local read cache.  A miss in its compact
@@ -83,7 +168,10 @@ retry:
 
     if (match < 0) {
         ka_.shift_by(-match);
-        root = lv_.layer();
+        root_ref = lv_.layer_ref();
+        // Give the next layer's local replica the first chance. A miss will
+        // resolve the same NodeRef through the unchanged canonical path.
+        root = nullptr;
         goto retry;
     } else
         return match;

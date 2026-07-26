@@ -30,6 +30,9 @@ class nodeversion {
         : v_(isleaf ? (value_type) P::isleaf_bit : 0), control_ref_(control_ref) {}
     // Copies are stable stack snapshots, never a second live handle.
     nodeversion(const nodeversion& x) : v_(x.load()) {}
+    static nodeversion<P> make_snapshot(value_type value) {
+        return nodeversion<P>(value);
+    }
 
     bool isleaf() const {
         return load() & P::isleaf_bit;
@@ -160,9 +163,13 @@ class nodeversion {
         else
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
         if (control_ref_) {
-            // dsidle: canonical leaf/internode bodies are bounded by the
-            // baseline 512B node envelope; publish their SWCC writes before
-            // releasing the matching HWCC version.
+            // dsidle: publish the exact canonical allocation before releasing
+            // the matching HWCC version. RecordSwccWrite intentionally uses
+            // the same node-envelope upper bound as the original Masstree
+            // mutation path: fields are written directly by many inline
+            // helpers, so exact dirty-line tracking would require replacing
+            // the upstream control flow with pervasive wrappers. Flush remains
+            // a separate physical/protocol charge.
             auto* canonical =
                 static_cast<std::byte*>(dsidle::SharedPoolBase()) +
                 dsidle::LoadCanonicalSwccOffset(control_ref_);
@@ -280,8 +287,13 @@ class nodeversion {
             dsidle::LoadCanonicalSwccOffset(control_ref_);
         const auto canonical_bytes =
             dsidle::LoadCanonicalNodeBytes(control_ref_);
-        dsidle::InvalidateSwccRange(
-            canonical, canonical_bytes);
+        // Original Masstree traversal reads node fields directly and prefetches
+        // cache lines 1..3; the selected child/value/link can occupy the final
+        // line of the 288B internode or 336B+ leaf. Use the exact allocation as
+        // a bounded per-node read envelope instead of rewriting every upstream
+        // inline accessor. This is distinct from external value/ksuf payloads,
+        // which have their own byte-accurate accounting.
+        dsidle::InvalidateSwccRange(canonical, canonical_bytes);
         latency_sim::RecordSwccRead(
             canonical, canonical_bytes);
     }

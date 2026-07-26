@@ -97,7 +97,11 @@ int main() {
   const auto latency_stats =
       latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
   assert(latency_stats.hwcc_raw_line_accesses > 0);
-  assert(latency_stats.swcc_raw_line_accesses > 0);
+  // A stable canonical-node read is deliberately billed once for the exact
+  // node envelope; RootControl contributes HWCC traffic only.
+  assert(latency_stats.swcc_raw_line_accesses ==
+         (dsidle::LoadCanonicalNodeBytes(ref) + latency.cache_line_bytes - 1) /
+             latency.cache_line_bytes);
   latency_sim::GlobalLatencySimulator().Configure({});
 
   slab.Retire(ref, 7);
