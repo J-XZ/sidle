@@ -197,26 +197,27 @@ class replica_workers {
     root_pin_.Refresh(ti);
     std::uint64_t nodes = 0;
     std::uint64_t accesses = 0;
-    ti.rcu_start();
-    ForEachLeaf(table_.root(),
-                [this, &nodes, &accesses, forced_demotion](leaf<P>* leaf) {
-      const auto ref = leaf->control_ref();
-      const auto version = leaf->stable();
-      if (version.deleted() || version.locked()) return;
-      const auto generation = dsidle::LoadNodeGeneration(ref);
-      const auto count = directory_.AccessCount(ref);
-      const auto hotness = histogram_->update(static_cast<std::uint16_t>(std::min<std::uint64_t>(count, UINT16_MAX)));
-      ++nodes;
-      accesses += count;
-      const bool local = static_cast<bool>(directory_.Acquire(ref, generation, version.version_value()));
-      if (can_promote_.load(std::memory_order_relaxed) &&
-          !local && hotness == sidle::sidle_histogram::type::hot)
-        queue_.add(sidle::task_type::promotion, {ref, generation});
-      else if (hotness == sidle::sidle_histogram::type::cold &&
-               (local || forced_demotion))
-        queue_.add(sidle::task_type::demotion, {ref, generation});
-    });
-    ti.rcu_stop();
+    {
+      threadinfo::rcu_scope rcu(ti);
+      ForEachLeaf(table_.root(),
+                  [this, &nodes, &accesses, forced_demotion](leaf<P>* leaf) {
+        const auto ref = leaf->control_ref();
+        const auto version = leaf->stable();
+        if (version.deleted() || version.locked()) return;
+        const auto generation = dsidle::LoadNodeGeneration(ref);
+        const auto count = directory_.AccessCount(ref);
+        const auto hotness = histogram_->update(static_cast<std::uint16_t>(std::min<std::uint64_t>(count, UINT16_MAX)));
+        ++nodes;
+        accesses += count;
+        const bool local = static_cast<bool>(directory_.Acquire(ref, generation, version.version_value()));
+        if (can_promote_.load(std::memory_order_relaxed) &&
+            !local && hotness == sidle::sidle_histogram::type::hot)
+          queue_.add(sidle::task_type::promotion, {ref, generation});
+        else if (hotness == sidle::sidle_histogram::type::cold &&
+                 (local || forced_demotion))
+          queue_.add(sidle::task_type::demotion, {ref, generation});
+      });
+    }
     histogram_->refresh(nodes, accesses);
     histogram_->adjust_threshold();
   }
@@ -237,11 +238,12 @@ class replica_workers {
   void CoolOnce(threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     histogram_->notify_cooling();
-    ti.rcu_start();
-    ForEachLeaf(table_.root(), [this](leaf<P>* leaf) {
-      directory_.HalveAccess(leaf->control_ref());
-    });
-    ti.rcu_stop();
+    {
+      threadinfo::rcu_scope rcu(ti);
+      ForEachLeaf(table_.root(), [this](leaf<P>* leaf) {
+        directory_.HalveAccess(leaf->control_ref());
+      });
+    }
     histogram_->adjust_for_cooling();
   }
 
