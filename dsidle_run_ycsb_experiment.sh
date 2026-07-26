@@ -27,8 +27,9 @@ value_seed=4851300051586183745
 sidle_background_roles=5
 sidle_background_epoch_slots=4
 heartbeat_threads=1
+formal_acceptance=0
 
-usage() { echo "usage: $0 [--vm-count 1|2|4] [--warmup-rounds N] [--rounds N] [--record-count N] [--operation-count N] [--threads-per-node N] ..." >&2; }
+usage() { echo "usage: $0 [--formal-acceptance] [--vm-count 1|2|4] [--warmup-rounds N] [--rounds N] [--record-count N] [--operation-count N] [--threads-per-node N] ..." >&2; }
 while (($#)); do
   case "$1" in
     --vm-count|--warmup-rounds|--rounds|--record-count|--operation-count|--threads-per-node|--round-timeout|--out-dir|--workloads|--base-config|--shared-numa|--shared-size-mb|--cache-flush-mb|--replica-budget-mb)
@@ -44,6 +45,7 @@ while (($#)); do
       esac
       shift 2;;
     --no-latency) no_latency=1; shift;;
+    --formal-acceptance) formal_acceptance=1; shift;;
     --skip-build) skip_build=1; shift;; --skip-vm-init) skip_vm_init=1; shift;;
     --skip-trace-gen) skip_trace_gen=1; shift;; --skip-standalone-load) skip_standalone_load=1; shift;;
     --prepare-only) prepare_only=1; shift;; --help) usage; exit 0;; *) usage; exit 2;;
@@ -69,7 +71,44 @@ for workload in "${requested[@]}"; do
   [[ -z "${seen[$workload]:-}" ]] || { echo "duplicate workload: $workload" >&2; exit 2; }
   seen[$workload]=1
 done
+if ((formal_acceptance)); then
+  [[ "$rounds" == 10 && "$warmup_rounds" == 1 &&
+     "$record_count" == 100000 && "$operation_count" == 100000 &&
+     "$threads_per_node" == 4 && "$vm_count" == 4 ]] || {
+    echo "formal YCSB acceptance requires 10 rounds, 1 warmup, 100k/100k, and 4 VM x 4 workers" >&2
+    exit 2
+  }
+  [[ "$workloads" == a,b,c,d,e ]] || {
+    echo "formal YCSB acceptance requires workloads a,b,c,d,e in that order" >&2
+    exit 2
+  }
+  [[ "$shared_size_mb" == 32768 && "$cache_flush_mb" == 512 ]] || {
+    echo "formal YCSB acceptance requires --shared-size-mb 32768 and --cache-flush-mb 512" >&2
+    exit 2
+  }
+  ((no_latency && !skip_standalone_load && !prepare_only)) || {
+    echo "formal YCSB acceptance requires --no-latency, independent load, and real execution" >&2
+    exit 2
+  }
+  git -C "$script_dir" diff --quiet HEAD -- || {
+    echo "formal YCSB acceptance requires a clean tracked worktree" >&2
+    exit 2
+  }
+  python3 - "$base_config" <<'PY'
+import json,re,sys
+cfg=json.loads(re.sub(r'//[^\n]*', '', open(sys.argv[1]).read()))
+if cfg['vm']['core_count_per_vm'] != 8:
+    raise SystemExit('formal YCSB acceptance requires 8 vCPUs per VM')
+if cfg['dsidle']['verbose'] or cfg['dsidle']['extra_check']:
+    raise SystemExit('formal YCSB acceptance requires verbose=false and extra_check=false')
+PY
+fi
 if [[ -z "$out_dir" ]]; then out_dir="exp_data/ycsb_dsidle_$(date -u +%Y%m%dT%H%M%SZ)"; fi
+out_dir=$(realpath -m "$out_dir")
+if [[ -e "$out_dir/acceptance.meta" || -e "$out_dir/run_complete.meta" ]]; then
+  echo "refusing to reuse a completed output directory: $out_dir" >&2
+  exit 2
+fi
 mkdir -p "$out_dir"/{configs,traces,logs,round_logs}
 experiment_config="$out_dir/configs/experiment_config_ycsb_4vm.jsonc"
 python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" \
@@ -182,6 +221,7 @@ allowed = {
 }
 formal_contract = (
     nodes == 4 and threads == 4 and records == 100000 and operations == 100000
+    and workloads == list('abcde')
 )
 formal_counts = {
     'load': Counter(PUT=100000),
@@ -315,16 +355,25 @@ printf -v reproduce_command '%s--vm-count %q ' "$reproduce_command" "$vm_count"
 ((skip_trace_gen)) && reproduce_command+='--skip-trace-gen '
 ((skip_standalone_load)) && reproduce_command+='--skip-standalone-load '
 ((prepare_only)) && reproduce_command+='--prepare-only '
-python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" <<'PY'
+((formal_acceptance)) && reproduce_command+='--formal-acceptance '
+python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" "$formal_acceptance" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores)=sys.argv[1:]
+(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores,formal_acceptance)=sys.argv[1:]
 try: git_sha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 except Exception: git_sha='unknown'
+git_tracked_clean=subprocess.call(
+    ['git','diff','--quiet','HEAD','--'],
+    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL) == 0
 phase_names=['load'] + [f'workload{item}' for item in workloads.split(',')]
 config_dir=Path(experiment_config).parent
 final_config=json.load(open(experiment_config))
-meta={"warmup_rounds":int(warmup_rounds),"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":int(nodes),"total_trace_workers":int(threads)*int(nodes),"vm_vcpus_per_node":int(vm_cores),"sidle_background_roles_per_node":int(background_roles),"heartbeat_threads_per_node":int(heartbeat_threads),"runnable_threads_per_node":int(runnable_threads_per_vm),"background_epoch_slots_per_node":int(background_epoch_slots),"epoch_slots_per_node":int(epoch_slots_per_vm),"replica_budget_mb":int(replica_budget) if replica_budget else None,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"trace_manifest":trace_manifest,"trace_manifest_sha256":hashlib.sha256(open(trace_manifest,'rb').read()).hexdigest(),"value_seed":int(value_seed),"git_sha":git_sha,"shared_numa":[int(x) for x in final_config["shared_memory"]["numa_node"]],"requested_shared_size_mb":int(size) if size else None,"shared_size_mb":int(final_config["shared_memory"]["size_mb"]),"shared_memory_size_source":"explicit" if size else "base_config","cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
+phase_configs={phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names}
+phase_config_sha256={
+    phase:hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+    for phase,config_path in phase_configs.items()
+}
+meta={"warmup_rounds":int(warmup_rounds),"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":int(nodes),"total_trace_workers":int(threads)*int(nodes),"vm_vcpus_per_node":int(vm_cores),"sidle_background_roles_per_node":int(background_roles),"heartbeat_threads_per_node":int(heartbeat_threads),"runnable_threads_per_node":int(runnable_threads_per_vm),"background_epoch_slots_per_node":int(background_epoch_slots),"epoch_slots_per_node":int(epoch_slots_per_vm),"replica_budget_mb":int(replica_budget) if replica_budget else None,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":phase_configs,"phase_config_sha256":phase_config_sha256,"trace_manifest":trace_manifest,"trace_manifest_sha256":hashlib.sha256(open(trace_manifest,'rb').read()).hexdigest(),"value_seed":int(value_seed),"git_sha":git_sha,"git_tracked_clean":git_tracked_clean,"shared_numa":[int(x) for x in final_config["shared_memory"]["numa_node"]],"requested_shared_size_mb":int(size) if size else None,"shared_size_mb":int(final_config["shared_memory"]["size_mb"]),"shared_memory_size_source":"explicit" if size else "base_config","cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"formal_acceptance":bool(int(formal_acceptance)),"reproduce_command":reproduce_command.rstrip()}
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
@@ -351,9 +400,12 @@ if (( ! skip_vm_init )); then
 else
   "$script_dir/dsidle_check_vms.sh" --config "$experiment_config"
 fi
+formal_args=()
+((formal_acceptance == 0)) || formal_args=(--formal-acceptance)
 "$script_dir/scripts/run_dsidle_vm_ycsb_rounds.sh" \
   --prepared-dir "$out_dir" --warmup-rounds "$warmup_rounds" \
   --rounds "$rounds" --round-timeout "$round_timeout" \
   --cache-flush-mb "$cache_flush_mb" \
   --runner "$script_dir/build/dsidle_e2e_trace_runner" \
-  --pool-tool "$script_dir/build/dsidle_shared_pool"
+  --pool-tool "$script_dir/build/dsidle_shared_pool" \
+  "${formal_args[@]}"

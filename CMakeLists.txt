@@ -117,6 +117,13 @@ add_test(NAME dsidle_vm_e2e_harness_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_vm_e2e.py
     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/clear_dsidle_caches.py)
 set_tests_properties(dsidle_vm_e2e_harness_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_acceptance_evidence_tests
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_acceptance_evidence.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/acceptance_evidence.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_vm_e2e_rounds.sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
+set_tests_properties(dsidle_acceptance_evidence_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_prepare_only_tests
   COMMAND /bin/sh -c
     "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/run_meta.json\" && test -s \"$out/result/trace_manifest.json\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); t=json.load(open(sys.argv[2])); sys.exit(m[\"warmup_rounds\"] != 1 or m[\"value_seed\"] != 4851300051586183745 or m[\"sidle_background_roles_per_node\"] != 5 or m[\"background_epoch_slots_per_node\"] != 4 or m[\"epoch_slots_per_node\"] != 5 or m[\"runnable_threads_per_node\"] != 7 or m[\"shared_size_mb\"] != 2048 or m[\"requested_shared_size_mb\"] != 2048 or m[\"shared_memory_size_source\"] != \"explicit\" or len(t[\"trace_set_sha256\"]) != 64 or any(len(w[\"sha256\"]) != 64 for p in t[\"phases\"].values() for w in p[\"workers\"].values()))' \"$out/result/run_meta.json\" \"$out/result/trace_manifest.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\" && ! \"$1\" --prepare-only --out-dir \"$out/reserve\" --shared-reserve-mb 4096 >/dev/null 2>&1 && test ! -e \"$out/reserve\""
@@ -152,6 +159,17 @@ add_test(NAME dsidle_e2e09_suite_smoke
     "out=$(mktemp -d /tmp/dsidle-e2e09-suite.XXXXXX); \"$1\" --execute --smoke --suite 09 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 5 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=09 phase=e2e09_read node=3 status=ok' \"$out/logs/e2e09_read_round_1_read_node3.log\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e09_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e09_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(
+  dsidle_e2e_trace_runner_smoke
+  dsidle_e2e_trace_runner_min_duration
+  dsidle_e2e_trace_runner_replica_activation
+  dsidle_e2e_trace_runner_2vm_smoke
+  dsidle_e2e_rounds_script_smoke
+  dsidle_e2e_rounds_script_4vm_smoke
+  dsidle_e2e_ycsb_suite_smoke
+  dsidle_e2e08_suite_smoke
+  dsidle_e2e09_suite_smoke
+  PROPERTIES RESOURCE_LOCK dsidle_e2e_pool)
 add_test(NAME dsidle_vm_scripts_dry_run
   COMMAND /bin/sh -c
     "\"$1\" --dry-run --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run --config \"$2\" && \"$5\" --dry-run"

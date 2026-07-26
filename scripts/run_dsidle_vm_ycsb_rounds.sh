@@ -10,18 +10,26 @@ runner="${DSIDLE_VM_TRACE_RUNNER:-$repo_root/build/dsidle_e2e_trace_runner}"
 pool_tool="${DSIDLE_POOL_TOOL:-$repo_root/build/dsidle_shared_pool}"
 timeout_sec=7200
 cache_flush_mb=512
+formal_acceptance=0
+acceptance_helper="$script_dir/acceptance_evidence.py"
 
-usage() { echo "usage: $0 --prepared-dir DIR [--warmup-rounds N] [--rounds N] [--runner PATH] [--pool-tool PATH] [--round-timeout SEC] [--cache-flush-mb MB]" >&2; }
+usage() { echo "usage: $0 --prepared-dir DIR [--formal-acceptance] [--warmup-rounds N] [--rounds N] [--runner PATH] [--pool-tool PATH] [--round-timeout SEC] [--cache-flush-mb MB]" >&2; }
 while (($#)); do case "$1" in
   --prepared-dir|--warmup-rounds|--rounds|--runner|--pool-tool|--round-timeout|--cache-flush-mb)
     (($# >= 2)) || { usage; exit 2; }
     case "$1" in --prepared-dir) prepared_dir=$2;; --warmup-rounds) warmup_rounds=$2;; --rounds) rounds=$2;; --runner) runner=$2;; --pool-tool) pool_tool=$2;; --round-timeout) timeout_sec=$2;; --cache-flush-mb) cache_flush_mb=$2;; esac; shift 2;;
   # Compatibility: ivshmem driver is loaded by dsidle_init_vms.sh.
   --ivshmem-module) (($# >= 2)) || { usage; exit 2; }; shift 2;;
+  --formal-acceptance) formal_acceptance=1; shift;;
   --help) usage; exit 0;; *) usage; exit 2;; esac; done
 [[ -n "$prepared_dir" && -d "$prepared_dir" && "$warmup_rounds" =~ ^[0-9]+$ && "$rounds" =~ ^[1-9][0-9]*$ && "$timeout_sec" =~ ^[1-9][0-9]*$ && "$cache_flush_mb" =~ ^[1-9][0-9]*$ ]] || { usage; exit 2; }
 prepared_dir=$(realpath "$prepared_dir")
 [[ -x "$runner" && -x "$pool_tool" ]] || { echo "missing VM runner or pool tool under build/" >&2; exit 2; }
+[[ -f "$acceptance_helper" ]] || { echo "missing acceptance evidence helper" >&2; exit 2; }
+if [[ -e "$prepared_dir/acceptance.meta" || -e "$prepared_dir/run_complete.meta" ]]; then
+  echo "refusing to reuse a completed output directory: $prepared_dir" >&2
+  exit 2
+fi
 base="$prepared_dir/configs/experiment_config_ycsb_4vm.jsonc"
 [[ -f "$base" ]] || { echo "missing prepared config" >&2; exit 2; }
 mapfile -t topology < <(python3 - "$base" <<'PY'
@@ -47,6 +55,7 @@ print(m['threads_per_node'])
 print(m['nodes'])
 print(m['value_seed'])
 print(m['epoch_slots_per_node'])
+print(1 if m.get('formal_acceptance') else 0)
 PY
 )
 skip_standalone_load=${run_control[0]}
@@ -54,7 +63,16 @@ trace_workers_per_node=${run_control[1]}
 metadata_nodes=${run_control[2]}
 value_seed=${run_control[3]}
 epoch_slots_per_node=${run_control[4]}
+metadata_formal_acceptance=${run_control[5]}
 [[ "$metadata_nodes" == "$vm_count" ]] || { echo "run metadata/config VM count mismatch" >&2; exit 2; }
+[[ "$metadata_formal_acceptance" == "$formal_acceptance" ]] || {
+  echo "formal acceptance flag differs between command and run metadata" >&2
+  exit 2
+}
+if ((formal_acceptance)) && [[ "$rounds" != 10 || "$warmup_rounds" != 1 ]]; then
+  echo "formal YCSB acceptance requires exactly 1 warmup and 10 formal rounds" >&2
+  exit 2
+fi
 trace_manifest="$prepared_dir/trace_manifest.json"
 [[ -f "$trace_manifest" ]] || { echo "missing trace manifest: $trace_manifest" >&2; exit 2; }
 manifest_sha=$(sha256sum "$trace_manifest" | awk '{print $1}')
@@ -88,6 +106,26 @@ s,t,p=sys.argv[1:]; c=json.load(open(s)); c['shared_memory']['path']=c['shared_m
 open(t,'w').write(json.dumps(c,separators=(',',':'))+'\n')
 PY
 done
+guest_config_checks="$prepared_dir/round_logs/guest_config_sha256.txt"
+python3 - "$prepared_dir/run_meta.json" "$prepared_dir/guest_configs" \
+  "$guest_config_checks" "${phases[@]}" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+meta_path,guest_dir,checks,*phases=sys.argv[1:]
+meta_path=Path(meta_path)
+guest_dir=Path(guest_dir)
+hashes={
+    phase:hashlib.sha256((guest_dir/f'{phase}.jsonc').read_bytes()).hexdigest()
+    for phase in phases
+}
+Path(checks).write_text(''.join(
+    f'{hashes[phase]}  {phase}.jsonc\n' for phase in sorted(hashes)))
+meta=json.loads(meta_path.read_text())
+meta['guest_config_sha256']=hashes
+meta['guest_config_set_sha256']=hashlib.sha256(''.join(
+    f'{phase}:{hashes[phase]}\n' for phase in sorted(hashes)).encode()).hexdigest()
+meta_path.write_text(json.dumps(meta,indent=2)+'\n')
+PY
 ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=20)
 runner_sha=$(sha256sum "$runner" | awk '{print $1}')
 recorded_runner_sha=$(python3 - "$prepared_dir/run_meta.json" <<'PY'
@@ -99,10 +137,31 @@ PY
   echo "runner binary changed after run metadata was written" >&2
   exit 1
 }
+pool_tool_sha=$(sha256sum "$pool_tool" | awk '{print $1}')
+recorded_pool_tool_sha=$(python3 - "$prepared_dir/run_meta.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))['pool_tool_sha256'])
+PY
+)
+[[ "$pool_tool_sha" == "$recorded_pool_tool_sha" ]] || {
+  echo "pool tool changed after run metadata was written" >&2
+  exit 1
+}
+guest_config_set_sha=$(python3 - "$prepared_dir/run_meta.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))['guest_config_set_sha256'])
+PY
+)
+if ((formal_acceptance)); then
+  python3 "$acceptance_helper" validate --kind ycsb \
+    --metadata "$prepared_dir/run_meta.json"
+fi
 for port in "${ports[@]}"; do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'mkdir -p /root/dsidle-ycsb/traces'
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$prepared_dir/guest_configs/" root@127.0.0.1:/root/dsidle-ycsb/
+  rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
+    "$guest_config_checks" root@127.0.0.1:/root/dsidle-ycsb/.guest_config.sha256
   guest_runner_sha=$(ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
     'sha256sum /root/dsidle-ycsb/dsidle_e2e_trace_runner' | awk '{print $1}')
   [[ "$runner_sha" == "$guest_runner_sha" ]] || {
@@ -110,11 +169,67 @@ for port in "${ports[@]}"; do
     exit 1
   }
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+    'cd /root/dsidle-ycsb && sha256sum --status -c .guest_config.sha256' || {
+    echo "guest config hash mismatch on port $port" >&2
+    exit 1
+  }
+  ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
     "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c $device_path"
 done
 
+verify_local_artifacts() {
+  [[ "$(sha256sum "$runner" | awk '{print $1}')" == "$runner_sha" ]] || {
+    echo "runner binary changed during VM YCSB" >&2
+    return 1
+  }
+  [[ "$(sha256sum "$pool_tool" | awk '{print $1}')" == "$pool_tool_sha" ]] || {
+    echo "pool tool changed during VM YCSB" >&2
+    return 1
+  }
+  [[ "$(sha256sum "$trace_manifest" | awk '{print $1}')" == "$manifest_sha" ]] || {
+    echo "trace manifest changed during VM YCSB" >&2
+    return 1
+  }
+  (
+    cd "$prepared_dir/guest_configs"
+    sha256sum --status -c "$guest_config_checks"
+  ) || {
+    echo "guest config set changed during VM YCSB" >&2
+    return 1
+  }
+  python3 - "$prepared_dir/run_meta.json" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+meta=json.load(open(sys.argv[1]))
+config=Path(meta['experiment_config'])
+if hashlib.sha256(config.read_bytes()).hexdigest() != meta['experiment_config_sha256']:
+    raise SystemExit('experiment config changed during VM YCSB')
+for phase,path in meta['phase_configs'].items():
+    if hashlib.sha256(Path(path).read_bytes()).hexdigest() != meta['phase_config_sha256'][phase]:
+        raise SystemExit(f'{phase} config changed during VM YCSB')
+PY
+}
+
+verify_guest_deployment() {
+  local port remote_sha
+  for port in "${ports[@]}"; do
+    remote_sha=$(ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+      'sha256sum /root/dsidle-ycsb/dsidle_e2e_trace_runner' | awk '{print $1}')
+    [[ "$remote_sha" == "$runner_sha" ]] || {
+      echo "guest runner changed on port $port" >&2
+      return 1
+    }
+    ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+      'cd /root/dsidle-ycsb && sha256sum --status -c .guest_config.sha256' || {
+      echo "guest config changed on port $port" >&2
+      return 1
+    }
+  done
+}
+
 reset_pool() {
   local tag=$1
+  verify_local_artifacts
   "$pool_tool" --init-pool --config "$base" --node-control-capacity 2097152 \
     --max-threads-per-vm "$epoch_slots_per_node" \
     >"$prepared_dir/round_logs/pool_${tag}.log" 2>&1
@@ -247,9 +362,16 @@ run_phase() {
   local phase=$4
   local reset_caches=$5
   local phase_meta="$prepared_dir/round_logs/${case_name}_${label}_${stage}.meta"
-  printf 'case=%s label=%s stage=%s phase=%s status=started manifest_sha256=%s runner_sha256=%s\n' \
+  printf 'case=%s label=%s stage=%s phase=%s status=started manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
     "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+    "$pool_tool_sha" "$guest_config_set_sha" \
     >"$phase_meta"
+  if ! verify_local_artifacts || ! verify_guest_deployment; then
+    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=provenance manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
+      "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+      "$pool_tool_sha" "$guest_config_set_sha" >"$phase_meta"
+    exit 1
+  fi
   sync_phase_trace "$phase"
   ((reset_caches==0)) || clear_vm_caches "${case_name}_${label}_${stage}"
   local -a pids=()
@@ -266,20 +388,23 @@ run_phase() {
   local pid
   for pid in "${pids[@]}"; do wait "$pid" || status=1; done
   if ((status != 0)); then
-    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=runner manifest_sha256=%s runner_sha256=%s\n' \
+    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=runner manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
       "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+      "$pool_tool_sha" "$guest_config_set_sha" \
       >"$phase_meta"
     echo "VM YCSB failed: case=$case_name phase=$phase $label" >&2
     exit 1
   fi
   if ! validate_phase_results "$case_name" "$label" "$stage" "$phase"; then
-    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=validation manifest_sha256=%s runner_sha256=%s\n' \
+    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=validation manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
       "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+      "$pool_tool_sha" "$guest_config_set_sha" \
       >"$phase_meta"
     exit 1
   fi
-  printf 'case=%s label=%s stage=%s phase=%s status=success manifest_sha256=%s runner_sha256=%s\n' \
+  printf 'case=%s label=%s stage=%s phase=%s status=success manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
     "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+    "$pool_tool_sha" "$guest_config_set_sha" \
     >"$phase_meta"
 }
 
@@ -303,7 +428,17 @@ for phase in "${phases[@]}"; do
   for ((round=1; round<=rounds; ++round)); do run_case "$phase" "round_${round}"; done
 done
 python3 "$script_dir/summarize_ycsb_experiment.py" --log-dir "$prepared_dir/logs" --out-dir "$prepared_dir" --metadata "$prepared_dir/run_meta.json"
-printf 'status=success rounds=%s warmup_rounds=%s manifest_sha256=%s runner_sha256=%s\n' \
-  "$rounds" "$warmup_rounds" "$manifest_sha" "$runner_sha" \
-  >"$prepared_dir/acceptance.meta"
+verify_local_artifacts
+if ((formal_acceptance)); then
+  python3 "$acceptance_helper" finalize --kind ycsb \
+    --metadata "$prepared_dir/run_meta.json" \
+    --summary "$prepared_dir/ycsb_summary.json" \
+    --summary "$prepared_dir/ycsb_summary.csv" \
+    --summary "$prepared_dir/YCSB实验报告.md" \
+    --output "$prepared_dir/acceptance.meta"
+else
+  printf 'status=success kind=development rounds=%s warmup_rounds=%s manifest_sha256=%s runner_sha256=%s pool_tool_sha256=%s guest_config_set_sha256=%s\n' \
+    "$rounds" "$warmup_rounds" "$manifest_sha" "$runner_sha" \
+    "$pool_tool_sha" "$guest_config_set_sha" >"$prepared_dir/run_complete.meta"
+fi
 echo "DSIDLE_VM_YCSB_OK out_dir=$prepared_dir"
