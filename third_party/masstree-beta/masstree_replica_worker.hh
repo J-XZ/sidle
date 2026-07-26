@@ -53,10 +53,16 @@ class replica_executor {
       if (!ref) return published;
       const auto generation = dsidle::LoadNodeGeneration(ref);
       if (directory_.Acquire(ref, generation, version.version_value())) break;
+      const bool refresh =
+          directory_.HasLocalPlacement(ref, generation);
       node_base<P>* parent = node->parent();
       const bool one = node->isleaf()
-          ? leaf_replica<P>::Promote(*static_cast<leaf<P>*>(node), version, directory_)
-          : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_);
+          ? leaf_replica<P>::Promote(
+                *static_cast<leaf<P>*>(node), version, directory_, true,
+                refresh)
+          : internode_replica<P>::Promote(
+                *static_cast<internode<P>*>(node), version, directory_, true,
+                refresh);
       if (!one) return published;
       published = true;
       node = parent;
@@ -67,17 +73,21 @@ class replica_executor {
   bool Demote(dsidle::QueuedNodeRef candidate, typename P::threadinfo_type& ti) {
     typename P::threadinfo_type::rcu_scope rcu(ti);
     node_base<P>* node = Resolve(candidate);
-    if (!node || node->is_root()) return false;  // root is pinned per VM.
+    if (!node) return false;
+    const auto global_root =
+        dsidle::RootControlAccessor(
+            dsidle::CurrentSharedPool().root_control()).stable().ref;
+    if (node->control_ref() == global_root)
+      return false;  // Only the global root is pinned per VM.
     bool demoted = false;
     int has_demoted = 0;
-    while (node && !node->is_root()) {
+    while (node && node->control_ref() != global_root) {
       const auto version = node->stable();
       if (version.deleted() || version.locked()) break;
       const auto ref = node->control_ref();
       const auto generation = dsidle::LoadNodeGeneration(ref);
-      auto local = directory_.Acquire(ref, generation, version.version_value());
-      if (!local) break;
-      local = {};
+      if (!directory_.HasLocalPlacement(ref, generation))
+        break;
       if (!node->isleaf()) {
         auto* internal = static_cast<internode<P>*>(node);
         if (internal->sidle_meta.depth <=
@@ -119,13 +129,9 @@ class replica_executor {
     for (int index = 0; index <= count; ++index) {
       if (!children[index])
         continue;
-      node_base<P>* child =
-          dsidle::ResolveCanonicalNode<node_base<P>>(children[index]);
-      const auto child_version = child->stable();
-      const auto child_ref = child->control_ref();
-      const auto generation = dsidle::LoadNodeGeneration(child_ref);
-      if (directory_.Acquire(
-              child_ref, generation, child_version.version_value()))
+      const auto generation =
+          dsidle::LoadNodeGeneration(children[index]);
+      if (directory_.HasLocalPlacement(children[index], generation))
         return true;
     }
     return false;
@@ -225,12 +231,16 @@ class replica_workers {
         const auto hotness = histogram_->update(static_cast<std::uint16_t>(std::min<std::uint64_t>(count, UINT16_MAX)));
         ++nodes;
         accesses += count;
-        const bool local = static_cast<bool>(directory_.Acquire(ref, generation, version.version_value()));
+        const bool desired =
+            directory_.HasLocalPlacement(ref, generation);
+        const bool valid = static_cast<bool>(
+            directory_.Acquire(
+                ref, generation, version.version_value()));
         if (can_promote_.load(std::memory_order_relaxed) &&
-            !local && hotness == sidle::sidle_histogram::type::hot)
+            !valid && hotness == sidle::sidle_histogram::type::hot)
           queue_.add(sidle::task_type::promotion, {ref, generation});
         else if (hotness == sidle::sidle_histogram::type::cold &&
-                 (local || forced_demotion))
+                 (desired || forced_demotion))
           queue_.add(sidle::task_type::demotion, {ref, generation});
       });
     }

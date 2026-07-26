@@ -740,6 +740,35 @@ int main() {
         policy_ref, dsidle::LoadNodeGeneration(policy_ref),
         policy_version.version_value()));
   }
+  const auto policy_global_root =
+      dsidle::RootControlAccessor(pool.root_control()).stable().ref;
+  auto stale_policy = std::find_if(
+      policy_leaves.begin(), policy_leaves.end(),
+      [policy_global_root](const auto* leaf) {
+        return leaf->control_ref() != policy_global_root;
+      });
+  assert(stale_policy != policy_leaves.end());
+  auto* stale_policy_leaf = *stale_policy;
+  const auto stale_policy_ref = stale_policy_leaf->control_ref();
+  const auto stale_policy_generation =
+      dsidle::LoadNodeGeneration(stale_policy_ref);
+  stale_policy_leaf->lock();
+  stale_policy_leaf->mark_insert();
+  stale_policy_leaf->unlock();
+  const auto stale_policy_version = stale_policy_leaf->stable();
+  assert(!replicas.Acquire(
+      stale_policy_ref, stale_policy_generation,
+      stale_policy_version.version_value()));
+  assert(replicas.HasLocalPlacement(
+      stale_policy_ref, stale_policy_generation));
+  Masstree::replica_executor<replica_params> stale_policy_executor(
+      replicas, worker_thresholds);
+  assert(stale_policy_executor.Demote(
+      {stale_policy_ref, stale_policy_generation}, *ti));
+  assert(!replicas.HasLocalPlacement(
+      stale_policy_ref, stale_policy_generation));
+  assert(Masstree::leaf_replica<replica_params>::Promote(
+      *stale_policy_leaf, stale_policy_version, replicas));
   const auto policy_access_sum = [&] {
     std::uint64_t sum = 0;
     for (auto* policy_leaf : policy_leaves)
