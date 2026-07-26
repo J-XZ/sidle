@@ -14,7 +14,6 @@ out_dir=""
 workloads="a,b,c,d,e"
 base_config=experiment_config.jsonc
 shared_numa=""
-shared_reserve_mb=4096
 shared_size_mb=""
 cache_flush_mb=512
 replica_budget_mb=""
@@ -32,14 +31,14 @@ heartbeat_threads=1
 usage() { echo "usage: $0 [--vm-count 1|2|4] [--warmup-rounds N] [--rounds N] [--record-count N] [--operation-count N] [--threads-per-node N] ..." >&2; }
 while (($#)); do
   case "$1" in
-    --vm-count|--warmup-rounds|--rounds|--record-count|--operation-count|--threads-per-node|--round-timeout|--out-dir|--workloads|--base-config|--shared-numa|--shared-reserve-mb|--shared-size-mb|--cache-flush-mb|--replica-budget-mb)
+    --vm-count|--warmup-rounds|--rounds|--record-count|--operation-count|--threads-per-node|--round-timeout|--out-dir|--workloads|--base-config|--shared-numa|--shared-size-mb|--cache-flush-mb|--replica-budget-mb)
       (($# >= 2)) || { usage; exit 2; }
       case "$1" in
         --vm-count) vm_count=$2;; --warmup-rounds) warmup_rounds=$2;; --rounds) rounds=$2;; --record-count) record_count=$2;;
         --operation-count) operation_count=$2;; --threads-per-node) threads_per_node=$2;;
         --round-timeout) round_timeout=$2;; --out-dir) out_dir=$2;; --workloads) workloads=$2;;
         --base-config) base_config=$2;; --shared-numa) shared_numa=$2;;
-        --shared-reserve-mb) shared_reserve_mb=$2;; --shared-size-mb) shared_size_mb=$2;;
+        --shared-size-mb) shared_size_mb=$2;;
         --cache-flush-mb) cache_flush_mb=$2;;
         --replica-budget-mb) replica_budget_mb=$2;;
       esac
@@ -50,7 +49,7 @@ while (($#)); do
     --prepare-only) prepare_only=1; shift;; --help) usage; exit 0;; *) usage; exit 2;;
   esac
 done
-for value in "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$shared_reserve_mb" "$cache_flush_mb"; do [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer required" >&2; exit 2; }; done
+for value in "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$cache_flush_mb"; do [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer required" >&2; exit 2; }; done
 [[ "$warmup_rounds" =~ ^[0-9]+$ ]] || { echo "--warmup-rounds must be a non-negative integer" >&2; exit 2; }
 [[ "$vm_count" =~ ^(1|2|4)$ ]] || { echo "--vm-count must be 1, 2, or 4" >&2; exit 2; }
 [[ -z "$shared_size_mb" || "$shared_size_mb" =~ ^[1-9][0-9]*$ ]] || { echo "--shared-size-mb must be a positive integer" >&2; exit 2; }
@@ -73,13 +72,12 @@ done
 if [[ -z "$out_dir" ]]; then out_dir="exp_data/ycsb_dsidle_$(date -u +%Y%m%dT%H%M%SZ)"; fi
 mkdir -p "$out_dir"/{configs,traces,logs,round_logs}
 experiment_config="$out_dir/configs/experiment_config_ycsb_4vm.jsonc"
-python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" "$no_latency" "$vm_count" "$threads_per_node" "$replica_budget_mb" <<'PY'
+python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" \
+  "$no_latency" "$vm_count" "$threads_per_node" "$replica_budget_mb" <<'PY'
 import json, re, sys
 
 source, output, numa_csv, size_mb, no_latency, vm_count, workers, replica_budget = sys.argv[1:]
-text = open(source).read()
-text = re.sub(r'//[^\n]*', '', text)
-config = json.loads(text)
+config = json.loads(re.sub(r'//[^\n]*', '', open(source).read()))
 config['vm']['count'] = int(vm_count)
 config['e2e']['foreground_worker_count_per_vm'] = int(workers)
 config['dsidle']['fixed_key_size'] = 32
@@ -140,10 +138,19 @@ if (( ! skip_trace_gen )); then
     "$generator" "${generator_args[@]}"
     cp "$out_dir/traces/manifest.txt" "$out_dir/logs/manifest_workload${workload}.txt"
   done
+  if [[ "$vm_count" == 4 && "$threads_per_node" == 4 &&
+        "$record_count" == 100000 && "$operation_count" == 100000 ]]; then
+    "$script_dir/scripts/normalize_ycsb_trace_counts.py" \
+      --trace-root "$out_dir/traces" --workloads "$workloads" \
+      --nodes "$vm_count" --threads-per-node "$threads_per_node" \
+      --record-count "$record_count" --operation-count "$operation_count" \
+      --output "$out_dir/trace_normalization.json"
+  fi
 fi
 trace_manifest="$out_dir/trace_manifest.json"
 python3 - "$out_dir/traces" "$trace_manifest" "$threads_per_node" "$vm_count" \
   "$record_count" "$operation_count" "$value_seed" "$experiment_config" "${requested[@]}" <<'PY'
+import hashlib
 import json
 import sys
 from collections import Counter
@@ -173,6 +180,17 @@ allowed = {
     'workloadd': {'GET', 'PUT'},
     'workloade': {'SCAN', 'PUT'},
 }
+formal_contract = (
+    nodes == 4 and threads == 4 and records == 100000 and operations == 100000
+)
+formal_counts = {
+    'load': Counter(PUT=100000),
+    'workloada': Counter(GET=100000, PUT=50199),
+    'workloadb': Counter(GET=95019, PUT=4981),
+    'workloadc': Counter(GET=100000),
+    'workloadd': Counter(GET=95072, PUT=4928),
+    'workloade': Counter(SCAN=94920, PUT=5080),
+}
 manifest = {
     'nodes': nodes,
     'threads_per_node': threads,
@@ -183,6 +201,7 @@ manifest = {
     'fixed_key_size_bytes': fixed_key_size,
     'fixed_value_size_bytes': fixed_value_size,
     'put_trace_length_ignored': True,
+    'formal_frozen_count_contract': formal_contract,
     'generator': {
         'field_count': 10,
         'field_length': 32,
@@ -217,6 +236,7 @@ for phase in phase_names:
         worker_rows[str(worker)] = {
             'physical_command_count': sum(counts.values()),
             'op_counts': dict(sorted(counts.items())),
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
         }
     unexpected = set(phase_counts) - allowed[phase]
     if unexpected:
@@ -234,12 +254,38 @@ for phase in phase_names:
             )
     elif physical != operations:
         raise SystemExit(f'{phase} trace count mismatch: expected {operations}, got {physical}')
+    if formal_contract and phase_counts != formal_counts[phase]:
+        raise SystemExit(
+            f'{phase}: frozen count contract mismatch: '
+            f'expected {dict(formal_counts[phase])}, got {dict(phase_counts)}'
+        )
     manifest['phases'][phase] = {
         'physical_command_count': physical,
         'op_counts': dict(sorted(phase_counts.items())),
         'request_distribution': 'latest' if phase == 'workloadd' else 'zipfian',
         'update_reads_before_write': phase == 'workloada',
         'workers': worker_rows,
+    }
+manifest['trace_set_sha256'] = hashlib.sha256(
+    ''.join(
+        f'{phase}/worker{worker}.txt:'
+        f'{manifest["phases"][phase]["workers"][str(worker)]["sha256"]}\n'
+        for phase in phase_names
+        for worker in range(expected)
+    ).encode()
+).hexdigest()
+normalization_path = Path(output).with_name('trace_normalization.json')
+if normalization_path.is_file():
+    normalization = json.loads(normalization_path.read_text())
+    if normalization.get('output_trace_set_sha256') != manifest['trace_set_sha256']:
+        raise SystemExit('trace normalization output hash does not match trace set')
+    manifest['normalization'] = {
+        'path': str(normalization_path),
+        'sha256': hashlib.sha256(normalization_path.read_bytes()).hexdigest(),
+        'algorithm': normalization.get('algorithm'),
+        'input_trace_set_sha256': normalization.get('input_trace_set_sha256'),
+        'output_trace_set_sha256': normalization.get('output_trace_set_sha256'),
+        'phases': normalization.get('phases'),
     }
 Path(output).write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
 PY
@@ -254,7 +300,7 @@ for phase in ['load'] + [f'workload{item}' for item in workloads]:
     phase_config['dsidle']['trace_dir'] = str(Path(trace_root) / phase)
     (Path(config_dir) / f'experiment_config_ycsb_{phase}.jsonc').write_text(json.dumps(phase_config, separators=(',', ':')) + '\n')
 PY
-printf -v reproduce_command '%q ' "$0" --warmup-rounds "$warmup_rounds" --rounds "$rounds" --record-count "$record_count" --operation-count "$operation_count" --threads-per-node "$threads_per_node" --round-timeout "$round_timeout" --out-dir "$out_dir" --workloads "$workloads" --base-config "$base_config" --shared-reserve-mb "$shared_reserve_mb" --cache-flush-mb "$cache_flush_mb"
+printf -v reproduce_command '%q ' "$0" --warmup-rounds "$warmup_rounds" --rounds "$rounds" --record-count "$record_count" --operation-count "$operation_count" --threads-per-node "$threads_per_node" --round-timeout "$round_timeout" --out-dir "$out_dir" --workloads "$workloads" --base-config "$base_config" --cache-flush-mb "$cache_flush_mb"
 printf -v reproduce_command '%s--vm-count %q ' "$reproduce_command" "$vm_count"
 [[ -n "$replica_budget_mb" ]] && printf -v reproduce_command '%s--replica-budget-mb %q ' "$reproduce_command" "$replica_budget_mb"
 [[ -n "$shared_numa" ]] && printf -v reproduce_command '%s--shared-numa %q ' "$reproduce_command" "$shared_numa"
@@ -265,15 +311,16 @@ printf -v reproduce_command '%s--vm-count %q ' "$reproduce_command" "$vm_count"
 ((skip_trace_gen)) && reproduce_command+='--skip-trace-gen '
 ((skip_standalone_load)) && reproduce_command+='--skip-standalone-load '
 ((prepare_only)) && reproduce_command+='--prepare-only '
-python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_reserve_mb" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" <<'PY'
+python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,reserve,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores)=sys.argv[1:]
+(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores)=sys.argv[1:]
 try: git_sha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 except Exception: git_sha='unknown'
 phase_names=['load'] + [f'workload{item}' for item in workloads.split(',')]
 config_dir=Path(experiment_config).parent
-meta={"warmup_rounds":int(warmup_rounds),"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":int(nodes),"total_trace_workers":int(threads)*int(nodes),"vm_vcpus_per_node":int(vm_cores),"sidle_background_roles_per_node":int(background_roles),"heartbeat_threads_per_node":int(heartbeat_threads),"runnable_threads_per_node":int(runnable_threads_per_vm),"background_epoch_slots_per_node":int(background_epoch_slots),"epoch_slots_per_node":int(epoch_slots_per_vm),"replica_budget_mb":int(replica_budget) if replica_budget else None,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"trace_manifest":trace_manifest,"trace_manifest_sha256":hashlib.sha256(open(trace_manifest,'rb').read()).hexdigest(),"value_seed":int(value_seed),"git_sha":git_sha,"shared_numa":shared_numa.split(',') if shared_numa else None,"shared_reserve_mb":int(reserve),"shared_size_mb":int(size) if size else None,"cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
+final_config=json.load(open(experiment_config))
+meta={"warmup_rounds":int(warmup_rounds),"rounds":int(rounds),"record_count":int(records),"operation_count":int(ops),"threads_per_node":int(threads),"round_timeout_sec":int(timeout),"nodes":int(nodes),"total_trace_workers":int(threads)*int(nodes),"vm_vcpus_per_node":int(vm_cores),"sidle_background_roles_per_node":int(background_roles),"heartbeat_threads_per_node":int(heartbeat_threads),"runnable_threads_per_node":int(runnable_threads_per_vm),"background_epoch_slots_per_node":int(background_epoch_slots),"epoch_slots_per_node":int(epoch_slots_per_vm),"replica_budget_mb":int(replica_budget) if replica_budget else None,"workloads":workloads.split(','),"base_config":base_config,"experiment_config":experiment_config,"experiment_config_sha256":hashlib.sha256(open(experiment_config,'rb').read()).hexdigest(),"phase_configs":{phase:str(config_dir/f'experiment_config_ycsb_{phase}.jsonc') for phase in phase_names},"trace_manifest":trace_manifest,"trace_manifest_sha256":hashlib.sha256(open(trace_manifest,'rb').read()).hexdigest(),"value_seed":int(value_seed),"git_sha":git_sha,"shared_numa":[int(x) for x in final_config["shared_memory"]["numa_node"]],"requested_shared_size_mb":int(size) if size else None,"shared_size_mb":int(final_config["shared_memory"]["size_mb"]),"shared_memory_size_source":"explicit" if size else "base_config","cache_flush_mb":int(flush),"latency_inject_enabled":not bool(int(no_latency)),"skip_build":bool(int(skip_build)),"skip_vm_init":bool(int(skip_vm_init)),"skip_trace_gen":bool(int(skip_trace_gen)),"skip_standalone_load":bool(int(skip_load)),"reproduce_command":reproduce_command.rstrip()}
 open(path,'w').write(json.dumps(meta,indent=2)+"\n")
 PY
 if ((prepare_only)); then echo "DSIDLE_YCSB_PREPARED out_dir=$out_dir"; exit 0; fi
