@@ -23,7 +23,6 @@
 #include "timestamp.hh"
 #include "sidle_frontend.hh"
 #include "dsidle/replica_directory.h"
-#include <immintrin.h>
 #ifdef CAL_NODE_HOTNESS
 #include <unordered_map>
 #include <vector>
@@ -169,6 +168,16 @@ class node_base : public make_nodeversion<P>::type {
     }
     inline void make_layer_root() {
         set_parent(nullptr);
+        // Split children inherit a locked version and are flushed by the
+        // original unlock path. A freshly constructed layer/root is unlocked,
+        // so its complete SWCC body must precede publishing root_bit in HWCC.
+        if (this->control_ref() && !this->locked()) {
+            const size_t bytes = this->isleaf()
+                ? static_cast<const leaf_type*>(this)->allocated_size()
+                : sizeof(internode_type);
+            latency_sim::RecordSwccWrite(this, bytes);
+            dsidle::FlushSwccRange(this, bytes);
+        }
         this->mark_root();
     }
     inline base_type* maybe_parent() const {
@@ -254,13 +263,13 @@ class internode : public node_base<P> {
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
         const auto ref = controls.Reserve(offset.value(), 1);
         internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth, ref);
-        _mm_clflush(n);
-        _mm_sfence();
-        controls.Publish(ref, 0);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
         }
+        latency_sim::RecordSwccWrite(n, sizeof(*n));
+        dsidle::FlushSwccRange(n, sizeof(*n));
+        controls.Publish(ref, 0);
 #ifdef CAL_NODE_HOTNESS
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(n)] = 0;
 #endif
@@ -489,13 +498,13 @@ class leaf : public node_base<P> {
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
         const auto ref = controls.Reserve(offset.value(), 2);
         leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time, ref);
-        _mm_clflush(n);
-        _mm_sfence();
-        controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
         assert(n);
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
         }
+        latency_sim::RecordSwccWrite(n, sz);
+        dsidle::FlushSwccRange(n, sz);
+        controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
 #ifdef CAL_NODE_HOTNESS
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(n)] = 0;
 #endif
