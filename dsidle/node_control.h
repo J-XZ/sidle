@@ -229,6 +229,8 @@ class RootControlAccessor {
     while (true) {
       latency_sim::RecordHwccAtomicLoad(&root_->version);
       const auto first = root_->version.load(std::memory_order_acquire);
+      if (first & 1U)
+        continue;
       const NodeRef ref(root_->root_ref);
       const auto generation = root_->root_generation;
       latency_sim::RecordHwccAtomicLoad(&root_->version);
@@ -239,10 +241,24 @@ class RootControlAccessor {
 
   void publish(NodeRef ref, std::uint64_t generation) const {
     if (!ref) throw std::runtime_error("cannot publish null root NodeRef");
+    latency_sim::RecordHwccAtomicLoad(&root_->version);
+    auto version = root_->version.load(std::memory_order_acquire);
+    while (true) {
+      if (version & 1U) {
+        latency_sim::RecordHwccAtomicLoad(&root_->version);
+        version = root_->version.load(std::memory_order_acquire);
+        continue;
+      }
+      latency_sim::RecordHwccAtomicRmw(&root_->version);
+      if (root_->version.compare_exchange_weak(
+              version, version + 1, std::memory_order_acq_rel,
+              std::memory_order_acquire))
+        break;
+    }
     root_->root_ref = ref.value();
     root_->root_generation = generation;
-    latency_sim::RecordHwccAtomicRmw(&root_->version);
-    root_->version.fetch_add(1, std::memory_order_release);
+    latency_sim::RecordHwccAtomicStore(&root_->version);
+    root_->version.store(version + 2, std::memory_order_release);
   }
 
  private:
