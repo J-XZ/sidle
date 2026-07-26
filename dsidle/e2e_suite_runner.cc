@@ -6,6 +6,7 @@
 #include "query_masstree.hh"
 #include "masstree_get.hh"
 #include "masstree_insert.hh"
+#include "masstree_replica_worker.hh"
 #include "masstree_remove.hh"
 #include "masstree_scan.hh"
 
@@ -86,19 +87,29 @@ uint64_t ReadIndex(const Suite& suite, uint32_t node, uint32_t worker, uint64_t 
       (uint64_t(node) << 32U) ^ (uint64_t(worker + 1) << 16U) ^ seq;
   return SplitMix64(seed) % kRecords;
 }
-uint64_t RunWorkers(Masstree::default_table& table, dsidle::SharedPool& pool, uint32_t vm_count, uint32_t node, uint32_t workers, const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
+uint64_t RunWorkers(Masstree::default_table& table, dsidle::SharedPool& pool,
+                    dsidle::ReplicaDirectory& replicas, uint32_t vm_count,
+                    uint32_t node, uint32_t workers,
+                    const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
   std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr failure; std::mutex failure_mutex;
-  for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { try { dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node); dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas); threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker); counts[worker] = operation(worker, *ti); } catch (...) { std::lock_guard<std::mutex> lock(failure_mutex); if (!failure) failure = std::current_exception(); } });
+  for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { try { dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node); dsidle::ConfigureCurrentReplicaDirectory(replicas); threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker); counts[worker] = operation(worker, *ti); } catch (...) { std::lock_guard<std::mutex> lock(failure_mutex); if (!failure) failure = std::current_exception(); } });
   for (auto& thread : threads) thread.join(); if (failure) std::rethrow_exception(failure);
   uint64_t total = 0; for (const auto count : counts) total += count; return total;
 }
-uint64_t Put(Masstree::default_table& table, dsidle::SharedPool& pool, const Suite& suite, uint32_t node, uint32_t nodes, uint32_t workers, uint64_t generation) {
+uint64_t Put(Masstree::default_table& table, dsidle::SharedPool& pool,
+             dsidle::ReplicaDirectory& replicas, const Suite& suite,
+             uint32_t node, uint32_t nodes, uint32_t workers,
+             uint64_t generation) {
   const uint64_t node_start = StartForPart(kRecords, nodes, node), node_count = CountForPart(kRecords, nodes, node);
-  return RunWorkers(table, pool, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const auto key = Key(suite, node_start + start + i), value = Value(suite, node_start + start + i, generation); latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti); } return count; });
+  return RunWorkers(table, pool, replicas, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const auto key = Key(suite, node_start + start + i), value = Value(suite, node_start + start + i, generation); latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti); } return count; });
 }
-uint64_t ReadAndVerify(Masstree::default_table& table, dsidle::SharedPool& pool, const Suite& suite, uint32_t node, uint32_t nodes, uint32_t workers, uint64_t generation) {
+uint64_t ReadAndVerify(Masstree::default_table& table,
+                       dsidle::SharedPool& pool,
+                       dsidle::ReplicaDirectory& replicas,
+                       const Suite& suite, uint32_t node, uint32_t nodes,
+                       uint32_t workers, uint64_t generation) {
   const uint64_t node_count = CountForPart(kRecords, nodes, node);
-  return RunWorkers(table, pool, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
+  return RunWorkers(table, pool, replicas, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
 }
 }  // namespace
 
@@ -111,6 +122,7 @@ int main(int argc, char** argv) {
     auto pool = dsidle::SharedPool::Attach(cfg.shared_path, cfg.shared_size_mb << 20);
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
+    replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
     latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
     sidle::strategy_manager = sidle::sidle_strategy(
         cfg.replica_budget_mb, cfg.hot_percentage_seed, false);
@@ -121,18 +133,34 @@ int main(int argc, char** argv) {
     if (options.bootstrap) table.initialize(*ti, cfg.hot_percentage_seed);
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     if (!options.bootstrap) table.table().attach();
+    const auto epoch_slots_per_vm =
+        pool.static_layout()->epoch_slot_count / cfg.vm_count;
+    if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
+      Fail("pool epoch slots must reserve four SIDLE replica workers per VM");
+    auto& thresholds = *sidle::strategy_manager.get_threshold_manager();
+    Masstree::replica_workers<Masstree::default_query_table_params>
+        replica_workers(
+            table.table(), pool, replicas, thresholds, cfg.vm_count,
+            options.node, cfg.foreground_worker_count_per_vm,
+            std::chrono::milliseconds(10), std::chrono::milliseconds(1000),
+            std::chrono::milliseconds(1000));
+    replica_workers.Start();
     const auto begin = std::chrono::steady_clock::now();
     uint64_t operations = 0;
-    if (options.phase == "e2e08_fill") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e08_read") operations = ReadAndVerify(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e09_fill") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e09_update") operations = Put(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
-    else if (options.phase == "e2e09_read") operations = ReadAndVerify(table, pool, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
+    if (options.phase == "e2e08_fill") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e08_read") operations = ReadAndVerify(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_fill") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_update") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
+    else if (options.phase == "e2e09_read") operations = ReadAndVerify(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else Fail("unknown suite phase action");
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
+    replica_workers.Stop();
     const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count());
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << operations << " duration_us=" << duration << " trace_first=0 trace_workers=1 batch_ops=0\n";
     latency_sim::PrintAndResetLatencySimulatorStats(std::cout, options.phase.c_str());
+    std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes
+              << " swcc_bytes=" << pool.header()->swcc_bytes
+              << " replica_bytes=" << replicas.LocalBytes() << '\n';
     std::cout << "DSIDLE_E2E_SUITE_VERIFY suite=" << suite.prefix << " phase=" << options.phase << " node=" << options.node << " status=ok\n";
   } catch (const std::exception& error) { std::cerr << "dsidle_e2e_suite_runner: " << error.what() << '\n'; return 1; }
 }
