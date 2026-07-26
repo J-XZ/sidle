@@ -114,6 +114,67 @@ def cpu_numa_node(cpu: int) -> int:
     raise SystemExit(f"cannot determine NUMA node for CPU {cpu}")
 
 
+def host_tuning_specs():
+    yield "nmi_watchdog", Path("/proc/sys/kernel/nmi_watchdog"), "0", {"0"}
+    yield "aslr", Path("/proc/sys/kernel/randomize_va_space"), "0", {"0"}
+    yield "ksm", Path("/sys/kernel/mm/ksm/run"), "0", {"0"}
+    yield "numa_balancing", Path("/proc/sys/kernel/numa_balancing"), "0", {"0"}
+    yield (
+        "transparent_hugepages",
+        Path("/sys/kernel/mm/transparent_hugepage/enabled"),
+        "never",
+        {"never"},
+    )
+    yield (
+        "smt",
+        Path("/sys/devices/system/cpu/smt/control"),
+        "off",
+        {"off", "forceoff", "notsupported"},
+    )
+    yield (
+        "intel_turbo",
+        Path("/sys/devices/system/cpu/intel_pstate/no_turbo"),
+        "1",
+        {"1"},
+    )
+    yield (
+        "amd_boost",
+        Path("/sys/devices/system/cpu/cpufreq/boost"),
+        "0",
+        {"0"},
+    )
+    for governor_path in sorted(
+        Path("/sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_governor")
+    ):
+        match = re.search(r"/cpu(\d+)/", str(governor_path))
+        if match and not cpu_is_online(int(match.group(1))):
+            continue
+        yield "performance_governor", governor_path, "performance", {"performance"}
+
+
+def selected_host_tunable_value(path: Path) -> str:
+    value = path.read_text().strip()
+    selected = re.search(r"\[([^\]]+)\]", value)
+    return selected.group(1) if selected else value
+
+
+def check_host_perf_tuning() -> None:
+    """Report host performance state without mutating it."""
+    for label, path, expected, accepted in host_tuning_specs():
+        if not path.exists():
+            print(
+                f"DSIDLE_HOST_TUNING_CHECK label={label} path={path} "
+                f"expected={expected} actual=unavailable status=unavailable"
+            )
+            continue
+        actual = selected_host_tunable_value(path)
+        status = "ok" if actual in accepted else "mismatch"
+        print(
+            f"DSIDLE_HOST_TUNING_CHECK label={label} path={path} "
+            f"expected={expected} actual={actual} status={status}"
+        )
+
+
 def write_host_tunable(label: str, path: Path, value: str, runner: Runner) -> None:
     if not path.exists():
         print(f"[init_vm] host tuning skip {label}: {path} not found")
@@ -128,20 +189,77 @@ def write_host_tunable(label: str, path: Path, value: str, runner: Runner) -> No
 
 
 def apply_host_perf_tuning(runner: Runner) -> None:
-    print("[init_vm] applying host performance tuning before CPU/NUMA validation")
-    write_host_tunable("NMI watchdog", Path("/proc/sys/kernel/nmi_watchdog"), "0", runner)
-    write_host_tunable("ASLR", Path("/proc/sys/kernel/randomize_va_space"), "0", runner)
-    write_host_tunable("KSM", Path("/sys/kernel/mm/ksm/run"), "0", runner)
-    write_host_tunable("NUMA balancing", Path("/proc/sys/kernel/numa_balancing"), "0", runner)
-    write_host_tunable("transparent hugepages", Path("/sys/kernel/mm/transparent_hugepage/enabled"), "never", runner)
-    write_host_tunable("SMT", Path("/sys/devices/system/cpu/smt/control"), "off", runner)
-    write_host_tunable("Intel turbo", Path("/sys/devices/system/cpu/intel_pstate/no_turbo"), "1", runner)
-    write_host_tunable("AMD boost", Path("/sys/devices/system/cpu/cpufreq/boost"), "0", runner)
-    for governor_path in Path("/sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_governor"):
-        match = re.search(r"/cpu(\d+)/", str(governor_path))
-        if match and not cpu_is_online(int(match.group(1))):
-            continue
-        write_host_tunable("performance governor", governor_path, "performance", runner)
+    print("[init_vm] applying explicitly authorized host performance tuning after preflight")
+    for label, path, expected, _ in host_tuning_specs():
+        write_host_tunable(label, path, expected, runner)
+
+
+def validate_numa_separation(
+    shared_nodes: Sequence[int], vm_nodes: Sequence[int], allow_overlap: bool
+) -> None:
+    overlap = sorted(set(shared_nodes) & set(vm_nodes))
+    if not overlap:
+        return
+    if not allow_overlap:
+        raise SystemExit(
+            "shared_memory.numa_node and vm.numa_node overlap on "
+            f"{overlap}; performance runs require disjoint NUMA nodes "
+            "(use --allow-overlapping-numa only for declared functional runs)"
+        )
+    print(
+        "[init_vm] warning: explicitly allowed shared/VM NUMA overlap "
+        f"{overlap}; this run is functional-only and not comparable",
+        file=sys.stderr,
+    )
+
+
+def validate_host_cpu_topology(
+    shared_nodes: Sequence[int],
+    vm_nodes: Sequence[int],
+    count: int,
+    cores: int,
+    reserved: Sequence[int],
+    ivshmem_cores: Sequence[int],
+    vm_cores: Sequence[int],
+) -> None:
+    online = online_cpus(Path("/sys/devices/system/cpu/online").read_text())
+    role_pairs = []
+    for core in reserved:
+        if core not in online or not cpu_is_online(core):
+            raise SystemExit(f"host_cpu.reserved_cores CPU {core} invalid/offline")
+        role_pairs.append(("reserved", core))
+    for core in ivshmem_cores:
+        if core not in online or not cpu_is_online(core):
+            raise SystemExit(
+                f"host_cpu.ivshmem_server_cores CPU {core} invalid/offline"
+            )
+        if cpu_numa_node(core) not in shared_nodes:
+            raise SystemExit(
+                f"host_cpu.ivshmem_server_cores CPU {core} not on "
+                f"shared_memory.numa_node {list(shared_nodes)}"
+            )
+        role_pairs.append(("ivshmem", core))
+    if len(vm_cores) < count * cores:
+        raise SystemExit("insufficient vm_cores")
+    used = vm_cores[: count * cores]
+    for slot, core in enumerate(used):
+        if core not in online or not cpu_is_online(core):
+            raise SystemExit(f"host_cpu.vm_cores[{slot}]={core} invalid/offline")
+        expected = vm_nodes[(slot // cores) % len(vm_nodes)]
+        actual = cpu_numa_node(core)
+        if actual != expected:
+            raise SystemExit(
+                f"host_cpu.vm_cores[{slot}]={core} is on NUMA {actual}, "
+                f"expected {expected}"
+            )
+        role_pairs.append((f"vm[{slot}]", core))
+    seen = {}
+    for role, core in role_pairs:
+        if core in seen:
+            raise SystemExit(
+                f"host CPU role overlap: {seen[core]} and {role} both use CPU {core}"
+            )
+        seen[core] = role
 
 
 def kill_existing_vms(storage: Path, runner: Runner) -> None:
@@ -590,14 +708,22 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--allow-overlapping-numa", action="store_true",
-                        help="Compatibility flag; NUMA overlap is warned, not hard-failed (cxlkv).")
+                        help="Allow shared/VM NUMA overlap for declared functional-only runs.")
+    parser.add_argument("--apply-host-tuning", action="store_true",
+                        help="Apply host tuning after all non-mutating preflight checks pass.")
     parser.add_argument("--no-host-tuning", action="store_true",
-                        help="Skip host performance tuning (escape hatch; cxlkv always tunes).")
+                        help="Skip even the default read-only host tuning report.")
     parser.add_argument("--skip-guestmount", action="store_true",
                         help="Skip guestmount disk injection (debug only).")
     args = parser.parse_args()
     if not args.dry_run and not args.execute:
         print("refusing VM/backing changes without --execute (use --dry-run)", file=sys.stderr)
+        return 2
+    if args.apply_host_tuning and args.no_host_tuning:
+        print(
+            "--apply-host-tuning and --no-host-tuning are mutually exclusive",
+            file=sys.stderr,
+        )
         return 2
 
     dry = bool(args.dry_run)
@@ -642,52 +768,25 @@ def main() -> int:
     if int(hwcc["size_mb"]) != 1024:
         raise SystemExit("D-SIDLE VM contract requires 1024MiB HWCC")
 
-    if not args.no_host_tuning:
-        apply_host_perf_tuning(runner)
-
     for node in set(shared_nodes + vm_nodes):
         if not Path(f"/sys/devices/system/node/node{node}").is_dir():
             raise SystemExit(f"NUMA node {node} does not exist")
     if not any(Path("/sys/devices/system/node").glob("node[0-9]*")):
         raise SystemExit("host has no NUMA node* entries under /sys/devices/system/node")
-    if set(shared_nodes) & set(vm_nodes):
-        print(
-            "[init_vm] warning: shared_memory.numa_node and vm.numa_node overlap; "
-            "supported for functional/small-host runs, NUMA latency data may be inaccurate",
-            file=sys.stderr,
-        )
-
-    online = online_cpus(Path("/sys/devices/system/cpu/online").read_text())
-    role_pairs = []
-    for core in reserved:
-        if core not in online or not cpu_is_online(core):
-            raise SystemExit(f"host_cpu.reserved_cores CPU {core} invalid/offline")
-        role_pairs.append(("reserved", core))
-    for core in ivshmem_cores:
-        if core not in online or not cpu_is_online(core):
-            raise SystemExit(f"host_cpu.ivshmem_server_cores CPU {core} invalid/offline")
-        if cpu_numa_node(core) not in shared_nodes:
-            raise SystemExit(
-                f"host_cpu.ivshmem_server_cores CPU {core} not on shared_memory.numa_node {shared_nodes}"
-            )
-        role_pairs.append(("ivshmem", core))
-    if len(vm_cores) < count * cores:
-        raise SystemExit("insufficient vm_cores")
-    used = vm_cores[: count * cores]
-    for slot, core in enumerate(used):
-        if core not in online or not cpu_is_online(core):
-            raise SystemExit(f"host_cpu.vm_cores[{slot}]={core} invalid/offline")
-        expected = vm_nodes[(slot // cores) % len(vm_nodes)]
-        if cpu_numa_node(core) != expected:
-            raise SystemExit(
-                f"host_cpu.vm_cores[{slot}]={core} is on NUMA {cpu_numa_node(core)}, expected {expected}"
-            )
-        role_pairs.append((f"vm[{slot}]", core))
-    seen = {}
-    for role, core in role_pairs:
-        if core in seen:
-            raise SystemExit(f"host CPU role overlap: {seen[core]} and {role} both use CPU {core}")
-        seen[core] = role
+    validate_numa_separation(
+        shared_nodes, vm_nodes, args.allow_overlapping_numa
+    )
+    validate_host_cpu_topology(
+        shared_nodes,
+        vm_nodes,
+        count,
+        cores,
+        reserved,
+        ivshmem_cores,
+        vm_cores,
+    )
+    if not args.no_host_tuning:
+        check_host_perf_tuning()
 
     if not dry:
         require_host_mem_for_vms(storage, count, mem_mb)
@@ -702,6 +801,24 @@ def main() -> int:
         if not ssh_pub.strip():
             raise SystemExit("vm.local_ssh_pub_key must be configured before actual VM launch")
 
+    print("DSIDLE_VM_PREFLIGHT_VALIDATED")
+    if args.apply_host_tuning:
+        apply_host_perf_tuning(runner)
+        # SMT/governor changes can alter CPU availability. Revalidate the
+        # configured CPU contract after real tuning and before any VM state is
+        # destroyed or rewritten.
+        if not dry:
+            validate_host_cpu_topology(
+                shared_nodes,
+                vm_nodes,
+                count,
+                cores,
+                reserved,
+                ivshmem_cores,
+                vm_cores,
+            )
+            check_host_perf_tuning()
+
     print(
         f"DSIDLE_VM_PREFLIGHT_OK config={config_path} shared_numa={','.join(map(str, shared_nodes))} "
         f"vm_numa={','.join(map(str, vm_nodes))}"
@@ -711,6 +828,9 @@ def main() -> int:
     setup_shared_memory_tmpfs(shared_dir, size_mb, shared_nodes, runner)
     prepare_plain_ivshmem_file(backing, size_mb, runner)
     # D-SIDLE-specific: write pool metadata into the shared backing before QEMU maps it.
+    # Trigger, promotion, demotion, and cooler use epoch slots.  The fifth
+    # original SIDLE role (adjuster) and the runner heartbeat do not.
+    epoch_slots_per_vm = int(cfg["e2e"]["foreground_worker_count_per_vm"]) + 4
     runner.run(
         [
             str(pool_tool),
@@ -720,7 +840,7 @@ def main() -> int:
             "--node-control-capacity",
             "2097152",
             "--max-threads-per-vm",
-            str(cores),
+            str(epoch_slots_per_vm),
         ]
     )
     if not dry:

@@ -31,6 +31,11 @@ for index in range(int(vm['count'])):
     pidfile = vm_dir / 'qemu.pid'
     port = int(vm['ssh_base_port']) + index
     wanted_cores = set(map(int, vm_cores[index * int(vm['core_count_per_vm']):(index + 1) * int(vm['core_count_per_vm'])]))
+    if len(wanted_cores) != int(vm['core_count_per_vm']):
+        raise SystemExit(
+            f'vm_{index} has {len(wanted_cores)} configured host CPUs, '
+            f'expected {int(vm["core_count_per_vm"])}'
+        )
     if dry:
         print(f'DRY_RUN verify pid={pidfile} qemu_cmdline=ivshmem:{backing} taskset={",".join(map(str, sorted(wanted_cores)))} ssh={ssh_user}@127.0.0.1:{port} device={device_path} driver=ivpci numa_nodes={",".join(map(str, nodes))}')
         continue
@@ -40,9 +45,21 @@ for index in range(int(vm['count'])):
     cmdline = Path(f'/proc/{pid}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
     if 'qemu-system-x86_64' not in cmdline or str(backing) not in cmdline or 'ivshmem-plain' not in cmdline:
         raise SystemExit(f'pid {pid} is not the expected ivshmem QEMU process')
-    actual_cores = os.sched_getaffinity(pid)
-    if not wanted_cores <= actual_cores:
-        raise SystemExit(f'pid {pid} CPU affinity {sorted(actual_cores)} misses configured cores {sorted(wanted_cores)}')
+    checked_threads = 0
+    for task in sorted(Path(f'/proc/{pid}/task').iterdir()):
+        try:
+            actual_cores = os.sched_getaffinity(int(task.name))
+        except ProcessLookupError:
+            continue
+        checked_threads += 1
+        if actual_cores != wanted_cores:
+            raise SystemExit(
+                f'pid {pid} thread {task.name} CPU affinity '
+                f'{sorted(actual_cores)} differs from configured '
+                f'{sorted(wanted_cores)}'
+            )
+    if not checked_threads:
+        raise SystemExit(f'pid {pid} has no live threads to verify CPU affinity')
     ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-p', str(port), f'{ssh_user}@127.0.0.1']
     # Require custom ivpci driver (not uio_pci_generic) and the configured device node.
     subprocess.run(ssh + ['bash', '-lc',
