@@ -744,8 +744,9 @@ int main() {
       dsidle::RootControlAccessor(pool.root_control()).stable().ref;
   auto stale_policy = std::find_if(
       policy_leaves.begin(), policy_leaves.end(),
-      [policy_global_root](const auto* leaf) {
-        return leaf->control_ref() != policy_global_root;
+      [policy_global_root, canonical_leaf](const auto* leaf) {
+        return leaf->control_ref() != policy_global_root &&
+               leaf != canonical_leaf;
       });
   assert(stale_policy != policy_leaves.end());
   auto* stale_policy_leaf = *stale_policy;
@@ -768,7 +769,9 @@ int main() {
   assert(!replicas.HasLocalPlacement(
       stale_policy_ref, stale_policy_generation));
   assert(Masstree::leaf_replica<replica_params>::Promote(
-      *stale_policy_leaf, stale_policy_version, replicas));
+      *static_cast<Masstree::leaf<replica_params>*>(
+          stale_policy_leaf),
+      stale_policy_version, replicas));
   const auto policy_access_sum = [&] {
     std::uint64_t sum = 0;
     for (auto* policy_leaf : policy_leaves)
