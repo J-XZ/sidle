@@ -100,9 +100,14 @@ T* ResolveCanonicalNode(NodeRef ref) {
   if (!ref) return nullptr;
   void* base = SharedPoolBase();
   auto* control = ref.get(base);
-  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished ||
+  const auto state = control
+      ? control->allocation_state.load(std::memory_order_acquire)
+      : NodeAllocationState::kFree;
+  if (!control ||
+      (state != NodeAllocationState::kPublished &&
+       state != NodeAllocationState::kRetiring) ||
       !control->canonical_swcc_offset)
-    throw std::runtime_error("NodeRef does not name a published canonical node");
+    throw std::runtime_error("NodeRef does not name a live canonical node");
   T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
   // NodeControl publishes only the SWCC offset.  Invalidate before the first
   // canonical-body access; in particular, nodeversion::load() must not read a
@@ -146,7 +151,7 @@ class NodeVersionAccessor {
   NodeVersionAccessor(void* pool_base, NodeRef ref) : pool_base_(pool_base), ref_(ref) {}
 
   StableView stable() const {
-    NodeControl* control = Control();
+    NodeControl* control = Control(true);
     latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
     std::uint64_t version = control->version_and_state.load(std::memory_order_acquire);
     while (version & MasstreeNodeVersionBits::dirty_mask)
@@ -155,7 +160,7 @@ class NodeVersionAccessor {
   }
 
   bool try_lock(std::uint64_t* locked_version = nullptr) const {
-    NodeControl* control = Control();
+    NodeControl* control = Control(false);
     latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
     auto expected = control->version_and_state.load(std::memory_order_acquire);
     while (!(expected & (MasstreeNodeVersionBits::lock_bit | MasstreeNodeVersionBits::dirty_mask))) {
@@ -194,11 +199,13 @@ class NodeVersionAccessor {
   }
 
  private:
-  NodeControl* Control() const {
+  NodeControl* Control(bool allow_retiring = false) const {
     auto* control = ref_.get(pool_base_);
     if (!control) throw std::runtime_error("null NodeRef");
-    if (control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished)
-      throw std::runtime_error("NodeRef does not name a published canonical node");
+    const auto state = control->allocation_state.load(std::memory_order_acquire);
+    if (state != NodeAllocationState::kPublished &&
+        !(allow_retiring && state == NodeAllocationState::kRetiring))
+      throw std::runtime_error("NodeRef does not name a lockable canonical node");
     return control;
   }
   void* pool_base_;

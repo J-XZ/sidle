@@ -76,6 +76,15 @@ int main() {
 
   slab.Retire(ref, 7);
   assert(ref.get(pool.base())->retire_epoch == 7);
+  assert(dsidle::ResolveCanonicalNode<std::uint64_t>(ref) == canonical);
+  assert(version.stable().v == split.v);
+  bool retiring_lock_rejected = false;
+  try {
+    (void) version.try_lock();
+  } catch (const std::runtime_error&) {
+    retiring_lock_rejected = true;
+  }
+  assert(retiring_lock_rejected);
   slab.Release(ref);
   slab.Retire(ref2, 7);
   slab.Release(ref2);
