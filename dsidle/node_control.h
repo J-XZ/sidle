@@ -142,6 +142,9 @@ class NodeVersionAccessor {
     while (!(expected & (MasstreeNodeVersionBits::lock_bit | MasstreeNodeVersionBits::dirty_mask))) {
       if (control->version_and_state.compare_exchange_weak(expected, expected | MasstreeNodeVersionBits::lock_bit,
                                                             std::memory_order_acq_rel, std::memory_order_acquire)) {
+        InvalidateSwccRange(
+            static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset,
+            512);
         if (locked_version) *locked_version = expected | MasstreeNodeVersionBits::lock_bit;
         return true;
       }

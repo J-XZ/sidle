@@ -118,9 +118,12 @@ class nodeversion {
             spin_function();
             expected.v_ = load();
         }
-        
+
         masstree_invariant(!(expected.v_ & P::dirty_mask));
         expected.v_ |= P::lock_bit;
+        // The lock lives in HWCC, but the node body is SWCC.  Acquiring the
+        // lock does not make a previously cached body coherent.
+        invalidate_canonical();
         acquire_fence();
         if (expected.v_ != load()) {
             fprintf(stderr, "expected: %u, v_: %u, the address: %p\n", expected.v_, load(), this);
@@ -138,6 +141,7 @@ class nodeversion {
         if (!(expected & P::lock_bit)
             && compare_exchange(expected, expected | P::lock_bit)) {
             masstree_invariant(!(expected & P::dirty_mask));
+            invalidate_canonical();
             acquire_fence();
             masstree_invariant((expected | P::lock_bit) == load());
             return true;
