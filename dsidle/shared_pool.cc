@@ -100,8 +100,11 @@ void SharedPool::ValidateHeader(const PoolHeader& header, std::uint64_t expected
                           header.swcc_offset, header.swcc_bytes};
   ValidateLayout(layout);
   if (header.magic != kPoolMagic || header.abi_version != kPoolAbiVersion ||
-      (expected_bytes && header.total_bytes != expected_bytes) || header.state.load(std::memory_order_acquire) != 1)
-    throw std::runtime_error("incompatible or uninitialized D-SIDLE shared pool");
+      (expected_bytes && header.total_bytes != expected_bytes))
+    throw std::runtime_error("incompatible D-SIDLE shared pool");
+  if (header.state.load(std::memory_order_acquire) !=
+      static_cast<std::uint64_t>(PoolState::kReady))
+    throw std::runtime_error("D-SIDLE shared pool is not READY");
 }
 
 SharedPool SharedPool::Create(const std::string& path, const PoolLayout& layout) {
@@ -138,7 +141,8 @@ SharedPool SharedPool::InitializeExisting(const std::string& path, const PoolLay
   new (static_cast<std::byte*>(base) + sizeof(PoolHeader)) RootControl{};
   new (static_cast<std::byte*>(base) + sizeof(PoolHeader) + sizeof(RootControl)) PoolStaticLayout{};
   std::atomic_thread_fence(std::memory_order_release);
-  header->state.store(1, std::memory_order_release);
+  header->state.store(static_cast<std::uint64_t>(PoolState::kInitializing),
+                      std::memory_order_release);
   if (msync(base, sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout), MS_SYNC) != 0) {
     munmap(base, layout.total_bytes); close(fd); Fail("sync", path);
   }
@@ -163,6 +167,22 @@ SharedPool SharedPool::Attach(const std::string& path, std::uint64_t expected_by
   catch (...) { munmap(base, bytes); close(fd); throw; }
   SetSharedPoolBase(base);
   return SharedPool(fd, base, bytes);
+}
+
+SharedPool SharedPool::Attach(const std::string& path,
+                              const PoolLayout& expected_layout) {
+  ValidateLayout(expected_layout);
+  auto pool = Attach(path, expected_layout.total_bytes);
+  const auto* header = pool.header();
+  if (header->hwcc_offset != expected_layout.hwcc_offset ||
+      header->hwcc_bytes != expected_layout.hwcc_bytes ||
+      header->swcc_offset != expected_layout.swcc_offset ||
+      header->swcc_bytes != expected_layout.swcc_bytes) {
+    pool.Close();
+    throw std::runtime_error(
+        "D-SIDLE shared pool layout differs from configured layout");
+  }
+  return pool;
 }
 
 SharedPool SharedPool::AttachAt(const std::string& path, std::uint64_t expected_bytes,
@@ -201,6 +221,10 @@ void SharedPool::Close() {
 }
 
 void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options) {
+  if (pool.header()->state.load(std::memory_order_acquire) !=
+      static_cast<std::uint64_t>(PoolState::kInitializing))
+    throw std::runtime_error(
+        "D-SIDLE pool metadata requires INITIALIZING state");
   if (!options.vm_count || !options.max_threads_per_vm || !options.node_control_capacity)
     throw std::runtime_error("invalid shared-pool metadata parameters");
   auto* layout = pool.static_layout();
@@ -235,7 +259,9 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     auto* control = reinterpret_cast<NodeControl*>(base + nodes_offset + index * sizeof(NodeControl));
     control->canonical_swcc_offset = index + 1 == options.node_control_capacity ? 0 : nodes_offset + (index + 1) * sizeof(NodeControl);
   }
-  layout->node_free_head.store(nodes_offset, std::memory_order_relaxed);
+  layout->node_free_head.store(
+      TaggedFreeListHead::Encode(nodes_offset, 0),
+      std::memory_order_relaxed);
   layout->shard_controls_offset = shards_offset;
   layout->shard_count = options.vm_count;
   layout->epoch_slots_offset = epochs_offset;
@@ -246,15 +272,57 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     Fail("sync initialized metadata", "shared pool");
 }
 
+void FinalizePoolInitialization(SharedPool& pool) {
+  auto* header = pool.header();
+  if (header->state.load(std::memory_order_acquire) !=
+      static_cast<std::uint64_t>(PoolState::kInitializing))
+    throw std::runtime_error(
+        "D-SIDLE pool finalization requires INITIALIZING state");
+  const auto* layout = pool.static_layout();
+  if (!layout->node_control_offset || !layout->node_control_capacity ||
+      !layout->shard_controls_offset || !layout->shard_count ||
+      !layout->epoch_slots_offset || !layout->epoch_slot_count ||
+      !layout->diagnostic_offset)
+    throw std::runtime_error(
+        "D-SIDLE pool metadata is incomplete at finalization");
+
+  const auto* base = static_cast<const std::byte*>(pool.base());
+  for (std::uint64_t shard = 0; shard < layout->shard_count; ++shard) {
+    for (std::uint32_t index = 0; index < kSwccSizeClassCount; ++index) {
+      const auto* control = reinterpret_cast<const ShardControl*>(
+          base + layout->shard_controls_offset +
+          (shard * kSwccSizeClassCount + index) * sizeof(ShardControl));
+      const auto bump = control->bump.load(std::memory_order_acquire);
+      if (!bump || bump >= control->limit)
+        throw std::runtime_error(
+            "D-SIDLE SWCC allocator classes are incomplete at finalization");
+    }
+  }
+
+  // The earlier metadata sync and this HWCC sync complete before READY is
+  // released. No process can attach and observe a partially initialized
+  // allocator/control layout.
+  if (msync(pool.base(), static_cast<std::size_t>(header->hwcc_bytes),
+            MS_SYNC) != 0)
+    Fail("sync finalized metadata", "shared pool");
+  std::atomic_thread_fence(std::memory_order_release);
+  header->state.store(static_cast<std::uint64_t>(PoolState::kReady),
+                      std::memory_order_release);
+  if (msync(pool.base(), sizeof(PoolHeader), MS_SYNC) != 0)
+    Fail("sync ready state", "shared pool");
+}
+
 NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type) {
   if (!canonical_swcc_offset) throw std::runtime_error("cannot reserve a null canonical node offset");
   auto* metadata = pool_.static_layout();
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
-  while (head) {
-    auto* control = reinterpret_cast<NodeControl*>(static_cast<std::byte*>(pool_.base()) + head);
+  while (const auto offset = TaggedFreeListHead::Offset(head)) {
+    auto* control = reinterpret_cast<NodeControl*>(
+        static_cast<std::byte*>(pool_.base()) + offset);
     const auto next = control->canonical_swcc_offset;
-    if (!metadata->node_free_head.compare_exchange_weak(head, next, std::memory_order_acq_rel,
-                                                         std::memory_order_acquire))
+    if (!metadata->node_free_head.compare_exchange_weak(
+            head, TaggedFreeListHead::Advance(head, next),
+            std::memory_order_acq_rel, std::memory_order_acquire))
       continue;
     control->allocation_state.store(NodeAllocationState::kAllocating, std::memory_order_relaxed);
     control->canonical_swcc_offset = canonical_swcc_offset;
@@ -264,10 +332,35 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint3
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
     control->version_and_state.store(0, std::memory_order_relaxed);
     if (auto* directory = CurrentReplicaDirectoryOrNull())
-      std::free(directory->ResetForReuse(NodeRef(head)));
-    return NodeRef(head);
+      std::free(directory->ResetForReuse(NodeRef(offset)));
+    return NodeRef(offset);
   }
   throw std::runtime_error("D-SIDLE NodeControl slab OOM");
+}
+
+void NodeControlSlab::Cancel(NodeRef ref) {
+  if (!ref) throw std::runtime_error("cannot cancel null NodeControl");
+  auto* metadata = pool_.static_layout();
+  auto* control = ref.get(pool_.base());
+  if (!control ||
+      control->allocation_state.load(std::memory_order_acquire) !=
+          NodeAllocationState::kAllocating)
+    throw std::runtime_error(
+        "NodeControl must be ALLOCATING before cancellation");
+  auto head = metadata->node_free_head.load(std::memory_order_acquire);
+  do {
+    control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
+    control->node_type = 0;
+    control->retire_epoch = 0;
+    control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    control->version_and_state.store(0, std::memory_order_relaxed);
+    control->allocation_state.store(NodeAllocationState::kFree,
+                                    std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+  } while (!metadata->node_free_head.compare_exchange_weak(
+      head, TaggedFreeListHead::Advance(head, ref.value()),
+      std::memory_order_release,
+      std::memory_order_acquire));
 }
 
 void NodeControlSlab::Publish(NodeRef ref, std::uint64_t initial_version) {
@@ -300,14 +393,15 @@ void NodeControlSlab::Release(NodeRef ref) {
     throw std::runtime_error("NodeControl must be RETIRING before release");
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   do {
-    control->canonical_swcc_offset = head;
+    control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
     control->node_type = 0;
     control->retire_epoch = 0;
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
     control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
-  } while (!metadata->node_free_head.compare_exchange_weak(head, ref.value(), std::memory_order_release,
-                                                            std::memory_order_acquire));
+  } while (!metadata->node_free_head.compare_exchange_weak(
+      head, TaggedFreeListHead::Advance(head, ref.value()),
+      std::memory_order_release, std::memory_order_acquire));
 }
 
 SharedEpochTable SharedEpochSlots(SharedPool& pool) {

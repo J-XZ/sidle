@@ -40,9 +40,33 @@ void InitializeClass(SharedPool& pool, std::uint32_t count, std::uint64_t block_
 }
 }  // namespace
 
+std::uint64_t TaggedFreeListHead::Encode(std::uint64_t offset,
+                                         std::uint64_t tag) {
+  if ((offset & (kSmallestSwccBlock - 1)) ||
+      offset >= kMaximumTaggedSwccPoolBytes)
+    throw std::runtime_error("SWCC free-list offset is not tag-encodable");
+  if (tag > kMaximumTag)
+    throw std::runtime_error("SWCC free-list ABA version is out of range");
+  return (tag << kOffsetBits) | (offset >> kOffsetShift);
+}
+
+std::uint64_t TaggedFreeListHead::Advance(std::uint64_t old_word,
+                                          std::uint64_t new_offset) {
+  const auto tag = Tag(old_word);
+  if (tag == kMaximumTag)
+    throw std::runtime_error("SWCC free-list ABA version exhausted");
+  return Encode(new_offset, tag + 1);
+}
+
 void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count, std::uint64_t block_size) {
   if (!count || block_size < sizeof(FreeObjectHeader) || (block_size & (block_size - 1)))
     throw std::runtime_error("invalid shard allocator parameters");
+  if (pool.header()->state.load(std::memory_order_acquire) !=
+      static_cast<std::uint64_t>(PoolState::kInitializing))
+    throw std::runtime_error(
+        "SWCC allocator initialization requires INITIALIZING pool state");
+  if (pool.size() > kMaximumTaggedSwccPoolBytes)
+    throw std::runtime_error("shared pool exceeds tagged SWCC free-list capacity");
   const auto* metadata = pool.static_layout();
   if (metadata->shard_count != count || !metadata->shard_controls_offset)
     throw std::runtime_error("shared-pool shard metadata does not match allocator");
@@ -57,6 +81,12 @@ void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count,
 void FixedBlockShardAllocator::InitializeAll(SharedPool& pool, std::uint32_t count) {
   if (!count || pool.static_layout()->shard_count != count)
     throw std::runtime_error("shared-pool shard metadata does not match allocator");
+  if (pool.header()->state.load(std::memory_order_acquire) !=
+      static_cast<std::uint64_t>(PoolState::kInitializing))
+    throw std::runtime_error(
+        "SWCC allocator initialization requires INITIALIZING pool state");
+  if (pool.size() > kMaximumTaggedSwccPoolBytes)
+    throw std::runtime_error("shared pool exceeds tagged SWCC free-list capacity");
   const auto span = pool.header()->swcc_bytes / kSwccSizeClassCount;
   for (std::uint32_t index = 0; index < kSwccSizeClassCount; ++index) {
     const auto block_size = kSmallestSwccBlock << index;
@@ -86,22 +116,27 @@ void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint6
   latency_sim::RecordSwccWrite(item, sizeof(*item));
   auto old = head.load(std::memory_order_acquire);
   do {
-    item->next_offset = old;
+    item->next_offset = TaggedFreeListHead::Offset(old);
     item->generation = generation;
     FlushSwccLine(item);
     _mm_sfence();
-  } while (!head.compare_exchange_weak(old, offset, std::memory_order_release, std::memory_order_acquire));
+  } while (!head.compare_exchange_weak(
+      old, TaggedFreeListHead::Advance(old, offset),
+      std::memory_order_release, std::memory_order_acquire));
 }
 
 std::uint64_t FixedBlockShardAllocator::Pop(std::atomic<std::uint64_t>& head) {
   auto old = head.load(std::memory_order_acquire);
-  while (old) {
-    auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + old);
+  while (const auto offset = TaggedFreeListHead::Offset(old)) {
+    auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
     latency_sim::RecordSwccRead(item, sizeof(*item));
     FlushSwccLine(item);
     _mm_mfence();
     const auto next = item->next_offset;
-    if (head.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_acquire)) return old;
+    if (head.compare_exchange_weak(
+            old, TaggedFreeListHead::Advance(old, next),
+            std::memory_order_acq_rel, std::memory_order_acquire))
+      return offset;
   }
   return 0;
 }

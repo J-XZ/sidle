@@ -11,6 +11,31 @@ namespace dsidle {
 constexpr std::uint64_t kSmallestSwccBlock = 64;
 constexpr std::uint64_t kLargestSwccBlock = 2ULL << 20;
 constexpr std::uint32_t kSwccSizeClassCount = 16;  // 64B .. 2MiB
+constexpr std::uint64_t kMaximumTaggedSwccPoolBytes = 64ULL << 30;
+
+// A free-list head is an HWCC atomic word. SWCC offsets are 64-byte aligned,
+// so a 64 GiB pool needs only 30 offset bits and leaves 34 bits for an ABA
+// version. Versions never wrap: exhausting one explicitly fails instead of
+// silently making an old compare_exchange value valid again.
+class TaggedFreeListHead {
+ public:
+  static constexpr std::uint32_t kOffsetShift = 6;
+  static constexpr std::uint32_t kOffsetBits = 30;
+  static constexpr std::uint64_t kOffsetMask =
+      (std::uint64_t{1} << kOffsetBits) - 1;
+  static constexpr std::uint64_t kMaximumTag =
+      (std::uint64_t{1} << (64 - kOffsetBits)) - 1;
+
+  static std::uint64_t Encode(std::uint64_t offset, std::uint64_t tag);
+  static constexpr std::uint64_t Offset(std::uint64_t word) {
+    return (word & kOffsetMask) << kOffsetShift;
+  }
+  static constexpr std::uint64_t Tag(std::uint64_t word) {
+    return word >> kOffsetBits;
+  }
+  static std::uint64_t Advance(std::uint64_t old_word,
+                               std::uint64_t new_offset);
+};
 
 // Exactly the reusable 16 bytes prescribed for an SWCC free object.
 struct FreeObjectHeader {

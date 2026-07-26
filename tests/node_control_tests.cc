@@ -36,6 +36,16 @@ int main() {
   assert(root_view.ref == ref && root_view.generation == 1 && root_view.version == 2);
   const auto ref2 = slab.Reserve((2ULL << 20) + 64, 1);
   slab.Publish(ref2, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  const auto cancelled = slab.Reserve((2ULL << 20) + 128, 2);
+  assert(cancelled.get(pool.base())->allocation_state ==
+         dsidle::NodeAllocationState::kAllocating);
+  slab.Cancel(cancelled);
+  assert(cancelled.get(pool.base())->allocation_state ==
+         dsidle::NodeAllocationState::kFree);
+  const auto reused_cancelled = slab.Reserve((2ULL << 20) + 192, 2);
+  assert(reused_cancelled == cancelled);
+  assert(reused_cancelled.get(pool.base())->generation == 2);
+  slab.Cancel(reused_cancelled);
   std::atomic<bool> writers_done{false};
   std::thread writer_a([&] {
     for (int i = 0; i != 10'000; ++i)

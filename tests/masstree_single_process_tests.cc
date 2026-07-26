@@ -76,6 +76,7 @@ int main() {
   auto pool = dsidle::SharedPool::Create(path, {kPoolBytes, 0, 32ULL << 20, 32ULL << 20, 96ULL << 20});
   dsidle::InitializePoolMetadata(pool, {1, 2, 1024});
   dsidle::FixedBlockShardAllocator::InitializeAll(pool, 1);
+  dsidle::FinalizePoolInitialization(pool);
   dsidle::ConfigureCurrentSwccAllocator(pool, 1, 0);
   dsidle::ReplicaDirectory replicas(pool);
   dsidle::ConfigureCurrentReplicaDirectory(replicas);
@@ -86,10 +87,60 @@ int main() {
   ti->rcu_stop();
   assert(dsidle::SharedEpochSlots(pool).MinimumActive() == dsidle::kEpochInactive);
 
+  // Exhaust NodeControls after the SWCC body allocation point. The canonical
+  // allocation guard must return that body when Reserve throws, so the next
+  // successful leaf allocation reuses it without advancing the class bump.
+  using test_leaf_type = Masstree::leaf<Masstree::default_table::parameters_type>;
+  dsidle::NodeControlSlab rollback_controls(pool);
+  std::vector<dsidle::NodeRef> held_controls;
+  while (true) {
+    try {
+      held_controls.push_back(rollback_controls.Reserve(
+          pool.header()->swcc_offset + pool.header()->swcc_bytes - 64, 2));
+    } catch (const std::runtime_error&) {
+      break;
+    }
+  }
+  assert(held_controls.size() == pool.static_layout()->node_control_capacity);
+  const auto constructed_leaf_size =
+      (sizeof(test_leaf_type) + 63) & ~std::size_t(63);
+  const auto leaf_size =
+      (constructed_leaf_size + memdebug_size + 63) & ~std::size_t(63);
+  const auto leaf_block =
+      dsidle::SwccShardAllocator::SizeClassBlockSize(leaf_size);
+  std::uint32_t leaf_class = 0;
+  for (auto size = dsidle::kSmallestSwccBlock; size < leaf_block; size <<= 1)
+    ++leaf_class;
+  auto* leaf_control = reinterpret_cast<dsidle::ShardControl*>(
+      static_cast<std::byte*>(pool.base()) +
+      pool.static_layout()->shard_controls_offset +
+      leaf_class * sizeof(dsidle::ShardControl));
+  const auto bump_before_failure =
+      leaf_control->bump.load(std::memory_order_acquire);
+  bool reserve_failure_observed = false;
+  try {
+    (void) test_leaf_type::make_root(0, nullptr, *ti);
+  } catch (const std::runtime_error&) {
+    reserve_failure_observed = true;
+  }
+  assert(reserve_failure_observed);
+  const auto bump_after_failure =
+      leaf_control->bump.load(std::memory_order_acquire);
+  assert(bump_after_failure == bump_before_failure + leaf_block);
+  rollback_controls.Cancel(held_controls.back());
+  held_controls.pop_back();
+  test_leaf_type* recovered_leaf =
+      test_leaf_type::make_root(0, nullptr, *ti);
+  assert(leaf_control->bump.load(std::memory_order_acquire) ==
+         bump_after_failure);
+  recovered_leaf->deallocate_rcu(*ti);
+  ti->rcu_drain();
+  for (const auto ref : held_controls)
+    rollback_controls.Cancel(ref);
+
   // A detached canonical leaf exercises the same deallocate_rcu path used by
   // structural removal: its control line must remain RETIRING until the
   // thread's epoch drain returns the paired SWCC body to the free path.
-  using test_leaf_type = Masstree::leaf<Masstree::default_table::parameters_type>;
   test_leaf_type* retired_leaf = test_leaf_type::make_root(0, nullptr, *ti);
   const auto retired_ref = retired_leaf->control_ref();
   assert(retired_ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kPublished);

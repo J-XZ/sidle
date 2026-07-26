@@ -32,6 +32,51 @@ namespace Masstree {
 
 template <typename P> class internode_replica;
 
+// Owns an allocated canonical SWCC body until its paired NodeControl has been
+// published. Any exception before Commit returns both resources; an
+// ALLOCATING control is never left stranded.
+template <typename ThreadInfo>
+class canonical_allocation_guard {
+  public:
+    canonical_allocation_guard(ThreadInfo& ti, void* body, size_t size,
+                               memtag tag)
+        : ti_(ti), body_(body), size_(size), tag_(tag) {
+    }
+    canonical_allocation_guard(const canonical_allocation_guard&) = delete;
+    canonical_allocation_guard& operator=(
+        const canonical_allocation_guard&) = delete;
+    ~canonical_allocation_guard() noexcept {
+        if (!body_)
+            return;
+        try {
+            if (control_ref_)
+                controls_->Cancel(control_ref_);
+            ti_.pool_deallocate(body_, size_, tag_);
+        } catch (...) {
+            // Cleanup failure indicates corrupted allocator/control state;
+            // continuing would make the pair mismatch externally visible.
+            std::terminate();
+        }
+    }
+    void pair(dsidle::NodeControlSlab& controls, dsidle::NodeRef ref) {
+        controls_ = &controls;
+        control_ref_ = ref;
+    }
+    void commit() {
+        body_ = nullptr;
+        controls_ = nullptr;
+        control_ref_ = {};
+    }
+
+  private:
+    ThreadInfo& ti_;
+    void* body_;
+    size_t size_;
+    memtag tag_;
+    dsidle::NodeControlSlab* controls_{};
+    dsidle::NodeRef control_ref_{};
+};
+
 // dsidle: 8-byte persistent tree edge.  Conversions only resolve a transient
 // address at the use site; no process virtual address is stored in SWCC.
 template <typename T>
@@ -257,11 +302,14 @@ class internode : public node_base<P> {
         (void) type;
         (void) is_migration;
         void* ptr = ti.pool_allocate(sizeof(internode<P>), memtag_masstree_internode_remote);
+        canonical_allocation_guard<threadinfo> allocation(
+            ti, ptr, sizeof(internode<P>), memtag_masstree_internode_remote);
         auto& pool = dsidle::CurrentSharedPool();
         dsidle::NodeControlSlab controls(pool);
         const dsidle::SwccOffset<std::byte> offset(
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
         const auto ref = controls.Reserve(offset.value(), 1);
+        allocation.pair(controls, ref);
         internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth, ref);
         assert(n);
         if (P::debug_level > 0) {
@@ -270,6 +318,7 @@ class internode : public node_base<P> {
         latency_sim::RecordSwccWrite(n, sizeof(*n));
         dsidle::FlushSwccRange(n, sizeof(*n));
         controls.Publish(ref, 0);
+        allocation.commit();
 #ifdef CAL_NODE_HOTNESS
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(n)] = 0;
 #endif
@@ -515,11 +564,14 @@ class leaf : public node_base<P> {
         (void) type;
         (void) is_migration;
         void* ptr = ti.pool_allocate(sz, memtag_masstree_leaf_remote);
+        canonical_allocation_guard<threadinfo> allocation(
+            ti, ptr, sz, memtag_masstree_leaf_remote);
         auto& pool = dsidle::CurrentSharedPool();
         dsidle::NodeControlSlab controls(pool);
         const dsidle::SwccOffset<std::byte> offset(
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
         const auto ref = controls.Reserve(offset.value(), 2);
+        allocation.pair(controls, ref);
         leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time, ref);
         assert(n);
         if (P::debug_level > 0) {
@@ -528,6 +580,7 @@ class leaf : public node_base<P> {
         latency_sim::RecordSwccWrite(n, sz);
         dsidle::FlushSwccRange(n, sz);
         controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+        allocation.commit();
 #ifdef CAL_NODE_HOTNESS
         node_base<P>::hotness_map_[reinterpret_cast<uint64_t>(n)] = 0;
 #endif

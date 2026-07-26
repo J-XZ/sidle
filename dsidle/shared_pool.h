@@ -11,7 +11,13 @@
 namespace dsidle {
 
 constexpr std::uint64_t kPoolMagic = 0x445349444c455031ULL;  // "DSIDLEP1"
-constexpr std::uint64_t kPoolAbiVersion = 1;
+constexpr std::uint64_t kPoolAbiVersion = 2;
+
+enum class PoolState : std::uint64_t {
+  kEmpty = 0,
+  kInitializing = 1,
+  kReady = 2,
+};
 
 struct PoolLayout {
   std::uint64_t total_bytes{};
@@ -70,6 +76,10 @@ class SharedPool {
   // --init-pool setup. It never resizes the file.
   static SharedPool InitializeExisting(const std::string& path, const PoolLayout& layout);
   static SharedPool Attach(const std::string& path, std::uint64_t expected_bytes);
+  // Prefer this overload when the caller has the experiment configuration:
+  // it compares every layout field exactly, rather than only total size.
+  static SharedPool Attach(const std::string& path,
+                           const PoolLayout& expected_layout);
   // Test/bootstrap-only explicit mapping address.  The requested address must
   // be free; this proves no persistent field depends on a prior VA.
   static SharedPool AttachAt(const std::string& path, std::uint64_t expected_bytes,
@@ -97,6 +107,9 @@ class SharedPool {
 // Initializes all fixed HWCC structures after the backing file was created or
 // prefaulted by the host launcher.  This is intentionally a one-shot command.
 void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options);
+// Publishes READY only after both fixed HWCC metadata and all SWCC allocator
+// size classes have been initialized. Attach rejects every earlier state.
+void FinalizePoolInitialization(SharedPool& pool);
 SharedEpochTable SharedEpochSlots(SharedPool& pool);
 SharedEpochClockView SharedEpochState(SharedPool& pool);
 SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool);

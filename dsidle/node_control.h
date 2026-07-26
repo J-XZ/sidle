@@ -308,6 +308,9 @@ class NodeControlSlab {
   // ALLOCATING until the caller has constructed and flushed the paired SWCC
   // body, so an incomplete NodeRef can never be published into the tree.
   NodeRef Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type);
+  // Cancels a reservation that never became visible and returns its HWCC
+  // control line to the slab. This is distinct from RETIRING/Release.
+  void Cancel(NodeRef ref);
   void Publish(NodeRef ref, std::uint64_t initial_version);
   void Retire(NodeRef ref, std::uint64_t retire_epoch);
   void Release(NodeRef ref);
