@@ -11,7 +11,10 @@
 namespace dsidle {
 
 constexpr std::uint64_t kPoolMagic = 0x445349444c455031ULL;  // "DSIDLEP1"
-constexpr std::uint64_t kPoolAbiVersion = 2;
+// Version 3 assigns NodeControl's former padding to authoritative HWCC
+// parent/phantom metadata. Reject version-2 pools rather than interpreting
+// stale padding as live cross-VM state.
+constexpr std::uint64_t kPoolAbiVersion = 3;
 
 enum class PoolState : std::uint64_t {
   kEmpty = 0,

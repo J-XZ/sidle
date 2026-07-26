@@ -47,6 +47,16 @@ int main() {
     rejected_wrong_layout = true;
   }
   assert(rejected_wrong_layout);
+  const auto current_abi = pool.header()->abi_version;
+  pool.header()->abi_version = current_abi - 1;
+  bool rejected_stale_abi = false;
+  try {
+    auto stale = dsidle::SharedPool::Attach(path, layout);
+  } catch (const std::runtime_error&) {
+    rejected_stale_abi = true;
+  }
+  assert(rejected_stale_abi);
+  pool.header()->abi_version = current_abi;
   const pid_t pid = fork();
   assert(pid >= 0);
   if (pid == 0) {
