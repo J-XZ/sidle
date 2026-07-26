@@ -308,7 +308,8 @@ class internode : public node_base<P> {
         dsidle::NodeControlSlab controls(pool);
         const dsidle::SwccOffset<std::byte> offset(
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
-        const auto ref = controls.Reserve(offset.value(), 1);
+        const auto ref =
+            controls.Reserve(offset.value(), 1, sizeof(internode<P>));
         allocation.pair(controls, ref);
         internode<P>* n = new(ptr) internode<P>(height, node_mem_type_t::remote, depth, ref);
         assert(n);
@@ -570,7 +571,7 @@ class leaf : public node_base<P> {
         dsidle::NodeControlSlab controls(pool);
         const dsidle::SwccOffset<std::byte> offset(
             reinterpret_cast<std::byte*>(ptr) - static_cast<std::byte*>(pool.base()));
-        const auto ref = controls.Reserve(offset.value(), 2);
+        const auto ref = controls.Reserve(offset.value(), 2, sz);
         allocation.pair(controls, ref);
         leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch, node_mem_type_t::remote, depth, access_time, ref);
         assert(n);
@@ -1010,7 +1011,7 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
         node_base<P>* child = nullptr;
         if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull()) {
             const auto ref = in->control_ref();
-            const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+            const auto generation = dsidle::LoadNodeGeneration(ref);
             auto handle = replicas->Acquire(ref, generation, v[sense].version_value());
             if (handle && handle.snapshot().kind == dsidle::ReplicaKind::kInternal) {
                 const auto child_ref = internode_replica<P>::LookupChild(handle.snapshot().local_ptr, ka);

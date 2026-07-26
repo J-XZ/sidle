@@ -151,5 +151,20 @@ int main() {
   dsidle::FreeCurrentSwccToOwner(1, foreign, 129, 23);
   assert(size_classes.HarvestRemote(1, 129) == 1);
   assert(size_classes.Allocate(1, 129) == foreign);
+  latency_sim::Config latency;
+  latency.enabled = true;
+  latency.stats_enabled = true;
+  latency_sim::GlobalLatencySimulator().Configure(latency);
+  {
+    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+    const auto measured = alloc.Allocate(0);
+    alloc.Free(0, measured, 31);
+    assert(alloc.HarvestRemote(0) == 1);
+  }
+  const auto latency_stats =
+      latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+  assert(latency_stats.hwcc_raw_line_accesses > 0);
+  assert(latency_stats.swcc_raw_line_accesses > 0);
+  latency_sim::GlobalLatencySimulator().Configure({});
   pool.Close(); unlink(path);
 }

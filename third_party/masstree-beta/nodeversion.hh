@@ -166,14 +166,15 @@ class nodeversion {
             // dsidle: canonical leaf/internode bodies are bounded by the
             // baseline 512B node envelope; publish their SWCC writes before
             // releasing the matching HWCC version.
-            auto* control = control_ref_.get(dsidle::SharedPoolBase());
             auto* canonical =
                 static_cast<std::byte*>(dsidle::SharedPoolBase()) +
-                control->canonical_swcc_offset;
+                dsidle::LoadCanonicalSwccOffset(control_ref_);
+            const auto canonical_bytes =
+                dsidle::LoadCanonicalNodeBytes(control_ref_);
             latency_sim::RecordSwccWrite(
-                canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+                canonical, canonical_bytes);
             dsidle::FlushSwccRange(
-                canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+                canonical, canonical_bytes);
         }
         release_fence();
         // A competing writer may legally acquire this version immediately
@@ -277,14 +278,15 @@ class nodeversion {
     }
     void invalidate_canonical() const {
         if (!control_ref_) return;
-        const auto* control = control_ref_.get(dsidle::SharedPoolBase());
         const auto* canonical =
             static_cast<const std::byte*>(dsidle::SharedPoolBase()) +
-            control->canonical_swcc_offset;
+            dsidle::LoadCanonicalSwccOffset(control_ref_);
+        const auto canonical_bytes =
+            dsidle::LoadCanonicalNodeBytes(control_ref_);
         dsidle::InvalidateSwccRange(
-            canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+            canonical, canonical_bytes);
         latency_sim::RecordSwccRead(
-            canonical, dsidle::kCanonicalNodeEnvelopeBytes);
+            canonical, canonical_bytes);
     }
     value_type v_{};
     dsidle::NodeRef control_ref_{};

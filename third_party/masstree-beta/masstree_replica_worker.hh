@@ -32,7 +32,7 @@ class replica_executor {
 
   static dsidle::QueuedNodeRef Candidate(const node_base<P>& node) {
     const auto ref = node.control_ref();
-    return {ref, ref ? ref.get(dsidle::SharedPoolBase())->generation : 0};
+    return {ref, ref ? dsidle::LoadNodeGeneration(ref) : 0};
   }
 
   bool Promote(dsidle::QueuedNodeRef candidate, typename P::threadinfo_type& ti) {
@@ -48,7 +48,7 @@ class replica_executor {
       if (version.deleted() || version.locked()) return published;
       const auto ref = node->control_ref();
       if (!ref) return published;
-      const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+      const auto generation = dsidle::LoadNodeGeneration(ref);
       if (directory_.Acquire(ref, generation, version.version_value())) break;
       node_base<P>* parent = node->parent();
       const bool one = node->isleaf()
@@ -71,7 +71,7 @@ class replica_executor {
       const auto version = node->stable();
       if (version.deleted() || version.locked()) break;
       const auto ref = node->control_ref();
-      const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+      const auto generation = dsidle::LoadNodeGeneration(ref);
       auto local = directory_.Acquire(ref, generation, version.version_value());
       if (!local) break;
       local = {};
@@ -120,8 +120,7 @@ class replica_executor {
           dsidle::ResolveCanonicalNode<node_base<P>>(children[index]);
       const auto child_version = child->stable();
       const auto child_ref = child->control_ref();
-      const auto generation =
-          child_ref.get(dsidle::SharedPoolBase())->generation;
+      const auto generation = dsidle::LoadNodeGeneration(child_ref);
       if (directory_.Acquire(
               child_ref, generation, child_version.version_value()))
         return true;
@@ -131,9 +130,9 @@ class replica_executor {
 
   static node_base<P>* Resolve(dsidle::QueuedNodeRef candidate) {
     if (!candidate) return nullptr;
-    auto* control = candidate.ref.get(dsidle::SharedPoolBase());
-    if (!control || control->allocation_state.load(std::memory_order_acquire) != dsidle::NodeAllocationState::kPublished ||
-        control->generation != candidate.generation)
+    if (dsidle::LoadNodeAllocationState(candidate.ref) !=
+            dsidle::NodeAllocationState::kPublished ||
+        dsidle::LoadNodeGeneration(candidate.ref) != candidate.generation)
       return nullptr;
     return dsidle::ResolveCanonicalNode<node_base<P>>(candidate.ref);
   }
@@ -199,7 +198,7 @@ class replica_workers {
       const auto ref = leaf->control_ref();
       const auto version = leaf->stable();
       if (version.deleted() || version.locked()) return;
-      const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+      const auto generation = dsidle::LoadNodeGeneration(ref);
       const auto count = directory_.AccessCount(ref);
       const auto hotness = histogram_->update(static_cast<std::uint16_t>(std::min<std::uint64_t>(count, UINT16_MAX)));
       ++nodes;

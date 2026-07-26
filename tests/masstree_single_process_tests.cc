@@ -156,6 +156,8 @@ int main() {
   const dsidle::NodeVersionAccessor root_version(pool.base(), root_ref);
   const auto root_view = root_version.stable();
   assert(root_view.v & dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(dsidle::LoadCanonicalNodeBytes(root_ref) ==
+         constructed_leaf_size);
   assert(root_view.swcc_off == static_cast<std::uint64_t>(
       reinterpret_cast<std::byte*>(table.table().root()) - static_cast<std::byte*>(pool.base())));
   const auto published_root = dsidle::RootControlAccessor(pool.root_control()).stable();

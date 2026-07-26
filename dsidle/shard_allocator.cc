@@ -101,31 +101,40 @@ void FixedBlockShardAllocator::InitializeAll(SharedPool& pool, std::uint32_t cou
 
 FixedBlockShardAllocator::FixedBlockShardAllocator(SharedPool& pool, std::uint32_t count, std::uint64_t block_size)
     : pool_(pool), shard_count_(count), block_size_(block_size), class_index_(ClassIndex(block_size)) {
+  latency_sim::RecordHwccRead(&pool.static_layout()->shard_count,
+                              sizeof(pool.static_layout()->shard_count));
   if (!count || block_size < sizeof(FreeObjectHeader) || pool.static_layout()->shard_count != count)
     throw std::runtime_error("invalid shard allocator attach");
 }
 
 ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
   if (shard >= shard_count_) throw std::runtime_error("invalid shard index");
+  latency_sim::RecordHwccRead(
+      &pool_.static_layout()->shard_controls_offset,
+      sizeof(pool_.static_layout()->shard_controls_offset));
   return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + pool_.static_layout()->shard_controls_offset +
                                          (static_cast<std::uint64_t>(shard) * kSwccSizeClassCount + class_index_) * sizeof(ShardControl));
 }
 
 void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation) {
   auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
-  latency_sim::RecordSwccWrite(item, sizeof(*item));
+  latency_sim::RecordHwccAtomicLoad(&head);
   auto old = head.load(std::memory_order_acquire);
   do {
     item->next_offset = TaggedFreeListHead::Offset(old);
     item->generation = generation;
+    latency_sim::RecordSwccWrite(item, sizeof(*item));
     FlushSwccLine(item);
+    latency_sim::RecordSwccFlush(item, sizeof(*item));
     _mm_sfence();
+    latency_sim::RecordHwccAtomicRmw(&head);
   } while (!head.compare_exchange_weak(
       old, TaggedFreeListHead::Advance(old, offset),
       std::memory_order_release, std::memory_order_acquire));
 }
 
 std::uint64_t FixedBlockShardAllocator::Pop(std::atomic<std::uint64_t>& head) {
+  latency_sim::RecordHwccAtomicLoad(&head);
   auto old = head.load(std::memory_order_acquire);
   while (const auto offset = TaggedFreeListHead::Offset(old)) {
     auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
@@ -133,6 +142,7 @@ std::uint64_t FixedBlockShardAllocator::Pop(std::atomic<std::uint64_t>& head) {
     FlushSwccLine(item);
     _mm_mfence();
     const auto next = item->next_offset;
+    latency_sim::RecordHwccAtomicRmw(&head);
     if (head.compare_exchange_weak(
             old, TaggedFreeListHead::Advance(old, next),
             std::memory_order_acq_rel, std::memory_order_acquire))
@@ -157,7 +167,9 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
   auto* entry = control(shard);
   HarvestRemote(shard);
   if (const auto reused = Pop(entry->local_free_head)) return SwccOffset<std::byte>(reused);
+  latency_sim::RecordHwccAtomicRmw(&entry->bump);
   const auto offset = entry->bump.fetch_add(block_size_, std::memory_order_acq_rel);
+  latency_sim::RecordHwccRead(&entry->limit, sizeof(entry->limit));
   if (offset + block_size_ > entry->limit)
     throw std::runtime_error("D-SIDLE SWCC shard OOM: block=" + std::to_string(block_size_) +
                              " offset=" + std::to_string(offset) +
@@ -190,6 +202,9 @@ std::uint32_t SwccShardAllocator::OwnerOf(SwccOffset<std::byte> block, std::uint
   if (!block) throw std::runtime_error("cannot determine owner of null SWCC offset");
   const auto class_index = ClassIndex(SizeClassBlockSize(size));
   const auto block_size = kSmallestSwccBlock << class_index;
+  latency_sim::RecordHwccRead(&pool_.header()->swcc_offset,
+                              sizeof(pool_.header()->swcc_offset) +
+                                  sizeof(pool_.header()->swcc_bytes));
   const auto span = pool_.header()->swcc_bytes / kSwccSizeClassCount;
   const auto raw_start = pool_.header()->swcc_offset + static_cast<std::uint64_t>(class_index) * span;
   const auto start = AlignUp(raw_start, block_size);

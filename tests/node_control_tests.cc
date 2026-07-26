@@ -36,9 +36,10 @@ int main() {
   assert(root_view.ref == ref && root_view.generation == 1 && root_view.version == 2);
   const auto ref2 = slab.Reserve((2ULL << 20) + 64, 1);
   slab.Publish(ref2, dsidle::MasstreeNodeVersionBits::isleaf_bit);
-  const auto cancelled = slab.Reserve((2ULL << 20) + 128, 2);
+  const auto cancelled = slab.Reserve((2ULL << 20) + 128, 2, 128);
   assert(cancelled.get(pool.base())->allocation_state ==
          dsidle::NodeAllocationState::kAllocating);
+  assert(dsidle::LoadCanonicalNodeBytes(cancelled) == 128);
   slab.Cancel(cancelled);
   assert(cancelled.get(pool.base())->allocation_state ==
          dsidle::NodeAllocationState::kFree);
@@ -83,6 +84,21 @@ int main() {
   const auto split = version.stable();
   assert(split.v == (dsidle::MasstreeNodeVersionBits::isleaf_bit |
                      dsidle::MasstreeNodeVersionBits::vsplit_lowbit));
+
+  latency_sim::Config latency;
+  latency.enabled = true;
+  latency.stats_enabled = true;
+  latency_sim::GlobalLatencySimulator().Configure(latency);
+  {
+    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+    (void)root.stable();
+    (void)version.stable();
+  }
+  const auto latency_stats =
+      latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+  assert(latency_stats.hwcc_raw_line_accesses > 0);
+  assert(latency_stats.swcc_raw_line_accesses > 0);
+  latency_sim::GlobalLatencySimulator().Configure({});
 
   slab.Retire(ref, 7);
   assert(ref.get(pool.base())->retire_epoch == 7);

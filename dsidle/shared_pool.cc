@@ -312,24 +312,45 @@ void FinalizePoolInitialization(SharedPool& pool) {
     Fail("sync ready state", "shared pool");
 }
 
-NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type) {
+NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset,
+                                std::uint32_t node_type,
+                                std::size_t canonical_bytes) {
   if (!canonical_swcc_offset) throw std::runtime_error("cannot reserve a null canonical node offset");
+  if (!canonical_bytes || canonical_bytes > kCanonicalNodeEnvelopeBytes ||
+      node_type >= (std::uint32_t{1} << kNodeKindBits))
+    throw std::runtime_error("invalid canonical node metadata");
   auto* metadata = pool_.static_layout();
+  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   while (const auto offset = TaggedFreeListHead::Offset(head)) {
     auto* control = reinterpret_cast<NodeControl*>(
         static_cast<std::byte*>(pool_.base()) + offset);
+    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
+                                sizeof(control->canonical_swcc_offset));
     const auto next = control->canonical_swcc_offset;
+    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
     if (!metadata->node_free_head.compare_exchange_weak(
             head, TaggedFreeListHead::Advance(head, next),
             std::memory_order_acq_rel, std::memory_order_acquire))
       continue;
+    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
     control->allocation_state.store(NodeAllocationState::kAllocating, std::memory_order_relaxed);
+    latency_sim::RecordHwccRead(&control->generation,
+                                sizeof(control->generation));
     control->canonical_swcc_offset = canonical_swcc_offset;
     ++control->generation;
     control->retire_epoch = 0;
-    control->node_type = node_type;
+    control->node_type =
+        (static_cast<std::uint32_t>(canonical_bytes) << kNodeKindBits) |
+        node_type;
+    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
+                                 sizeof(control->canonical_swcc_offset) +
+                                     sizeof(control->generation) +
+                                     sizeof(control->retire_epoch) +
+                                     sizeof(control->node_type));
+    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
     control->version_and_state.store(0, std::memory_order_relaxed);
     if (auto* directory = CurrentReplicaDirectoryOrNull())
       std::free(directory->ResetForReuse(NodeRef(offset)));
@@ -342,21 +363,33 @@ void NodeControlSlab::Cancel(NodeRef ref) {
   if (!ref) throw std::runtime_error("cannot cancel null NodeControl");
   auto* metadata = pool_.static_layout();
   auto* control = ref.get(pool_.base());
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   if (!control ||
       control->allocation_state.load(std::memory_order_acquire) !=
           NodeAllocationState::kAllocating)
     throw std::runtime_error(
         "NodeControl must be ALLOCATING before cancellation");
+  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   do {
     control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
     control->node_type = 0;
     control->retire_epoch = 0;
+    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
+                                 sizeof(control->canonical_swcc_offset));
+    latency_sim::RecordHwccWrite(&control->retire_epoch,
+                                 sizeof(control->retire_epoch) +
+                                     sizeof(control->node_type));
+    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
     control->version_and_state.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
     control->allocation_state.store(NodeAllocationState::kFree,
                                     std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
+    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
   } while (!metadata->node_free_head.compare_exchange_weak(
       head, TaggedFreeListHead::Advance(head, ref.value()),
       std::memory_order_release,
@@ -366,21 +399,30 @@ void NodeControlSlab::Cancel(NodeRef ref) {
 void NodeControlSlab::Publish(NodeRef ref, std::uint64_t initial_version) {
   if (!ref) throw std::runtime_error("cannot publish null NodeControl");
   auto* control = ref.get(pool_.base());
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kAllocating)
     throw std::runtime_error("NodeControl must be ALLOCATING before publish");
   // The caller has initialized and flushed the canonical SWCC object before
   // this release store makes its control line readable by other VMs.
   std::atomic_thread_fence(std::memory_order_release);
+  latency_sim::RecordHwccAtomicStore(&control->version_and_state);
   control->version_and_state.store(initial_version, std::memory_order_release);
+  latency_sim::RecordHwccAtomicStore(&control->allocation_state);
   control->allocation_state.store(NodeAllocationState::kPublished, std::memory_order_release);
 }
 
 void NodeControlSlab::Retire(NodeRef ref, std::uint64_t retire_epoch) {
   if (!ref) throw std::runtime_error("cannot retire null NodeControl");
   auto* control = ref.get(pool_.base());
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished)
     throw std::runtime_error("NodeControl must be PUBLISHED before retire");
   control->retire_epoch = retire_epoch;
+  latency_sim::RecordHwccWrite(&control->retire_epoch,
+                               sizeof(control->retire_epoch));
+  latency_sim::RecordHwccAtomicStore(&control->allocation_state);
   control->allocation_state.store(NodeAllocationState::kRetiring, std::memory_order_release);
   std::atomic_thread_fence(std::memory_order_release);
 }
@@ -389,16 +431,27 @@ void NodeControlSlab::Release(NodeRef ref) {
   if (!ref) throw std::runtime_error("cannot release null NodeControl");
   auto* metadata = pool_.static_layout();
   auto* control = ref.get(pool_.base());
+  if (control)
+    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kRetiring)
     throw std::runtime_error("NodeControl must be RETIRING before release");
+  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
   auto head = metadata->node_free_head.load(std::memory_order_acquire);
   do {
     control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
     control->node_type = 0;
     control->retire_epoch = 0;
+    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
+                                 sizeof(control->canonical_swcc_offset));
+    latency_sim::RecordHwccWrite(&control->retire_epoch,
+                                 sizeof(control->retire_epoch) +
+                                     sizeof(control->node_type));
+    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
     control->leaf_link_lock.store(0, std::memory_order_relaxed);
+    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
     control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
+    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
   } while (!metadata->node_free_head.compare_exchange_weak(
       head, TaggedFreeListHead::Advance(head, ref.value()),
       std::memory_order_release, std::memory_order_acquire));
@@ -406,6 +459,10 @@ void NodeControlSlab::Release(NodeRef ref) {
 
 SharedEpochTable SharedEpochSlots(SharedPool& pool) {
   const auto* layout = pool.static_layout();
+  latency_sim::RecordHwccRead(
+      &layout->shard_count,
+      sizeof(layout->shard_count) + sizeof(layout->epoch_slots_offset) +
+          sizeof(layout->epoch_slot_count));
   if (!layout->epoch_slots_offset || !layout->shard_count || !layout->epoch_slot_count ||
       layout->epoch_slot_count % layout->shard_count)
     throw std::runtime_error("D-SIDLE epoch slots are not initialized");
@@ -416,6 +473,8 @@ SharedEpochTable SharedEpochSlots(SharedPool& pool) {
 
 SharedEpochClockView SharedEpochState(SharedPool& pool) {
   const auto* layout = pool.static_layout();
+  latency_sim::RecordHwccRead(&layout->diagnostic_offset,
+                              sizeof(layout->diagnostic_offset));
   if (!layout->diagnostic_offset)
     throw std::runtime_error("D-SIDLE epoch clock is not initialized");
   return SharedEpochClockView(reinterpret_cast<SharedEpochClock*>(
@@ -423,6 +482,9 @@ SharedEpochClockView SharedEpochState(SharedPool& pool) {
 }
 
 SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool) {
+  latency_sim::RecordHwccRead(
+      &pool.static_layout()->diagnostic_offset,
+      sizeof(pool.static_layout()->diagnostic_offset));
   return SharedPhaseBarrierView(reinterpret_cast<SharedPhaseBarrier*>(
       static_cast<std::byte*>(pool.base()) + pool.static_layout()->diagnostic_offset + sizeof(SharedEpochClock)));
 }

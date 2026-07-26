@@ -117,7 +117,7 @@ class leaf_replica {
   static bool Promote(const leaf_type& source, typename leaf_type::nodeversion_type version,
                       dsidle::ReplicaDirectory& directory, bool budgeted = true) {
     const auto ref = source.control_ref();
-    const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+    const auto generation = dsidle::LoadNodeGeneration(ref);
     // A leaf's permutation and values are changed by foreground writers.  An
     // optimistic version check after Create() is too late: a writer can
     // change a value length between Create's sizing and copying passes.  Do

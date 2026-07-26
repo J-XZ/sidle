@@ -28,7 +28,7 @@ class root_replica_pin {
     if (!root.ref) return false;
     auto* node = dsidle::ResolveCanonicalNode<node_base<P>>(root.ref);
     const auto version = node->stable();
-    const auto generation = root.ref.get(pool_.base())->generation;
+    const auto generation = dsidle::LoadNodeGeneration(root.ref);
     auto existing = directory_.Acquire(root.ref, generation, version.version_value());
     if (root.version == root_version_ && root.ref == ref_ && existing) return true;
     existing = {};

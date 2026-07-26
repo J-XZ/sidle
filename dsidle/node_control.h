@@ -45,6 +45,7 @@ template <typename T> using HwccOffset = BasicOffset<T, HwccRegion>;
 
 enum class NodeAllocationState : std::uint32_t { kFree, kAllocating, kPublished, kRetiring };
 inline constexpr std::size_t kCanonicalNodeEnvelopeBytes = 512;
+inline constexpr std::uint32_t kNodeKindBits = 8;
 
 // dsidle: This is the sole cross-VM control cache line for a canonical node.
 struct alignas(64) NodeControl {
@@ -88,6 +89,17 @@ inline std::uint64_t LoadCanonicalSwccOffset(NodeRef ref) {
   return control->canonical_swcc_offset;
 }
 
+inline std::size_t LoadCanonicalNodeBytes(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null canonical NodeRef");
+  latency_sim::RecordHwccRead(&control->node_type,
+                              sizeof(control->node_type));
+  const auto bytes = control->node_type >> kNodeKindBits;
+  // Pools written before exact-size accounting stored only the kind.
+  return bytes ? bytes : kCanonicalNodeEnvelopeBytes;
+}
+
 inline bool TryLockLeafLink(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
@@ -129,15 +141,14 @@ T* ResolveCanonicalNode(NodeRef ref) {
   auto* control = ref.get(base);
   const auto state = control ? LoadNodeAllocationState(ref)
                              : NodeAllocationState::kFree;
-  if (control)
-    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
-                                sizeof(control->canonical_swcc_offset));
+  const auto canonical_offset =
+      control ? LoadCanonicalSwccOffset(ref) : 0;
   if (!control ||
       (state != NodeAllocationState::kPublished &&
        state != NodeAllocationState::kRetiring) ||
-      !control->canonical_swcc_offset)
+      !canonical_offset)
     throw std::runtime_error("NodeRef does not name a live canonical node");
-  T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
+  T* canonical = SwccOffset<T>(canonical_offset).get(base);
   // NodeControl publishes only the SWCC offset. Invalidate the first line
   // before reading the embedded control_ref_; nodeversion::stable() then
   // invalidates and charges the complete node envelope before traversal.
@@ -192,26 +203,28 @@ class NodeVersionAccessor {
                                     sizeof(control->generation));
     auto* canonical =
         static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset;
-    InvalidateSwccRange(canonical, kCanonicalNodeEnvelopeBytes);
-    latency_sim::RecordSwccRead(canonical,
-                                kCanonicalNodeEnvelopeBytes);
+    const auto canonical_bytes = LoadCanonicalNodeBytes(ref_);
+    InvalidateSwccRange(canonical, canonical_bytes);
+    latency_sim::RecordSwccRead(canonical, canonical_bytes);
     return {version, control->generation, control->canonical_swcc_offset};
   }
 
   bool try_lock(std::uint64_t* locked_version = nullptr) const {
     NodeControl* control = Control(false);
-    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
+    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
     auto expected = control->version_and_state.load(std::memory_order_acquire);
     while (!(expected & (MasstreeNodeVersionBits::lock_bit | MasstreeNodeVersionBits::dirty_mask))) {
+      latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
       if (control->version_and_state.compare_exchange_weak(expected, expected | MasstreeNodeVersionBits::lock_bit,
                                                             std::memory_order_acq_rel, std::memory_order_acquire)) {
+        const auto canonical_offset = LoadCanonicalSwccOffset(ref_);
+        const auto canonical_bytes = LoadCanonicalNodeBytes(ref_);
         InvalidateSwccRange(
-            static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset,
-            kCanonicalNodeEnvelopeBytes);
+            static_cast<std::byte*>(pool_base_) + canonical_offset,
+            canonical_bytes);
         latency_sim::RecordSwccRead(
-            static_cast<std::byte*>(pool_base_) +
-                control->canonical_swcc_offset,
-            kCanonicalNodeEnvelopeBytes);
+            static_cast<std::byte*>(pool_base_) + canonical_offset,
+            canonical_bytes);
         if (locked_version) *locked_version = expected | MasstreeNodeVersionBits::lock_bit;
         return true;
       }
@@ -330,7 +343,8 @@ class NodeControlSlab {
   // Reserve only claims an HWCC control line.  It intentionally remains
   // ALLOCATING until the caller has constructed and flushed the paired SWCC
   // body, so an incomplete NodeRef can never be published into the tree.
-  NodeRef Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type);
+  NodeRef Reserve(std::uint64_t canonical_swcc_offset, std::uint32_t node_type,
+                  std::size_t canonical_bytes = kCanonicalNodeEnvelopeBytes);
   // Cancels a reservation that never became visible and returns its HWCC
   // control line to the slab. This is distinct from RETIRING/Release.
   void Cancel(NodeRef ref);

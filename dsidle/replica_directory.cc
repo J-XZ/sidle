@@ -203,9 +203,8 @@ void* ReplicaDirectory::InvalidateOlderLocked(
     return nullptr;
   }
   auto* control = ref.get(SharedPoolBase());
-  const auto state = control
-      ? control->allocation_state.load(std::memory_order_acquire)
-      : NodeAllocationState::kFree;
+  const auto state = control ? LoadNodeAllocationState(ref)
+                             : NodeAllocationState::kFree;
   if (control)
     latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
   const auto canonical_version = control
@@ -214,7 +213,7 @@ void* ReplicaDirectory::InvalidateOlderLocked(
   if (!control ||
       (state != NodeAllocationState::kPublished &&
        state != NodeAllocationState::kRetiring) ||
-      control->generation != generation ||
+      LoadNodeGeneration(ref) != generation ||
       canonical_version != cached_version) {
     slot->seq.store(sequence + 2, std::memory_order_release);
     return nullptr;

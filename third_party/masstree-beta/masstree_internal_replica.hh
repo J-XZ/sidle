@@ -49,7 +49,7 @@ class internode_replica {
   static bool Promote(const node_type& source, typename node_type::nodeversion_type version,
                       dsidle::ReplicaDirectory& directory, bool budgeted = true) {
     const auto ref = source.control_ref();
-    const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
+    const auto generation = dsidle::LoadNodeGeneration(ref);
     void* buffer = Create(source);
     if (source.has_changed(version)) { std::free(buffer); return false; }
     const auto bytes = static_cast<const header*>(buffer)->bytes;
