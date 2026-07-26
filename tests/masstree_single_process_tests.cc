@@ -192,7 +192,7 @@ int main() {
   assert(replicas.InternalHits() > 0);
   std::free(replicas.Invalidate(canonical_root->control_ref()));
   Masstree::root_replica_pin<replica_params> root_pin(pool, replicas);
-  assert(root_pin.Refresh());
+  assert(root_pin.Refresh(*ti));
   assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
 
   // Encode a stable canonical leaf into local DRAM and read its copied row
@@ -233,11 +233,11 @@ int main() {
   // publishes/evicts local buffers and leaves the canonical node untouched.
   Masstree::replica_executor<replica_params> replica_executor(replicas);
   std::free(replicas.Invalidate(canonical_leaf->control_ref()));
-  assert(replica_executor.Promote({canonical_leaf->control_ref(), promote_generation}));
+  assert(replica_executor.Promote({canonical_leaf->control_ref(), promote_generation}, *ti));
   assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                           promote_version.version_value()));
-  assert(!replica_executor.Promote({canonical_leaf->control_ref(), promote_generation + 1}));
-  assert(replica_executor.Demote({canonical_leaf->control_ref(), promote_generation}));
+  assert(!replica_executor.Promote({canonical_leaf->control_ref(), promote_generation + 1}, *ti));
+  assert(replica_executor.Demote({canonical_leaf->control_ref(), promote_generation}, *ti));
   assert(!replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                            promote_version.version_value()));
   sidle::sidle_threshold worker_thresholds(1024, 80, false);
@@ -248,7 +248,7 @@ int main() {
       std::chrono::milliseconds(1), std::chrono::milliseconds(1), std::chrono::milliseconds(1));
   for (unsigned i = 0; i != 256; ++i) replicas.RecordAccess(canonical_leaf->control_ref());
   workers.TriggerOnce(*ti);
-  workers.ExecuteOnce(sidle::task_type::promotion);
+  workers.ExecuteOnce(sidle::task_type::promotion, *ti);
   assert(replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
                           promote_version.version_value()));
   workers.CoolOnce(*ti);
@@ -505,7 +505,7 @@ int main() {
     assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, inserted, *ti));
     assert(inserted.len == value.size() && std::memcmp(inserted.s, value.data(), inserted.len) == 0);
   }
-  assert(root_pin.Refresh());
+  assert(root_pin.Refresh(*ti));
   assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
 
   int scan_started[2];

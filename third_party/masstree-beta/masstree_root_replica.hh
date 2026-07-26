@@ -22,7 +22,8 @@ class root_replica_pin {
     if (ref_) std::free(directory_.Invalidate(ref_));
   }
 
-  bool Refresh() {
+  bool Refresh(typename P::threadinfo_type& ti) {
+    typename P::threadinfo_type::rcu_scope rcu(ti);
     const auto root = dsidle::RootControlAccessor(pool_.root_control()).stable();
     if (!root.ref) return false;
     auto* node = dsidle::ResolveCanonicalNode<node_base<P>>(root.ref);

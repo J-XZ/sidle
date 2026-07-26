@@ -32,7 +32,8 @@ class replica_executor {
     return {ref, ref ? ref.get(dsidle::SharedPoolBase())->generation : 0};
   }
 
-  bool Promote(dsidle::QueuedNodeRef candidate) {
+  bool Promote(dsidle::QueuedNodeRef candidate, typename P::threadinfo_type& ti) {
+    typename P::threadinfo_type::rcu_scope rcu(ti);
     node_base<P>* node = Resolve(candidate);
     if (!node) return false;
     bool published = false;
@@ -60,15 +61,19 @@ class replica_executor {
     return published;
   }
 
-  bool Demote(dsidle::QueuedNodeRef candidate) {
+  bool Demote(dsidle::QueuedNodeRef candidate, typename P::threadinfo_type& ti) {
+    typename P::threadinfo_type::rcu_scope rcu(ti);
     node_base<P>* node = Resolve(candidate);
     if (!node || node->is_root()) return false;  // root is pinned per VM.
     std::free(directory_.Invalidate(node->control_ref()));
     return true;
   }
 
-  bool ExecuteOne(sidle::task_type type, dsidle::QueuedNodeRef candidate) {
-    return type == sidle::task_type::promotion ? Promote(candidate) : Demote(candidate);
+  bool ExecuteOne(sidle::task_type type, dsidle::QueuedNodeRef candidate,
+                  typename P::threadinfo_type& ti) {
+    return type == sidle::task_type::promotion
+        ? Promote(candidate, ti)
+        : Demote(candidate, ti);
   }
 
  private:
@@ -150,14 +155,14 @@ class replica_workers {
     ti.rcu_stop();
     histogram_->refresh(nodes, accesses);
     histogram_->adjust_threshold();
-    root_pin_.Refresh();
+    root_pin_.Refresh(ti);
   }
 
-  void ExecuteOnce(sidle::task_type type) {
+  void ExecuteOnce(sidle::task_type type, threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     replica_executor<P> executor(directory_);
     dsidle::QueuedNodeRef candidate;
-    while (queue_.get(type, candidate)) executor.ExecuteOne(type, candidate);
+    while (queue_.get(type, candidate)) executor.ExecuteOne(type, candidate, ti);
   }
 
   void CoolOnce(threadinfo& ti) {
@@ -189,8 +194,19 @@ class replica_workers {
 
   void BindCurrentThread() { dsidle::ConfigureCurrentSwccAllocator(pool_, shard_count_, local_shard_); dsidle::ConfigureCurrentReplicaDirectory(directory_); }
   void TriggerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_); while (running_) { TriggerOnce(*ti); std::this_thread::sleep_for(basic_interval_ * 5); } }
-  void ExecutorLoop(sidle::task_type type) { BindCurrentThread(); while (running_) { if (queue_.length(type) > sidle::queue_waiting_threshold) ExecuteOnce(type); std::this_thread::sleep_for(basic_interval_); ExecuteOnce(type); } }
-  void CoolerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_ + 1); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
+  void ExecutorLoop(sidle::task_type type) {
+    BindCurrentThread();
+    const auto slot = background_thread_base_ +
+        (type == sidle::task_type::promotion ? 1 : 2);
+    auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, slot);
+    while (running_) {
+      if (queue_.length(type) > sidle::queue_waiting_threshold)
+        ExecuteOnce(type, *ti);
+      std::this_thread::sleep_for(basic_interval_);
+      ExecuteOnce(type, *ti);
+    }
+  }
+  void CoolerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_ + 3); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
   void AdjusterLoop() { BindCurrentThread(); while (running_) { std::this_thread::sleep_for(adjuster_interval_); const auto budget = directory_.BudgetBytes(); if (budget == UINT64_MAX) continue; const double ratio = static_cast<double>(directory_.LocalBytes()) / budget; if (thresholds_.check_memory_usage(ratio) == sidle::mem_usage_status::tight) { thresholds_.adjust_local_allocation_threshold(true); thresholds_.adjust_demotion_depth_threshold(true); } } }
 
   table_type& table_;

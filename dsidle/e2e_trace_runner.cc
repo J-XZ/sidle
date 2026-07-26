@@ -138,8 +138,8 @@ int main(int argc, char** argv) {
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     if (!options.bootstrap) table.table().attach();
     const auto epoch_slots_per_vm = pool.static_layout()->epoch_slot_count / cfg.vm_count;
-    if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 2)
-      Fail("pool epoch slots must reserve two SIDLE replica workers per VM");
+    if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
+      Fail("pool epoch slots must reserve four SIDLE replica workers per VM");
     sidle::sidle_threshold thresholds;
     Masstree::replica_workers<Masstree::default_query_table_params> replica_workers(
         table.table(), pool, replicas, thresholds, cfg.vm_count, options.node,
