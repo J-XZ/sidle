@@ -62,8 +62,6 @@ class sidle_threshold {
 
   uint8_t get_masstree_local_allocation_threshold(uint64_t max_local_node_count) {
     using p = Masstree::migrationparams;
-    printf("[DEBUG] [Masstree] max local node count: %lu, leaf width: %d\n",
-          max_local_node_count, p::leaf_width);
     double layer_lower_bound = log2(max_local_node_count) / log2(p::leaf_width);
     double layer_upper_bound = log2((max_local_node_count + 1) / 2) / log2(p::leaf_width / 2) + 1;
     uint8_t local_allocation_layer_threshold = (layer_lower_bound + layer_upper_bound) / 2;

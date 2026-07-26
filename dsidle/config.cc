@@ -185,6 +185,8 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   config.core_count_per_vm = static_cast<std::uint32_t>(Integer(vm, "core_count_per_vm"));
   config.foreground_worker_count_per_vm = static_cast<std::uint32_t>(Integer(e2e, "foreground_worker_count_per_vm"));
   config.replica_budget_mb = Integer(local, "replica_budget_mb");
+  config.hot_percentage_seed =
+      static_cast<std::uint32_t>(Integer(local, "hot_percentage_seed"));
   config.fixed_key_size = static_cast<std::uint32_t>(Integer(local, "fixed_key_size"));
   config.fixed_value_size = static_cast<std::uint32_t>(Integer(local, "fixed_value_size"));
   config.trace_dir = String(local, "trace_dir");
@@ -197,7 +199,9 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   if (!PowerOfTwo(config.shared_size_mb) || config.hwcc.offset_mb != 0 ||
       config.swcc.offset_mb != config.hwcc.size_mb ||
       config.hwcc.size_mb + config.swcc.size_mb != config.shared_size_mb ||
-      !config.vm_count || !config.core_count_per_vm || !config.fixed_key_size || !config.fixed_value_size)
+      !config.vm_count || !config.core_count_per_vm ||
+      config.hot_percentage_seed > 100 ||
+      !config.fixed_key_size || !config.fixed_value_size)
     throw std::runtime_error("invalid D-SIDLE shared-memory layout or topology");
   return config;
 }

@@ -101,9 +101,13 @@ int main(int argc, char** argv) {
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
+    sidle::strategy_manager = sidle::sidle_strategy(
+        cfg.replica_budget_mb, cfg.hot_percentage_seed, false);
+    Masstree::node_base<Masstree::default_query_table_params>::strategy_manager =
+        &sidle::strategy_manager;
     threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
-    if (options.bootstrap) table.initialize(*ti, 80);
+    if (options.bootstrap) table.initialize(*ti, cfg.hot_percentage_seed);
     dsidle::SharedExperimentPhaseBarrier(pool).Wait();
     if (!options.bootstrap) table.table().attach();
     const auto begin = std::chrono::steady_clock::now();

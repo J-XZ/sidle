@@ -129,9 +129,14 @@ int main(int argc, char** argv) {
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
     latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
+    sidle::strategy_manager = sidle::sidle_strategy(
+        cfg.replica_budget_mb, cfg.hot_percentage_seed, false);
+    Masstree::node_base<Masstree::default_query_table_params>::strategy_manager =
+        &sidle::strategy_manager;
     threadinfo* bootstrap_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
-    if (options.bootstrap) table.initialize(*bootstrap_ti, 80);
+    if (options.bootstrap)
+      table.initialize(*bootstrap_ti, cfg.hot_percentage_seed);
     // Node zero publishes the root before entering; every other VM waits
     // before attaching. This is an ivshmem-backed phase barrier, excluded
     // from the workload timer below.
@@ -140,7 +145,7 @@ int main(int argc, char** argv) {
     const auto epoch_slots_per_vm = pool.static_layout()->epoch_slot_count / cfg.vm_count;
     if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
       Fail("pool epoch slots must reserve four SIDLE replica workers per VM");
-    sidle::sidle_threshold thresholds;
+    auto& thresholds = *sidle::strategy_manager.get_threshold_manager();
     Masstree::replica_workers<Masstree::default_query_table_params> replica_workers(
         table.table(), pool, replicas, thresholds, cfg.vm_count, options.node,
         cfg.foreground_worker_count_per_vm, std::chrono::milliseconds(10),

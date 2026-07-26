@@ -24,6 +24,7 @@ struct ExperimentConfig {
   std::uint32_t core_count_per_vm{};
   std::uint32_t foreground_worker_count_per_vm{};
   std::uint64_t replica_budget_mb{};
+  std::uint32_t hot_percentage_seed{};
   std::uint32_t fixed_key_size{};
   std::uint32_t fixed_value_size{};
   std::string trace_dir;

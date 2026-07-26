@@ -12,6 +12,7 @@ int main() {
   assert(config.hwcc.offset_mb == 0 && config.hwcc.size_mb == 1024);
   assert(config.swcc.offset_mb == 1024 && config.swcc.size_mb == 31744);
   assert(config.vm_count == 4 && config.core_count_per_vm == 8);
+  assert(config.hot_percentage_seed == 50);
   assert(config.fixed_key_size == 32 && config.fixed_value_size == 32);
   const char* invalid = "/tmp/dsidle-invalid-config.jsonc";
   std::ofstream output(invalid);
