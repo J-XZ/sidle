@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <stdexcept>
 
@@ -50,21 +51,22 @@ class internode_replica {
                       dsidle::ReplicaDirectory& directory, bool budgeted = true) {
     const auto ref = source.control_ref();
     const auto generation = dsidle::LoadNodeGeneration(ref);
-    void* buffer = Create(source);
-    if (source.has_changed(version)) { std::free(buffer); return false; }
-    const auto bytes = static_cast<const header*>(buffer)->bytes;
+    auto buffer = std::unique_ptr<void, decltype(&std::free)>(
+        Create(source), &std::free);
+    if (source.has_changed(version)) return false;
+    const auto bytes = static_cast<const header*>(buffer.get())->bytes;
     void* old = nullptr;
     const dsidle::ReplicaSnapshot snapshot{
-        buffer, generation, version.version_value(), bytes,
+        buffer.get(), generation, version.version_value(), bytes,
         dsidle::ReplicaKind::kInternal};
     if (budgeted) {
       if (!directory.TryPublish(ref, snapshot, &old)) {
-        std::free(buffer);
         return false;
       }
     } else {
       old = directory.Publish(ref, snapshot);
     }
+    buffer.release();
     std::free(old);
     return true;
   }

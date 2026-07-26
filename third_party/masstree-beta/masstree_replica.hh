@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
 
@@ -150,33 +151,26 @@ class leaf_replica {
     // can immediately own the leaf for the whole snapshot.
     auto& mutable_source = const_cast<leaf_type&>(source);
     if (!mutable_source.try_lock()) return false;
+    auto unlock = std::unique_ptr<leaf_type, void (*)(leaf_type*)>(
+        &mutable_source,
+        [](leaf_type* leaf) { leaf->unlock_readonly_snapshot(); });
     const auto locked_version = mutable_source;
     const auto published_version = locked_version.unlocked_version_value();
-    if (published_version != version.unlocked_version_value()) {
-      mutable_source.unlock_readonly_snapshot();
-      return false;
-    }
-    void* buffer = nullptr;
-    try {
-      buffer = Create(source, source.permutation());
-    } catch (...) {
-      mutable_source.unlock_readonly_snapshot();
-      throw;
-    }
+    if (published_version != version.unlocked_version_value()) return false;
+    auto buffer = std::unique_ptr<void, decltype(&std::free)>(
+        Create(source, source.permutation()), &std::free);
     bool has_layer = false;
     const auto permutation = source.permutation();
     for (int index = 0; index < permutation.size(); ++index)
       has_layer = has_layer || source.is_layer(permutation[index]);
-    const auto bytes = static_cast<const header*>(buffer)->bytes;
+    const auto bytes = static_cast<const header*>(buffer.get())->bytes;
     void* old = nullptr;
     const dsidle::ReplicaSnapshot snapshot{
-        buffer, generation, published_version, bytes,
+        buffer.get(), generation, published_version, bytes,
         has_layer ? dsidle::ReplicaKind::kLayerLeaf
                   : dsidle::ReplicaKind::kValueLeaf};
     if (budgeted) {
       if (!directory.TryPublish(ref, snapshot, &old)) {
-        std::free(buffer);
-        mutable_source.unlock_readonly_snapshot();
         return false;
       }
     } else {
@@ -185,7 +179,8 @@ class leaf_replica {
     // Publishing before unlock is safe: readers cannot acquire this replica
     // while the canonical version is locked, and unlock releases exactly the
     // version recorded above.
-    mutable_source.unlock_readonly_snapshot();
+    buffer.release();
+    unlock.reset();
     std::free(old);
     return true;
   }
