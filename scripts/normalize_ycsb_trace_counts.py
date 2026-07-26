@@ -76,6 +76,8 @@ def commands(paths, lines):
     result = []
     for path in paths:
         for index, line in enumerate(lines[path]):
+            if line is None:
+                continue
             parsed = parse_command(line)
             if parsed:
                 result.append((path, index, parsed))
