@@ -1159,6 +1159,22 @@ int main() {
     ++expected_it;
   }
   assert(expected_it == expected.end());
+  ScanCollector reverse_scanner;
+  const std::string reverse_start(MASSTREE_MAXKEYLEN - 1,
+                                  static_cast<char>(0xFF));
+  assert(table.table().rscan(
+             lcdf::Str(reverse_start.data(), reverse_start.size()),
+             true, reverse_scanner, *ti) ==
+         static_cast<int>(expected.size()));
+  assert(reverse_scanner.rows.size() == expected.size());
+  auto reverse_expected = expected.rbegin();
+  for (const auto& [key, value] : reverse_scanner.rows) {
+    assert(reverse_expected != expected.rend());
+    assert(key == reverse_expected->first &&
+           value == reverse_expected->second);
+    ++reverse_expected;
+  }
+  assert(reverse_expected == expected.rend());
 
   // The original thread accumulated retired overwrite/delete values. Its
   // explicit exit path must reclaim them and leave its shared slot inactive.
