@@ -186,12 +186,17 @@ pattern = re.compile(
     r'E2E_TRACE_TIME_US phase=(\S+) node=(\d+) ops=(\d+) duration_us=(\d+) '
     r'trace_first=(\d+) trace_workers=(\d+) batch_ops=(\d+)'
 )
+memory_pattern = re.compile(
+    r'DSIDLE_MEMORY_STATS hwcc_bytes=(\d+) swcc_bytes=(\d+) '
+    r'replica_bytes=(\d+)'
+)
 phase_manifest = manifest['phases'][phase]
 for node in range(nodes):
     path = log_dir / f'{case_name}_{label}_{stage}_node{node}.log'
+    lines = path.read_text(errors='replace').splitlines()
     rows = [
         pattern.fullmatch(line)
-        for line in path.read_text(errors='replace').splitlines()
+        for line in lines
         if line.startswith('E2E_TRACE_TIME_US ')
     ]
     if len(rows) != 1 or rows[0] is None:
@@ -221,6 +226,17 @@ for node in range(nodes):
             raise SystemExit(f'{path}: {key} mismatch: expected {value}, got {actual[key]}')
     if actual['batch_ops'] <= 0:
         raise SystemExit(f'{path}: invalid batch_ops={actual["batch_ops"]}')
+    memory_rows = [
+        memory_pattern.fullmatch(line)
+        for line in lines
+        if line.startswith('DSIDLE_MEMORY_STATS ')
+    ]
+    if len(memory_rows) != 1 or memory_rows[0] is None:
+        raise SystemExit(
+            f'{path}: expected exactly one complete DSIDLE_MEMORY_STATS row'
+        )
+    if int(memory_rows[0].group(1)) <= 0 or int(memory_rows[0].group(2)) <= 0:
+        raise SystemExit(f'{path}: invalid shared-memory byte accounting')
 PY
 }
 
@@ -230,6 +246,10 @@ run_phase() {
   local stage=$3
   local phase=$4
   local reset_caches=$5
+  local phase_meta="$prepared_dir/round_logs/${case_name}_${label}_${stage}.meta"
+  printf 'case=%s label=%s stage=%s phase=%s status=started manifest_sha256=%s runner_sha256=%s\n' \
+    "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+    >"$phase_meta"
   sync_phase_trace "$phase"
   ((reset_caches==0)) || clear_vm_caches "${case_name}_${label}_${stage}"
   local -a pids=()
@@ -245,8 +265,22 @@ run_phase() {
   local status=0
   local pid
   for pid in "${pids[@]}"; do wait "$pid" || status=1; done
-  ((status==0)) || { echo "VM YCSB failed: case=$case_name phase=$phase $label" >&2; exit 1; }
-  validate_phase_results "$case_name" "$label" "$stage" "$phase"
+  if ((status != 0)); then
+    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=runner manifest_sha256=%s runner_sha256=%s\n' \
+      "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+      >"$phase_meta"
+    echo "VM YCSB failed: case=$case_name phase=$phase $label" >&2
+    exit 1
+  fi
+  if ! validate_phase_results "$case_name" "$label" "$stage" "$phase"; then
+    printf 'case=%s label=%s stage=%s phase=%s status=failed failed_stage=validation manifest_sha256=%s runner_sha256=%s\n' \
+      "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+      >"$phase_meta"
+    exit 1
+  fi
+  printf 'case=%s label=%s stage=%s phase=%s status=success manifest_sha256=%s runner_sha256=%s\n' \
+    "$case_name" "$label" "$stage" "$phase" "$manifest_sha" "$runner_sha" \
+    >"$phase_meta"
 }
 
 run_case() {
@@ -269,4 +303,7 @@ for phase in "${phases[@]}"; do
   for ((round=1; round<=rounds; ++round)); do run_case "$phase" "round_${round}"; done
 done
 python3 "$script_dir/summarize_ycsb_experiment.py" --log-dir "$prepared_dir/logs" --out-dir "$prepared_dir" --metadata "$prepared_dir/run_meta.json"
+printf 'status=success rounds=%s warmup_rounds=%s manifest_sha256=%s runner_sha256=%s\n' \
+  "$rounds" "$warmup_rounds" "$manifest_sha" "$runner_sha" \
+  >"$prepared_dir/acceptance.meta"
 echo "DSIDLE_VM_YCSB_OK out_dir=$prepared_dir"

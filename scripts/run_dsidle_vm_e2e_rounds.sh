@@ -200,4 +200,7 @@ for ((round = 1; round <= rounds; ++round)); do
 done
 "$summarizer" --suite "$suite" --log-dir "$out_dir/logs" \
   --out-dir "$out_dir" --metadata "$out_dir/run_meta.json"
+printf 'status=success suite=%s rounds=%s git_sha=%s config_sha256=%s runner_sha256=%s\n' \
+  "$suite" "$rounds" "$git_sha" "$config_sha256" "$runner_sha256" \
+  >"$out_dir/acceptance.meta"
 echo "DSIDLE_VM_E2E_OK suite=$suite rounds=$rounds out_dir=$out_dir"
