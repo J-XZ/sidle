@@ -14,15 +14,18 @@ git submodule update --init --recursive
 ./dsidle_make_vm_img.sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
-./dsidle_init_vms.sh --execute
+./dsidle_init_vms.sh --apply-host-tuning --execute
 ./dsidle_check_vms.sh
 ```
 
 `dsidle_make_vm_img.sh` 与 cxlkv 同构：调用本仓 `image/make_vm_img.sh`
 （mkosi Jammy、`RootSize=38G`、钉死内核与完整 postinst）。
 
-`dsidle_init_vms.sh` 使用本仓 `image/root.img`、`experiment_config.jsonc`：
-- 宿主机性能调优（SMT/THP/NUMA balancing 等，与 cxlkv 一致）
+`dsidle_init_vms.sh` 使用本仓 `image/root.img`、`experiment_config.jsonc`。
+默认会校验并报告宿主调优状态；从空白宿主启动时，上述
+`--apply-host-tuning` 显式应用与 cxlkv 一致的 SMT/THP/NUMA balancing 等设置：
+
+- 宿主机性能调优预检与可选应用
 - 在 `shared_memory.numa_node` 上挂载 tmpfs（`mpol=bind`）并创建 ivshmem backing
 - `dsidle_shared_pool --init-pool` 写入池元数据
 - bridge/tap + 双网卡 QEMU + ivshmem-plain
@@ -46,15 +49,25 @@ scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 09 --rounds 10 \
   --pool-tool build/dsidle_shared_pool
 ```
 
+脚本每轮重置 pool，并在 host 与四台 guest 清 page cache、执行 4×64MiB CPU
+cache sweep。它严格校验每个节点的 `TIME/ops/workers` 与 suite marker，记录
+git/config SHA256 和每轮 exit code，并输出与 cxlkv 同口径的
+`avg-round-max` JSON/CSV/Markdown 汇总。
+
 YCSB 的 load 也是并发写入：4 VM、每 VM 4 worker 同时回放；没有串行 load 路径。
 
 ```bash
 ./dsidle_run_ycsb_experiment.sh --vm-count 4 --warmup-rounds 1 --rounds 10 \
   --record-count 100000 --operation-count 100000 \
-  --threads-per-node 4 --workloads a --no-latency
+  --threads-per-node 4 --workloads a,b,c,d,e \
+  --shared-size-mb 32768 --no-latency
 ```
 
-完整参数、正式 5M 对比矩阵和输出汇总见 [YCSB指南.md](YCSB指南.md)。验收主套件
+正式 4×4/100k 入口会将 YCSB 的随机操作划分显式归一化到冻结命令数，并在
+`trace_normalization.json` 与 `trace_manifest.json` 中保存归一化前后计数和
+逐文件/整体 SHA256；与 cxlkv 对比时必须复用这一组 worker trace。
+
+完整参数、正式 100k 对比矩阵和输出汇总见 [YCSB指南.md](YCSB指南.md)。验收主套件
 使用 100k；5M 是性能对比矩阵，不替代正确性验收。
 
 ## 验证与边界
@@ -62,7 +75,7 @@ YCSB 的 load 也是并发写入：4 VM、每 VM 4 worker 同时回放；没有�
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure --repeat until-fail:10
 ```
 
 吞吐只计入 replay，不包含 pool 初始化或相位屏障；默认预热轮次也不会写入汇总。YCSB 汇总使用每轮节点最大耗时

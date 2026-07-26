@@ -274,14 +274,16 @@ make_img/init 脚本，也不得默认使用兄弟仓库已生成的 `image/root
 
 必须支持的阶段：**`load` + `a` + `b` + `c` + `d` + `e`**。
 
-- `--workloads` 允许集合为 `a,b,c,d,e`（封闭、小写）；默认 `a,b,c,d`（与
-  cxlkv 相同）；传 `e` 时必须生成并回放 workloade（SCAN+PUT）。
+- `--workloads` 允许集合为 `a,b,c,d,e`（封闭、小写），当前脚本默认
+  `a,b,c,d,e`；传 `e` 时必须生成并回放 workloade（SCAN+PUT）。
 - D-SIDLE **必须实现 Scan**，因此 **必须支持 YCSB-E**（不得以“可选”为由
-  缺实现）。正式对比矩阵默认仍跑 A–D；E 作为显式扩展组一并交付能力。
+  缺实现）。本轮正式对比矩阵运行 A–E。
 - load / A / B / C / D / E 的生成参数、UPDATE→GET+PUT、INSERT→PUT 映射与
-  cxlkv 生成器一致，保证在相同 `record-count`/`operation-count`/
-  `threads-per-node`/`fixed_key_size`/`fixed_value_size` 下 trace **逐字节
-  可比**（理想情况可直接互换 worker 文件）。
+  cxlkv 生成器一致。上游操作选择由 `random_device` 播种，所以两次独立生成
+  不能声称 worker 文件逐字节相同；公平对比必须复用同一组 worker 文件并核对
+  逐文件与 trace-set SHA256。仅正式 4 VM×4 worker、100k/100k 合同会显式、
+  可审计地归一化到冻结的物理命令数，并把生成样本、目标、修改数与前后 SHA
+  写入 `trace_normalization.json`。
 
 ### 1.5.3 与 cxlkv 相同语义的实验 KV 接口
 
@@ -1270,28 +1272,38 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
   `--operation-count`(同上)、`--threads-per-node`(4)、
   `--out-dir`(`exp_data/ycsb_dsidle_<timestamp>`)、`--round-timeout`(7200)、
   `--base-config`(experiment_config.jsonc)、`--shared-numa`、
-  `--shared-reserve-mb`(4096，同 cxlkv)、
-  `--shared-size-mb`(自动向上取 2 的幂；本轮正式合同使用根配置 32768)、
+  `--shared-size-mb`（省略时继承 base config；显式值必须是至少 2048MB 的
+  2 的幂；本轮正式合同显式传 `32768`）。不提供无效的
+  `--shared-reserve-mb` 参数；需要按空闲内存自动选池时应在两仓共同编排层实现，
+  不能让单侧实验按宿主瞬时状态改变公平矩阵，
   `--workloads`(默认 **`a,b,c,d,e`**；封闭集合相同)、
   `--no-latency`（**本轮正式主表必须加此开关**，对齐 cxlkv 指南）、
   `--cache-flush-mb`(512)、`--skip-build`、`--skip-vm-init`、
   `--skip-trace-gen`、`--skip-standalone-load`、`--prepare-only`。
-  固定 4 VM；HWCC 固定 1024MB、其余给 SWCC。生成 policy 时**无条件**像
+  支持 `--vm-count 1|2|4`，正式验收固定 4 VM；HWCC 固定 1024MB、其余给
+  SWCC。生成 policy 时**无条件**像
   cxlkv 一样把 `cache_model` 置 `none`、`cache_hits_enabled=false`；
   `--no-latency` 仅关 enabled 族标志。
 - **workload 封闭集合**：小写、逗号分隔、不去重；非法输入在任何副作用前
   stderr 报错退出 2。必须支持 load + A/B/C/D/E 全阶段回放；E 映射为
   `SCAN`+单条 `PUT`；UPDATE/INSERT 均映射为独立单条 `PUT`。D-SIDLE 有 Scan，
   **禁止**将 E 标为 unsupported。本轮正式默认直接跑 A–E。
-- **步骤**：清旧进程 → 生成本轮 `experiment_config_ycsb_4vm.jsonc`（本轮
-  正式合同按 §1.11 使用 `size_mb=32768` / SWCC=31744 / `--shared-numa`）→
+- **冻结命令数**：正式 4×4、`recordcount=operationcount=100000` 时，
+  load=`100000 PUT`；A=`100000 GET + 50199 PUT`；B=`95019 GET + 4981 PUT`；
+  C=`100000 GET`；D=`95072 GET + 4928 PUT`；
+  E=`94920 SCAN + 5080 PUT`。`normalize_ycsb_trace_counts.py` 仅对这一组参数
+  生效；其他规模保持 YCSB-cpp 的原始随机样本。归一化不是两仓各自重做，
+  正式比较应把 manifest 所指的同一 trace set 原样交给 cxlkv 与 D-SIDLE。
+- **步骤**：生成本轮 `experiment_config_ycsb_4vm.jsonc`（本轮正式合同按
+  §1.11 显式传 `--shared-size-mb 32768`，得到 SWCC=31744，并按需传
+  `--shared-numa`）→
   生成 trace config 与 `run_meta.json`
   （参数 + git SHA + 复现命令 + 配置 SHA256）→ 调本仓库 YCSB-cpp 生成
   load + 所选 workload（**fixed 32/32**）→ 只读校验 trace → RelWithDebInfo
-  构建 → VM 检查
-  （默认 `dsidle_check_vms.sh`；`--reinit-vms` 且用户授权才
-  `dsidle_init_vms.sh`）→ sync 进 guest 构建 → 每轮清 cache → pool reset →
-  load → run → 收集 → 汇总。
+  构建 → 默认 `dsidle_init_vms.sh --execute` 按派生配置重建 VM；
+  `--skip-vm-init` 才改为 `dsidle_check_vms.sh` 复用现有拓扑 →
+  每个 phase 只向 guest 同步宿主已构建的 runner 与对应不可变 trace →
+  每轮 pool reset → 清 VM cache → load → run → 收集 → 汇总。
 - **汇总 `scripts/summarize_ycsb_experiment.py`**：对齐 cxlkv
   `summarize_ycsb_trace_experiment.py` 字段：`ops_sum`、
   `duration_sec_max`/`avg_duration_sec`、`avg_ops_sum`；推导
@@ -1377,9 +1389,9 @@ benchmark 语义）、选项表、load 说明、快速命令、中断恢复、�
 
 | 强制 E2E | 模仿 cxlkv | 规模与形态（默认值，可 env 放大不可缩小验收口径） |
 |----------|------------|--------------------------------------------------|
-| `dsidle_e2e_08` | `src/tree/test/e2e_08` | **100000** key；fixed key **8B**、value **8B**；多 VM 填充 + 跨 VM 读校验（及本系统必要的 delete/scan 断言） |
+| `dsidle_e2e_08` | `src/tree/test/e2e_08` | **100000** key；fixed key **8B**、value **8B**；多 VM 填充 + 跨 VM 读校验 |
 | `dsidle_e2e_09` | `src/tree/test/e2e_09` | **100000** key；fixed key **32B**、value **1000B**；填充 + 更新 + 跨 VM 读回校验 |
-| `dsidle_e2e_ycsb` | `src/tree/test/e2e_10` | YCSB-cpp 生成：**recordcount=100000**、**operationcount=100000**、`threads_per_vm=4`、zipfian；阶段 **load + workloada**（UPDATE→GET+PUT）；经本仓库 `e2e_trace_runner` 多 VM 回放 |
+| `dsidle_e2e_ycsb` | `src/tree/test/e2e_10` + 正式 trace runner | YCSB-cpp 生成：**recordcount=100000**、**operationcount=100000**、`threads_per_vm=4`；独立 load 与 A/B/C/D/E（A 的 UPDATE→GET+PUT，D=latest，其他为 zipfian）经本仓库 `e2e_trace_runner` 多 VM 回放 |
 
 说明：正式性能对比仍可用 5e6 等更大矩阵（§6.4）；**无 bug 门槛以本表
 100k 三套各 ≥10 轮为准**。小规模冒烟（如 1e4）只作开发便利，**不计入**
@@ -1388,8 +1400,9 @@ benchmark 语义）、选项表、load 说明、快速命令、中断恢复、�
 ## 6.1 单元测试（关键功能必须补齐；CTest 强制）
 
 下列关键功能**必须有独立单元/单机多进程测试**（缺测 = 未完成，禁止用
-e2e 代替）。RelWithDebInfo 全绿即验收。`ctest --repeat until-fail:10` 与
-ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门槛。
+e2e 代替）。正式完成判定要求 RelWithDebInfo 全套连续通过 10 轮，即
+`ctest --repeat until-fail:10`；ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的
+可选手段，不是门槛。
 
 1. offset/句柄（大小、trivial-copy、空值、generation ABA）；
 2. NodeControl / RootControl（sizeof/alignof=64、lock-free、nodeversion
@@ -1647,4 +1660,4 @@ ASAN/UBSAN 仅作排查偶发失败/疑似 UAF 的**可选**手段，不是门�
 | 策略移植走样 | 对拍测试以基线 worktree 为准绳 |
 | 模拟延迟未真实生效 | TSC 校准单测 + wall time 方向验证 |
 | mkosi 镜像环境不可用 | 优先修本仓库 mkosi；仅用户授权下可从**显式本地路径**导入一次并记 SHA（禁止脚本默认指向 `../cxlkv/image/root.img`）；仍不可行则 BLOCKED |
-| 重建 VM 影响其他实验 | 默认 `dsidle_check_vms.sh` 复用拓扑；重建须用户允许 |
+| 重建 VM 影响其他实验 | 一键脚本默认按派生配置重建；仅显式 `--skip-vm-init` 时调用 `dsidle_check_vms.sh` 复用拓扑 |
