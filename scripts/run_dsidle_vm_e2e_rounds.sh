@@ -13,6 +13,10 @@ node_capacity=2097152
 max_threads=16
 round_timeout=7200
 execute=0
+cache_cpu_workers="${DSIDLE_E2E_CACHE_CPU_WORKERS:-4}"
+cache_sweep_mb="${DSIDLE_E2E_CACHE_SWEEP_MB:-64}"
+cache_helper="$script_dir/clear_dsidle_caches.py"
+summarizer="$script_dir/summarize_vm_e2e.py"
 
 usage() {
   echo "usage: $0 --suite 08|09 [--config PATH] [--rounds N] [--out-dir DIR] [--runner PATH] [--pool-tool PATH] [--node-control-capacity N] [--max-threads-per-vm N] [--round-timeout SEC] --execute" >&2
@@ -36,12 +40,13 @@ while (($#)); do
   esac
 done
 [[ "$suite" == 08 || "$suite" == 09 ]] || { echo "--suite must be 08 or 09" >&2; exit 2; }
-for value in "$rounds" "$node_capacity" "$max_threads" "$round_timeout"; do
+for value in "$rounds" "$node_capacity" "$max_threads" "$round_timeout" "$cache_cpu_workers" "$cache_sweep_mb"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "positive integer required" >&2; exit 2; }
 done
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 [[ -x "$runner" ]] || { echo "missing suite runner: $runner (build RelWithDebInfo target dsidle_e2e_suite_runner)" >&2; exit 2; }
 [[ -x "$pool_tool" ]] || { echo "missing pool tool: $pool_tool" >&2; exit 2; }
+[[ -x "$cache_helper" && -x "$summarizer" ]] || { echo "missing e2e cache/summarizer helper" >&2; exit 2; }
 ((execute)) || { echo "refusing to start a VM experiment without --execute" >&2; exit 2; }
 
 mapfile -t topology < <(python3 - "$config" <<'PY'
@@ -51,14 +56,25 @@ cfg=json.loads(text)
 print(cfg['vm']['count'])
 print(cfg['vm']['ssh_base_port'])
 print(cfg['shared_memory']['device_path'])
+print(cfg['vm']['core_count_per_vm'])
+print(cfg['e2e']['foreground_worker_count_per_vm'])
 PY
 )
 vm_count=${topology[0]}
 ssh_base_port=${topology[1]}
 device_path=${topology[2]}
+vm_cores=${topology[3]}
+foreground_workers=${topology[4]}
 [[ "$vm_count" == 4 ]] || { echo "VM E2E runner requires four VMs" >&2; exit 2; }
+[[ "$vm_cores" == 8 && "$foreground_workers" == 4 ]] || {
+  echo "formal VM E2E requires 4 foreground workers and 8 vCPUs per VM" >&2
+  exit 2
+}
 [[ -n "$out_dir" ]] || out_dir="$repo_root/exp_data/vm_e2e${suite}_$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$out_dir/logs" "$out_dir/configs"
+mkdir -p "$out_dir/logs" "$out_dir/configs" "$out_dir/round_logs"
+host_config="$out_dir/configs/e2e${suite}_host.jsonc"
+cp -- "$config" "$host_config"
+config="$host_config"
 guest_config="$out_dir/configs/e2e${suite}_guest.jsonc"
 python3 - "$config" "$guest_config" "$suite" <<'PY'
 import json,re,sys
@@ -87,7 +103,33 @@ for ((node = 0; node < vm_count; ++node)); do
     "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c $device_path"
 done
 
-printf 'suite=%s rounds=%s config=%s runner=%s vm_count=%s\n' "$suite" "$rounds" "$config" "$runner" "$vm_count" >"$out_dir/run.meta"
+config_sha256=$(sha256sum "$config" | awk '{print $1}')
+guest_config_sha256=$(sha256sum "$guest_config" | awk '{print $1}')
+git_sha=$(git -C "$repo_root" rev-parse HEAD)
+python3 - "$out_dir/run_meta.json" "$suite" "$rounds" "$config" \
+  "$config_sha256" "$guest_config" "$guest_config_sha256" "$runner" \
+  "$git_sha" "$vm_count" "$foreground_workers" "$vm_cores" \
+  "$cache_cpu_workers" "$cache_sweep_mb" <<'PY'
+import json,sys
+(path,suite,rounds,config,config_sha,guest_config,guest_sha,runner,git_sha,
+ nodes,workers,vm_cores,cache_workers,cache_mb)=sys.argv[1:]
+meta={
+    'suite':suite,'rounds':int(rounds),'config':config,
+    'config_sha256':config_sha,'guest_config':guest_config,
+    'guest_config_sha256':guest_sha,'runner':runner,'git_sha':git_sha,
+    'nodes':int(nodes),'workers_per_vm':int(workers),
+    'vm_vcpus_per_node':int(vm_cores),'total_keys':100000,
+    'cache_clear':{
+        'target':'host_and_vms','cpu_workers':int(cache_workers),
+        'cpu_sweep_mb_per_worker':int(cache_mb),'page_cache':True,
+    },
+}
+open(path,'w').write(json.dumps(meta,indent=2)+'\n')
+PY
+printf 'suite=%s rounds=%s config=%s config_sha256=%s guest_config_sha256=%s runner=%s git_sha=%s vm_count=%s workers_per_vm=%s vm_vcpus_per_node=%s\n' \
+  "$suite" "$rounds" "$config" "$config_sha256" "$guest_config_sha256" \
+  "$runner" "$git_sha" "$vm_count" "$foreground_workers" "$vm_cores" \
+  >"$out_dir/run.meta"
 phase_prefix="e2e${suite}"
 if [[ "$suite" == 08 ]]; then
   phases=(fill read)
@@ -96,7 +138,22 @@ else
 fi
 for ((round = 1; round <= rounds; ++round)); do
   echo "DSIDLE_VM_E2E_ROUND_START suite=$suite round=$round"
-  "$pool_tool" --init-pool --config "$config" --node-control-capacity "$node_capacity" --max-threads-per-vm "$max_threads" >"$out_dir/logs/pool_round_${round}.log" 2>&1
+  round_meta="$out_dir/round_logs/${phase_prefix}_round_${round}.meta"
+  if ! "$pool_tool" --init-pool --config "$config" \
+      --node-control-capacity "$node_capacity" \
+      --max-threads-per-vm "$max_threads" \
+      >"$out_dir/logs/pool_round_${round}.log" 2>&1; then
+    printf 'suite=%s round=%s git_sha=%s config_sha256=%s exit_code=1 failed_stage=pool_init\n' \
+      "$suite" "$round" "$git_sha" "$config_sha256" >"$round_meta"
+    exit 1
+  fi
+  if ! "$cache_helper" --config "$config" --target all \
+      --cpu-workers "$cache_cpu_workers" --cpu-sweep-mb "$cache_sweep_mb" \
+      >"$out_dir/logs/cache_round_${round}.log" 2>&1; then
+    printf 'suite=%s round=%s git_sha=%s config_sha256=%s exit_code=1 failed_stage=cache_clear\n' \
+      "$suite" "$round" "$git_sha" "$config_sha256" >"$round_meta"
+    exit 1
+  fi
   for stage in "${phases[@]}"; do
     pids=()
     for ((node = 0; node < vm_count; ++node)); do
@@ -109,13 +166,25 @@ for ((round = 1; round <= rounds; ++round)); do
     status=0
     for pid in "${pids[@]}"; do wait "$pid" || status=1; done
     if ((status)); then
+      printf 'suite=%s round=%s git_sha=%s config_sha256=%s exit_code=1 failed_stage=%s\n' \
+        "$suite" "$round" "$git_sha" "$config_sha256" "$stage" >"$round_meta"
       echo "DSIDLE_VM_E2E_ROUND_FAIL suite=$suite round=$round stage=$stage" >&2
       exit 1
     fi
     for ((node = 0; node < vm_count; ++node)); do
-      grep -q "DSIDLE_E2E_SUITE_VERIFY suite=$suite phase=${phase_prefix}_${stage} node=$node status=ok" "$out_dir/logs/${phase_prefix}_${stage}_round_${round}_node${node}.log"
+      if ! grep -q "DSIDLE_E2E_SUITE_VERIFY suite=$suite phase=${phase_prefix}_${stage} node=$node status=ok" \
+          "$out_dir/logs/${phase_prefix}_${stage}_round_${round}_node${node}.log"; then
+        printf 'suite=%s round=%s git_sha=%s config_sha256=%s exit_code=1 failed_stage=%s_verify_node%s\n' \
+          "$suite" "$round" "$git_sha" "$config_sha256" "$stage" "$node" >"$round_meta"
+        echo "DSIDLE_VM_E2E_ROUND_FAIL suite=$suite round=$round stage=$stage node=$node missing_verify=1" >&2
+        exit 1
+      fi
     done
   done
+  printf 'suite=%s round=%s git_sha=%s config_sha256=%s exit_code=0\n' \
+    "$suite" "$round" "$git_sha" "$config_sha256" >"$round_meta"
   echo "DSIDLE_VM_E2E_ROUND_PASS suite=$suite round=$round"
 done
+"$summarizer" --suite "$suite" --log-dir "$out_dir/logs" \
+  --out-dir "$out_dir" --metadata "$out_dir/run_meta.json"
 echo "DSIDLE_VM_E2E_OK suite=$suite rounds=$rounds out_dir=$out_dir"
