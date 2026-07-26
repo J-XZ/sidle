@@ -49,6 +49,19 @@ struct ConcurrentScanCollector {
   }
   bool visit_value(lcdf::Str, row_type*, threadinfo&) { return true; }
 };
+
+struct ReplicaPointerScanCollector {
+  const std::byte* pool_begin;
+  const std::byte* pool_end;
+  bool used_replica{false};
+  template <typename S, typename K>
+  void visit_leaf(const S&, const K&, threadinfo&) {}
+  bool visit_value(lcdf::Str, row_type* value, threadinfo&) {
+    const auto* address = reinterpret_cast<const std::byte*>(value);
+    used_replica = address < pool_begin || address >= pool_end;
+    return false;
+  }
+};
 }  // namespace
 #include <unistd.h>
 
@@ -256,6 +269,13 @@ int main() {
     assert(replica_cursor.used_replica());
     assert(replica_cursor.value()->col(0).len == expected.begin()->second.size());
   }
+  ReplicaPointerScanCollector replica_scan{
+      static_cast<const std::byte*>(pool.base()),
+      static_cast<const std::byte*>(pool.base()) + kPoolBytes};
+  table.table().scan(
+      lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
+      replica_scan, *ti);
+  assert(replica_scan.used_replica);
   // D-SIDLE executor candidates are generation-qualified NodeRefs. It only
   // publishes/evicts local buffers and leaves the canonical node untouched.
   sidle::sidle_threshold replica_thresholds;

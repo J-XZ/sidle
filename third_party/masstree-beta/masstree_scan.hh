@@ -17,6 +17,7 @@
 #define MASSTREE_SCAN_HH
 #include <queue>
 
+#include "masstree_replica.hh"
 #include "masstree_tcursor.hh"
 #include "masstree_struct.hh"
 namespace Masstree {
@@ -402,10 +403,27 @@ int basic_table<P>::scan(H helper,
 
     int scancount = 0;
     int state;
+    dsidle::ReplicaDirectory::ReadHandle scan_replica;
+    auto visit_leaf = [&] {
+        scanner.visit_leaf(stack, ka, ti);
+        scan_replica = {};
+        auto* directory = dsidle::CurrentReplicaDirectoryOrNull();
+        if (!directory)
+            return;
+        const auto ref = stack.n_->control_ref();
+        const auto stable =
+            dsidle::NodeVersionAccessor(dsidle::SharedPoolBase(), ref).stable();
+        if (stable.v != stack.v_.version_value())
+            return;
+        auto handle = directory->Acquire(ref, stable.gen, stable.v);
+        if (handle &&
+            handle.snapshot().kind != dsidle::ReplicaKind::kInternal)
+            scan_replica = std::move(handle);
+    };
 
     while (1) {
         state = stack.find_initial(helper, ka, emit_firstkey, entry, ti);
-        scanner.visit_leaf(stack, ka, ti);
+        visit_leaf();
         if (state != mystack_type::scan_down)
             break;
         ka.shift();
@@ -413,19 +431,29 @@ int basic_table<P>::scan(H helper,
 
     while (1) {
         switch (state) {
-        case mystack_type::scan_emit:
+        case mystack_type::scan_emit: {
             ++scancount;
-            if (!scanner.visit_value(ka, entry.value(), ti))
+            typename P::value_type value = entry.value();
+            if (scan_replica) {
+                const typename leaf_replica<P>::value_type* local_value = nullptr;
+                dsidle::NodeRef layer_ref;
+                if (leaf_replica<P>::Lookup(scan_replica.snapshot().local_ptr,
+                                            ka, local_value, layer_ref) ==
+                    leaf_replica<P>::result::kValue)
+                    value = const_cast<typename P::value_type>(local_value);
+            }
+            if (!scanner.visit_value(ka, value, ti))
                 goto done;
             stack.ki_ = helper.next(stack.ki_);
             state = stack.find_next(helper, ka, entry);
             break;
+        }
 
         case mystack_type::scan_find_next:
         find_next:
             state = stack.find_next(helper, ka, entry);
             if (state != mystack_type::scan_up)
-                scanner.visit_leaf(stack, ka, ti);
+                visit_leaf();
             break;
 
         case mystack_type::scan_up:
