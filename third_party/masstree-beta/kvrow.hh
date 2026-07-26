@@ -201,6 +201,10 @@ result_t query<R>::run_put(T& table, Str key,
     R* slot = lp.value();
     bool inserted = apply_put(slot, found, firstreq, lastreq, ti);
     lp.set_value(slot);
+    // A column update changes bytes captured by a self-contained leaf replica.
+    // Publish the version change before unlock so other VMs reject stale local
+    // copies exactly as they do for run_replace and run_remove.
+    lp.node()->mark_insert();
     lp.finish(1, ti);
     if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
         std::free(replicas->Invalidate(lp.node()->control_ref()));

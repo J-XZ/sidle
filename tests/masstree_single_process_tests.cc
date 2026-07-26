@@ -417,6 +417,27 @@ int main() {
   dsidle::ReplicaDirectory remote_replicas(pool);
   assert(Masstree::leaf_replica<replica_params>::Promote(*canonical_leaf, promote_version, remote_replicas));
   dsidle::ConfigureCurrentReplicaDirectory(replicas);
+  const std::string put_updated = "replica-run-put";
+  lcdf::Json put_change[2] = {lcdf::Json(0), lcdf::Json(put_updated)};
+  assert(query.run_put(
+             table.table(),
+             lcdf::Str(replica_key_text.data(), replica_key_text.size()),
+             put_change, put_change + 2, *ti) == Updated);
+  expected[replica_key_text] = put_updated;
+  dsidle::ConfigureCurrentReplicaDirectory(remote_replicas);
+  {
+    Masstree::unlocked_tcursor<replica_params> remote_cursor(
+        table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()));
+    assert(remote_cursor.find_unlocked(*ti));
+    const auto column = remote_cursor.value()->col(0);
+    assert(column.len == put_updated.size());
+    assert(std::memcmp(column.s, put_updated.data(), column.len) == 0);
+  }
+  assert(remote_replicas.LocalBytes() == 0);
+  const auto after_put_version = canonical_leaf->stable();
+  assert(Masstree::leaf_replica<replica_params>::Promote(
+      *canonical_leaf, after_put_version, remote_replicas));
+  dsidle::ConfigureCurrentReplicaDirectory(replicas);
   const std::string replica_updated = "replica-local-write";
   query.run_replace(table.table(), lcdf::Str(replica_key_text.data(), replica_key_text.size()),
                     lcdf::Str(replica_updated.data(), replica_updated.size()), *ti);
