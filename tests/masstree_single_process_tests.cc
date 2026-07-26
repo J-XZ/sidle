@@ -1036,7 +1036,9 @@ int main() {
                             lcdf::Str(value.data(), value.size()), *child_ti);
         }
         child_ti->rcu_drain();
-      } catch (...) {
+      } catch (const std::exception& error) {
+        std::fprintf(stderr, "concurrent split worker: %s\n",
+                     error.what());
         _exit(16);
       }
       _exit(0);
@@ -1057,6 +1059,14 @@ int main() {
     int status = 0;
     assert(waitpid(split_worker, &status, 0) == split_worker);
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  }
+  {
+    const auto concurrent_root =
+        dsidle::RootControlAccessor(pool.root_control()).stable();
+    auto* resolved_root =
+        dsidle::ResolveCanonicalNode<Masstree::node_base<table_params>>(
+            concurrent_root.ref);
+    assert(resolved_root->is_root());
   }
   for (const auto& [key, value] : concurrent_inserts) {
     expected[key] = value;

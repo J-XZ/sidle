@@ -40,11 +40,11 @@ class root_replica_pin {
         dsidle::RootControlAccessor(pool_.root_control()).stable();
     if (after.ref != root.ref ||
         after.generation != root.generation ||
-        after.version != root.version) {
-      std::free(directory_.Invalidate(root.ref));
+        after.version != root.version)
       return false;
-    }
-    if (ref_ && ref_ != root.ref) std::free(directory_.Invalidate(ref_));
+    // A former global root remains a live internal child after a root split.
+    // Preserve its original local placement; normal SIDLE demotion owns any
+    // later eviction decision.
     ref_ = root.ref;
     root_version_ = root.version;
     return true;

@@ -43,6 +43,12 @@ int main() {
   assert(root_view.ref == ref && root_view.generation == 1 && root_view.version == 2);
   const auto ref2 = slab.Reserve((2ULL << 20) + 64, 1);
   slab.Publish(ref2, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(root.compare_publish(root_view, ref2, 1));
+  assert(!root.compare_publish(root_view, ref, 1));
+  const auto compared_root = root.stable();
+  assert(compared_root.ref == ref2 &&
+         compared_root.generation == 1 &&
+         compared_root.version == 4);
   assert(!dsidle::LoadNodeParentRef(ref));
   dsidle::StoreNodeParentRef(ref, ref2);
   assert(dsidle::LoadNodeParentRef(ref) == ref2);
@@ -70,7 +76,8 @@ int main() {
   while (!writers_done.load(std::memory_order_acquire)) {
     const auto view = root.stable();
     assert((view.ref == ref && (view.generation == 1 || view.generation == 11)) ||
-           (view.ref == ref2 && view.generation == 22));
+           (view.ref == ref2 &&
+            (view.generation == 1 || view.generation == 22)));
     assert((view.version & 1U) == 0);
   }
   writer_a.join();

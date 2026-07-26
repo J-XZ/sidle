@@ -1259,31 +1259,66 @@ inline basic_table<P>::basic_table()
 }
 
 template <typename P>
+inline dsidle::NodeRef synchronize_global_root();
+
+template <typename P>
 inline node_base<P>* basic_table<P>::root() const {
-    return dsidle::ResolveCanonicalNode<node_base<P> >(root_ref_);
+    return dsidle::ResolveCanonicalNode<node_base<P>>(
+        synchronize_global_root<P>());
+}
+
+template <typename P>
+inline dsidle::NodeRef synchronize_global_root() {
+    auto accessor = dsidle::RootControlAccessor(
+        dsidle::CurrentSharedPool().root_control());
+    while (true) {
+        const auto observed = accessor.stable();
+        if (!observed.ref)
+            throw std::runtime_error(
+                "D-SIDLE pool has no published Masstree root");
+        auto target_ref = observed.ref;
+        dsidle::StableNodeIdentity target_identity;
+        while (true) {
+            while (!dsidle::TryLoadStableNodeIdentity(
+                       target_ref, &target_identity)) {
+                if (dsidle::LoadNodeAllocationState(target_ref) !=
+                    dsidle::NodeAllocationState::kPublished)
+                    throw std::runtime_error(
+                        "RootControl does not name a live Masstree node");
+            }
+            if (target_identity.version &
+                dsidle::MasstreeNodeVersionBits::root_bit)
+                break;
+            target_ref = dsidle::LoadNodeParentRef(target_ref);
+            if (!target_ref)
+                throw std::runtime_error(
+                    "nonroot Masstree node has no parent");
+        }
+        const auto target_generation = target_identity.generation;
+        if (observed.ref == target_ref &&
+            observed.generation == target_generation)
+            return target_ref;
+        if (accessor.compare_publish(
+                observed, target_ref, target_generation)) {
+            dsidle::StableNodeIdentity after;
+            if (dsidle::TryLoadStableNodeIdentity(
+                    target_ref, &after) &&
+                (after.version &
+                 dsidle::MasstreeNodeVersionBits::root_bit))
+                return target_ref;
+        }
+    }
 }
 
 template <typename P>
 inline dsidle::NodeRef basic_table<P>::stable_root_ref() const {
-    const auto root =
-        dsidle::RootControlAccessor(
-            dsidle::CurrentSharedPool().root_control()).stable();
-    if (!root.ref)
-        throw std::runtime_error("D-SIDLE pool has no published Masstree root");
-    return root.ref;
+    return synchronize_global_root<P>();
 }
 
 template <typename P>
 inline node_base<P>* basic_table<P>::fix_root() {
-    node_base<P>* root = this->root();
-    if (unlikely(!root->is_root())) {
-        root = root->maybe_parent();
-        root_ref_ = root->control_ref();
-        dsidle::RootControlAccessor(
-            dsidle::CurrentSharedPool().root_control()).publish(
-                root_ref_, dsidle::LoadNodeGeneration(root_ref_));
-    }
-    return root;
+    root_ref_ = synchronize_global_root<P>();
+    return dsidle::ResolveCanonicalNode<node_base<P>>(root_ref_);
 }
 
 } // namespace Masstree

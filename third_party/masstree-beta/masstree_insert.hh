@@ -254,11 +254,7 @@ inline void tcursor<P>::finish(int state, threadinfo& ti)
         new_nodes_.emplace_back(n_, n_->full_unlocked_version_value());
     n_->unlock();
     if (new_global_root_)
-        dsidle::RootControlAccessor(
-            dsidle::CurrentSharedPool().root_control()).publish(
-                new_global_root_->control_ref(),
-                dsidle::LoadNodeGeneration(
-                    new_global_root_->control_ref()));
+        synchronize_global_root<P>();
 }
 
 } // namespace Masstree

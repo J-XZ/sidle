@@ -432,6 +432,30 @@ class RootControlAccessor {
     root_->version.store(version + 2, std::memory_order_release);
   }
 
+  bool compare_publish(const RootView& expected, NodeRef ref,
+                       std::uint64_t generation) const {
+    if (!ref)
+      throw std::runtime_error("cannot publish null root NodeRef");
+    auto version = expected.version;
+    if (version & 1U)
+      throw std::runtime_error("cannot compare against unstable root");
+    latency_sim::RecordHwccAtomicRmw(&root_->version);
+    if (!root_->version.compare_exchange_strong(
+            version, version + 1, std::memory_order_acq_rel,
+            std::memory_order_acquire))
+      return false;
+    // The successful seqlock transition proves that the fields still belong
+    // to `expected`; a newer root publisher would have changed version.
+    root_->root_ref = ref.value();
+    root_->root_generation = generation;
+    latency_sim::RecordHwccWrite(&root_->root_ref,
+                                 sizeof(root_->root_ref) +
+                                     sizeof(root_->root_generation));
+    latency_sim::RecordHwccAtomicStore(&root_->version);
+    root_->version.store(version + 2, std::memory_order_release);
+    return true;
+  }
+
  private:
   RootControl* root_;
 };
