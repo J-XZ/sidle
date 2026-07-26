@@ -63,7 +63,7 @@ ReplicaDirectory::Slot* ReplicaDirectory::Find(NodeRef ref) const {
   return segment ? &segment->slots[index % kSlotsPerSegment] : nullptr;
 }
 
-ReplicaDirectory::Slot* ReplicaDirectory::Ensure(NodeRef ref) {
+ReplicaDirectory::Slot* ReplicaDirectory::Ensure(NodeRef ref) const {
   const auto index = Index(ref);
   auto& published = segments_[index / kSlotsPerSegment];
   Segment* segment = published.load(std::memory_order_acquire);
@@ -188,7 +188,7 @@ void ReplicaDirectory::SetBudgetBytes(std::uint64_t bytes) {
 }
 
 void ReplicaDirectory::RecordAccess(NodeRef ref) const {
-  if (Slot* slot = Find(ref)) slot->access_count.fetch_add(1, std::memory_order_relaxed);
+  Ensure(ref)->access_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::uint64_t ReplicaDirectory::AccessCount(NodeRef ref) const {

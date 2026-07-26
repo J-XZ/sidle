@@ -95,7 +95,7 @@ class ReplicaDirectory {
   struct Segment { Slot slots[kSlotsPerSegment]; };
 
   std::uint64_t Index(NodeRef ref) const;
-  Slot* Ensure(NodeRef ref);
+  Slot* Ensure(NodeRef ref) const;
   Slot* Find(NodeRef ref) const;
   void* PublishLocked(NodeRef ref, ReplicaSnapshot snapshot);
   void* InvalidateLocked(NodeRef ref);

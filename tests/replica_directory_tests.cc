@@ -17,6 +17,11 @@ int main() {
   controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
   dsidle::ReplicaDirectory directory(pool);
   dsidle::ConfigureCurrentReplicaDirectory(directory);
+  const dsidle::NodeRef second_segment(
+      ref.value() + 4096 * sizeof(dsidle::NodeControl));
+  assert(directory.AccessCount(second_segment) == 0);
+  directory.RecordAccess(second_segment);
+  assert(directory.AccessCount(second_segment) == 1);
 
   auto* first = static_cast<char*>(std::malloc(32)); assert(first); std::strcpy(first, "first");
   assert(directory.Publish(ref, {first, 1, 7, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
