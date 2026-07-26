@@ -214,6 +214,9 @@ public:
 private:
     forward_scan_helper helper_;
     tracker_ptr position_tacker_;
+    // Scan mutates the assembled key while descending and ascending layers.
+    // Keep its backing storage alive for the iterator's whole lifetime.
+    alignas(ikey_type) char keybuf_[MASSTREE_MAXKEYLEN];
     /// @brief for track the first key
     key_type ka_;
     int state_;
@@ -513,15 +516,9 @@ int basic_table<P>::rscan(Str firstkey, bool emit_firstkey,
 template <typename P>
 void leaf_iterator<P>::init(Str firstkey, threadinfo& ti)
 {
-    using ikey_type = typename P::ikey_type;
-    union {
-        ikey_type x[(MASSTREE_MAXKEYLEN + sizeof(ikey_type) - 1)/sizeof(ikey_type)];
-        char s[MASSTREE_MAXKEYLEN];
-    } keybuf;
-
-    masstree_precondition(firstkey.len <= (int) sizeof(keybuf));
-    memcpy(keybuf.s, firstkey.s, firstkey.len);
-    ka_ = key_type(keybuf.s, firstkey.len);
+    masstree_precondition(firstkey.len <= (int) sizeof(keybuf_));
+    memcpy(keybuf_, firstkey.s, firstkey.len);
+    ka_ = key_type(keybuf_, firstkey.len);
 
     leafvalue_type entry = leafvalue_type::make_empty();
 
