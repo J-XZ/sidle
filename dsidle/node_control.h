@@ -53,12 +53,31 @@ struct alignas(64) NodeControl {
   std::uint64_t retire_epoch{0};
   std::uint32_t node_type{0};
   std::atomic<NodeAllocationState> allocation_state{NodeAllocationState::kFree};
-  std::byte padding[24]{};
+  std::atomic<std::uint32_t> leaf_link_lock{0};
+  std::byte padding[20]{};
 };
 static_assert(sizeof(NodeControl) == 64 && alignof(NodeControl) == 64);
 
 using NodeRef = HwccOffset<NodeControl>;
 using ValueRef = SwccOffset<std::byte>;
+
+inline bool TryLockLeafLink(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null leaf link NodeRef");
+  std::uint32_t expected = 0;
+  latency_sim::RecordHwccAtomicRmw(&control->leaf_link_lock);
+  return control->leaf_link_lock.compare_exchange_strong(
+      expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
+}
+
+inline void UnlockLeafLink(NodeRef ref) {
+  auto* control = ref.get(SharedPoolBase());
+  if (!control)
+    throw std::runtime_error("null leaf link NodeRef");
+  latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
+  control->leaf_link_lock.store(0, std::memory_order_release);
+}
 
 // Process-local policy queues carry a persistent control reference plus its
 // allocation generation.  A raw canonical address is neither valid across VM

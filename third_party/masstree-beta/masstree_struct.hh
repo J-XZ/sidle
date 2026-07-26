@@ -69,6 +69,7 @@ class tagged_node_link {
     }
     operator T*() const { return dsidle::ResolveCanonicalNode<T>(dsidle::NodeRef(raw_ & ~std::uint64_t(1))); }
     explicit operator bool() const { return raw_ != 0; }
+    dsidle::NodeRef ref() const { return dsidle::NodeRef(raw_ & ~std::uint64_t(1)); }
     std::uint64_t raw_{};
 };
 static_assert(sizeof(tagged_node_link<void>) == sizeof(std::uint64_t));

@@ -261,6 +261,7 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset, std::uint3
     ++control->generation;
     control->retire_epoch = 0;
     control->node_type = node_type;
+    control->leaf_link_lock.store(0, std::memory_order_relaxed);
     control->version_and_state.store(0, std::memory_order_relaxed);
     if (auto* directory = CurrentReplicaDirectoryOrNull())
       std::free(directory->ResetForReuse(NodeRef(head)));
@@ -302,6 +303,7 @@ void NodeControlSlab::Release(NodeRef ref) {
     control->canonical_swcc_offset = head;
     control->node_type = 0;
     control->retire_epoch = 0;
+    control->leaf_link_lock.store(0, std::memory_order_relaxed);
     control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
   } while (!metadata->node_free_head.compare_exchange_weak(head, ref.value(), std::memory_order_release,

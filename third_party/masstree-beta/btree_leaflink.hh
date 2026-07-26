@@ -30,42 +30,35 @@ template <typename N, bool CONCURRENT = N::concurrent> struct btree_leaflink {};
 // operations.
 template <typename N> struct btree_leaflink<N, true> {
   private:
-    // dsidle: link words live in SWCC.  They are only changed while the
-    // original node protocol holds the relevant node locks; publication is a
-    // normal store followed by writeback/fence, never a SWCC CAS/RMW.
     static inline void invalidate_next(N* n) {
         dsidle::InvalidateSwccRange(&n->next_, sizeof(n->next_));
+        latency_sim::RecordSwccRead(&n->next_, sizeof(n->next_));
     }
     static inline void invalidate_prev(N* n) {
         dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
+        latency_sim::RecordSwccRead(&n->prev_, sizeof(n->prev_));
     }
     static inline void flush_next(N* n) {
+        latency_sim::RecordSwccWrite(&n->next_, sizeof(n->next_));
         dsidle::FlushSwccRange(&n->next_, sizeof(n->next_));
     }
     static inline void flush_prev(N* n) {
+        latency_sim::RecordSwccWrite(&n->prev_, sizeof(n->prev_));
         dsidle::FlushSwccRange(&n->prev_, sizeof(n->prev_));
     }
-    static inline uint64_t mark(N *n) {
-        return n->control_ref().value() | 1;
+    template <typename SF>
+    static inline void lock_link(N* n, SF spin_function) {
+        while (!dsidle::TryLockLeafLink(n->control_ref()))
+            spin_function();
     }
-    static inline bool is_marked(uint64_t raw) {
-        return raw & 1;
+    static inline void unlock_link(N* n) {
+        dsidle::UnlockLeafLink(n->control_ref());
     }
     template <typename SF>
     static inline N *lock_next(N *n, SF spin_function) {
-        while (1) {
-            invalidate_next(n);
-            uint64_t raw = n->next_.raw_;
-            N *next = n->next_;
-            if (!next || !is_marked(raw)) {
-                if (next) {
-                    n->next_.raw_ = raw | 1;
-                    flush_next(n);
-                }
-                return next;
-            }
-            spin_function();
-        }
+        lock_link(n, spin_function);
+        invalidate_next(n);
+        return n->next_;
     }
 
   public:
@@ -92,6 +85,7 @@ template <typename N> struct btree_leaflink<N, true> {
         fence();
         n->next_ = nr;
         flush_next(n);
+        unlock_link(n);
     }
 
     /** @brief Change the prev link of @a n's next node to @a nn.
@@ -117,19 +111,23 @@ template <typename N> struct btree_leaflink<N, true> {
         while (1) {
             invalidate_prev(n);
             prev = n->prev_;
-            if (!prev) {
+            if (!prev)
                 break;
-            }
-            prev->next_.raw_ = mark(n);
-            flush_next(prev);
-            break;
+            lock_link(prev, spin_function);
+            invalidate_next(prev);
+            if (prev->next_.ref() == n->control_ref())
+                break;
+            unlock_link(prev);
+            spin_function();
         }
         if (prev) {
             prev->next_ = nn;
             nn->prev_ = prev;
             flush_next(prev);
             flush_prev(nn);
+            unlock_link(prev);
         }
+        unlock_link(n);
     }
 
     /** @brief Unlink @a n from the list.
@@ -150,9 +148,12 @@ template <typename N> struct btree_leaflink<N, true> {
         while (1) {
             invalidate_prev(n);
             prev = n->prev_;
-            prev->next_.raw_ = mark(n);
-            flush_next(prev);
-            break;
+            lock_link(prev, spin_function);
+            invalidate_next(prev);
+            if (prev->next_.ref() == n->control_ref())
+                break;
+            unlock_link(prev);
+            spin_function();
         }
         if (next) {
             next->prev_ = prev;
@@ -161,6 +162,8 @@ template <typename N> struct btree_leaflink<N, true> {
         fence();
         prev->next_ = next;
         flush_next(prev);
+        unlock_link(prev);
+        unlock_link(n);
     }
 };
 

@@ -17,6 +17,11 @@ int main() {
   assert(ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kAllocating);
   assert(ref.get(pool.base())->generation == 1);
   slab.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  assert(dsidle::TryLockLeafLink(ref));
+  assert(!dsidle::TryLockLeafLink(ref));
+  dsidle::UnlockLeafLink(ref);
+  assert(dsidle::TryLockLeafLink(ref));
+  dsidle::UnlockLeafLink(ref);
   auto* canonical = reinterpret_cast<std::uint64_t*>(
       static_cast<std::byte*>(pool.base()) + (2ULL << 20));
   *canonical = 0x5349444c45ULL;
