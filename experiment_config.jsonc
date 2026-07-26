@@ -82,6 +82,8 @@
     "fixed_key_size": 32,
     "fixed_value_size": 32,
     "trace_dir": "trace",
+    "verbose": false,
+    "extra_check": false,
     "latency_inject": {
       "enabled": false,
       "foreground_enabled": true,

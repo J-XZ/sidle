@@ -95,15 +95,17 @@ std::vector<std::string> ObjectKeys(const std::string& object) {
 }
 
 void ValidateObjectKeys(const std::string& object, const char* section,
-                        std::initializer_list<const char*> allowed) {
-  std::unordered_set<std::string> expected;
-  for (const char* key : allowed) expected.emplace(key);
+                        std::initializer_list<const char*> required,
+                        std::initializer_list<const char*> optional = {}) {
+  std::unordered_set<std::string> allowed;
+  for (const char* key : required) allowed.emplace(key);
+  for (const char* key : optional) allowed.emplace(key);
   std::unordered_set<std::string> actual;
   for (const auto& key : ObjectKeys(object)) {
-    if (!expected.count(key)) throw std::runtime_error(std::string("unknown key in ") + section + ": " + key);
+    if (!allowed.count(key)) throw std::runtime_error(std::string("unknown key in ") + section + ": " + key);
     actual.emplace(key);
   }
-  for (const auto& key : expected)
+  for (const char* key : required)
     if (!actual.count(key)) throw std::runtime_error(std::string("missing key in ") + section + ": " + key);
 }
 
@@ -155,17 +157,20 @@ std::string DefaultExperimentConfigPath() {
 
 ExperimentConfig LoadExperimentConfig(const std::string& path) {
   const std::string json = StripJsonComments(ReadFile(path));
-  ValidateObjectKeys(json, "root", {"shared_memory", "vm", "host_cpu", "e2e", "dsidle"});
+  ValidateObjectKeys(json, "root",
+                     {"shared_memory", "vm", "host_cpu", "e2e", "dsidle"},
+                     {"network", "sync"});
   const std::string shared = Section(json, "shared_memory");
   const std::string vm = Section(json, "vm");
   const std::string host_cpu = Section(json, "host_cpu");
   const std::string e2e = Section(json, "e2e");
   const std::string local = Section(json, "dsidle");
   ValidateObjectKeys(shared, "shared_memory", {"size_mb", "path", "device_path", "numa_node", "hwcc", "swcc"});
-  ValidateObjectKeys(vm, "vm", {"count", "core_count_per_vm", "mem_size_mb_per_vm", "storage_path", "ssh_base_port", "numa_node", "local_ssh_pub_key", "first_ip", "bridge_tap_ip"});
+  ValidateObjectKeys(vm, "vm", {"count", "core_count_per_vm", "mem_size_mb_per_vm", "storage_path", "ssh_base_port", "numa_node", "local_ssh_pub_key", "first_ip", "bridge_tap_ip"},
+                     {"copy_root_img", "use_ivshmem_doorbell"});
   ValidateObjectKeys(host_cpu, "host_cpu", {"reserved_cores", "ivshmem_server_cores", "vm_cores"});
   ValidateObjectKeys(e2e, "e2e", {"foreground_worker_count_per_vm"});
-  ValidateObjectKeys(local, "dsidle", {"replica_budget_mb", "hot_percentage_seed", "fixed_key_size", "fixed_value_size", "trace_dir", "latency_inject"});
+  ValidateObjectKeys(local, "dsidle", {"replica_budget_mb", "hot_percentage_seed", "fixed_key_size", "fixed_value_size", "trace_dir", "verbose", "extra_check", "latency_inject"});
   ExperimentConfig config;
   config.shared_size_mb = Integer(shared, "size_mb");
   config.shared_path = String(shared, "path");
@@ -190,12 +195,26 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   config.fixed_key_size = static_cast<std::uint32_t>(Integer(local, "fixed_key_size"));
   config.fixed_value_size = static_cast<std::uint32_t>(Integer(local, "fixed_value_size"));
   config.trace_dir = String(local, "trace_dir");
+  // cxlkv keeps these required policy switches next to latency_inject.
+  // D-SIDLE's single-file policy section places them at the same logical
+  // level and enforces the same latency-mode restriction.
+  config.verbose = Boolean(local, "verbose");
+  config.extra_check = Boolean(local, "extra_check");
   const auto latency = Section(local, "latency_inject");
   ValidateObjectKeys(latency, "dsidle.latency_inject", {"enabled", "foreground_enabled", "merge_enabled", "stats_enabled", "cache_line_bytes", "swcc_read_ns_per_line", "swcc_write_ns_per_line", "swcc_flush_ns_per_line", "hwcc_read_ns_per_line", "hwcc_write_ns_per_line", "hwcc_atomic_load_ns", "hwcc_atomic_store_ns", "hwcc_atomic_rmw_ns", "cache_model", "cache_hits_enabled", "cache_capacity_lines", "cache_associativity", "cache_fixed_hit_rate", "cache_hit_extra_ns"});
   auto& l = config.latency_inject;
   l.enabled=Boolean(latency,"enabled"); l.foreground_enabled=Boolean(latency,"foreground_enabled"); l.merge_enabled=Boolean(latency,"merge_enabled"); l.stats_enabled=Boolean(latency,"stats_enabled"); l.cache_line_bytes=Integer(latency,"cache_line_bytes");
   l.swcc_read_ns_per_line=Number(latency,"swcc_read_ns_per_line"); l.swcc_write_ns_per_line=Number(latency,"swcc_write_ns_per_line"); l.swcc_flush_ns_per_line=Number(latency,"swcc_flush_ns_per_line"); l.hwcc_read_ns_per_line=Number(latency,"hwcc_read_ns_per_line"); l.hwcc_write_ns_per_line=Number(latency,"hwcc_write_ns_per_line"); l.hwcc_atomic_load_ns=Number(latency,"hwcc_atomic_load_ns"); l.hwcc_atomic_store_ns=Number(latency,"hwcc_atomic_store_ns"); l.hwcc_atomic_rmw_ns=Number(latency,"hwcc_atomic_rmw_ns");
   l.cache_model=latency_sim::ParseCacheModel(String(latency,"cache_model")); l.cache_hits_enabled=Boolean(latency,"cache_hits_enabled"); l.cache_capacity_lines=Integer(latency,"cache_capacity_lines"); l.cache_associativity=Integer(latency,"cache_associativity"); l.cache_fixed_hit_rate=Number(latency,"cache_fixed_hit_rate"); l.cache_hit_extra_ns=Number(latency,"cache_hit_extra_ns");
+  if (l.enabled && (config.verbose || config.extra_check))
+    throw std::runtime_error(
+        "latency injection requires dsidle.verbose=false and "
+        "dsidle.extra_check=false");
+#ifndef NDEBUG
+  if (l.enabled)
+    throw std::runtime_error(
+        "latency injection requires a RelWithDebInfo/non-Debug build");
+#endif
   if (!PowerOfTwo(config.shared_size_mb) || config.hwcc.offset_mb != 0 ||
       config.swcc.offset_mb != config.hwcc.size_mb ||
       config.hwcc.size_mb + config.swcc.size_mb != config.shared_size_mb ||

@@ -23,6 +23,7 @@
   "dsidle": {
     "replica_budget_mb": 1536, "hot_percentage_seed": 50,
     "fixed_key_size": 32, "fixed_value_size": 32, "trace_dir": "trace",
+    "verbose": false, "extra_check": false,
     "latency_inject": {
       "enabled": true, "foreground_enabled": true, "merge_enabled": true,
       "stats_enabled": true, "cache_line_bytes": 64,

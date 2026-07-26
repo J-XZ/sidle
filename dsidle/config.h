@@ -28,6 +28,8 @@ struct ExperimentConfig {
   std::uint32_t fixed_key_size{};
   std::uint32_t fixed_value_size{};
   std::string trace_dir;
+  bool verbose{};
+  bool extra_check{};
   latency_sim::Config latency_inject{};
 };
 

@@ -15,6 +15,7 @@
   "dsidle": {
     "replica_budget_mb": 8, "hot_percentage_seed": 50,
     "fixed_key_size": 8, "fixed_value_size": 8, "trace_dir": "tests/data/e2e_trace_replica_read",
+    "verbose": false, "extra_check": false,
     "latency_inject": {
       "enabled": false, "foreground_enabled": true, "merge_enabled": true, "stats_enabled": false,
       "cache_line_bytes": 64, "swcc_read_ns_per_line": 0, "swcc_write_ns_per_line": 0,
