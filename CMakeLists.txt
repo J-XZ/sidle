@@ -91,7 +91,7 @@ add_test(NAME dsidle_e2e_trace_runner_smoke
 set_tests_properties(dsidle_e2e_trace_runner_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_min_duration
   COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner-duration.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase duration --node 0 --bootstrap --min-duration-sec 1 > /tmp/dsidle-e2e-duration.log && python3 -c 'import re,sys; x=re.search(r\"duration_us=(\\d+)\", open(sys.argv[1]).read()); sys.exit(not x or int(x.group(1)) < 1000000)' /tmp/dsidle-e2e-duration.log"
+    "truncate -s 128M /tmp/dsidle-e2e-runner-duration.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase duration --node 0 --bootstrap --min-duration-sec 1 > /tmp/dsidle-e2e-duration.log && python3 -c 'import re,sys; x=re.search(r\"^E2E_TRACE_TIME_US .* duration_us=(\\d+)\", open(sys.argv[1]).read(), re.M); sys.exit(not x or int(x.group(1)) < 1000000)' /tmp/dsidle-e2e-duration.log"
     sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_min_duration PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_replica_activation
