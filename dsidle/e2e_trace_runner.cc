@@ -171,7 +171,8 @@ int main(int argc, char** argv) {
     // Node zero publishes the root before entering; every other VM waits
     // before attaching. This is an ivshmem-backed phase barrier, excluded
     // from the workload timer below.
-    dsidle::SharedExperimentPhaseBarrier(pool).Wait();
+    auto phase_barrier = dsidle::SharedExperimentPhaseBarrier(pool);
+    phase_barrier.Wait();
     if (!options.bootstrap) table.table().attach();
     const auto epoch_slots_per_vm = pool.static_layout()->epoch_slot_count / cfg.vm_count;
     if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
@@ -183,10 +184,20 @@ int main(int argc, char** argv) {
         std::chrono::milliseconds(1000), std::chrono::milliseconds(1000));
     replica_workers.Start();
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
-    std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false}; std::mutex heartbeat_mutex; std::condition_variable heartbeat_cv; std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr worker_failure; std::mutex worker_failure_mutex;
-    const auto started = std::chrono::steady_clock::now();
-    const auto deadline = started + std::chrono::seconds(options.min_duration_sec);
+    std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false};
+    std::mutex heartbeat_mutex, worker_mutex;
+    std::condition_variable heartbeat_cv, worker_cv;
+    std::vector<std::thread> threads;
+    std::vector<uint64_t> counts(workers);
+    std::exception_ptr worker_failure;
+    uint32_t ready = 0, done = 0;
+    bool start = false;
+    std::chrono::steady_clock::time_point started, deadline;
     std::thread heartbeat_thread([&] {
+      {
+        std::unique_lock<std::mutex> lock(worker_mutex);
+        worker_cv.wait(lock, [&] { return start; });
+      }
       uint64_t previous = 0;
       while (!heartbeat_stop.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lock(heartbeat_mutex);
@@ -199,18 +210,68 @@ int main(int argc, char** argv) {
       }
     });
     auto replay_worker = [&](uint32_t worker) {
+      threadinfo* ti = nullptr;
       try {
         dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node); dsidle::ConfigureCurrentReplicaDirectory(replicas);
-        threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker);
-        counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat, deadline);
-      } catch (...) { std::lock_guard<std::mutex> lock(worker_failure_mutex); if (!worker_failure) worker_failure = std::current_exception(); }
+        ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(worker_mutex);
+        if (!worker_failure) worker_failure = std::current_exception();
+      }
+      {
+        std::unique_lock<std::mutex> lock(worker_mutex);
+        ++ready;
+        worker_cv.notify_all();
+        worker_cv.wait(lock, [&] { return start; });
+      }
+      if (ti) {
+        try {
+          counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat, deadline);
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(worker_mutex);
+          if (!worker_failure) worker_failure = std::current_exception();
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lock(worker_mutex);
+        ++done;
+        worker_cv.notify_all();
+      }
     };
     for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { replay_worker(worker); });
+    {
+      std::unique_lock<std::mutex> lock(worker_mutex);
+      worker_cv.wait(lock, [&] { return ready == workers; });
+    }
+    const auto barrier_begin = std::chrono::steady_clock::now();
+    phase_barrier.Wait();
+    const auto barrier_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - barrier_begin).count();
+    started = std::chrono::steady_clock::now();
+    deadline = started + std::chrono::seconds(options.min_duration_sec);
+    {
+      std::lock_guard<std::mutex> lock(worker_mutex);
+      start = true;
+      worker_cv.notify_all();
+    }
+    {
+      std::unique_lock<std::mutex> lock(worker_mutex);
+      worker_cv.wait(lock, [&] { return done == workers; });
+    }
+    const auto ended = std::chrono::steady_clock::now();
+    heartbeat_stop.store(true, std::memory_order_release);
+    heartbeat_cv.notify_one();
     for (auto& thread : threads) thread.join();
-    heartbeat_stop.store(true, std::memory_order_release); heartbeat_cv.notify_one(); heartbeat_thread.join();
+    heartbeat_thread.join();
+    replica_workers.Stop();
     if (worker_failure) std::rethrow_exception(worker_failure);
-    const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
+    const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(ended - started).count());
     uint64_t total = 0; for (const auto count : counts) total += count;
+    std::cout << "E2E_BARRIER_TIME_US node=" << options.node
+              << " role=" << (options.node == 0 ? "leader" : "follower")
+              << " phase_id=1 duration_us=" << barrier_duration
+              << " phase=" << options.phase << "_start\n";
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << total << " duration_us=" << duration << " trace_first=" << first << " trace_workers=" << workers << " batch_ops=" << options.batch_ops << '\n';
     latency_sim::PrintAndResetLatencySimulatorStats(std::cout, options.phase.c_str());
     std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes << " swcc_bytes=" << pool.header()->swcc_bytes << " replica_bytes=" << replicas.LocalBytes() << '\n';
