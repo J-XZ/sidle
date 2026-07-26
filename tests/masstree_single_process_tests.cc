@@ -86,7 +86,7 @@ int main() {
   assert(retired_ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kFree);
 
   Masstree::default_table table;
-  table.initialize(*ti, 80);
+  table.initialize(*ti, 0);
   const auto root_ref = table.table().root()->control_ref();
   assert(root_ref);
   const dsidle::NodeVersionAccessor root_version(pool.base(), root_ref);
@@ -98,6 +98,40 @@ int main() {
   assert(published_root.ref == root_ref && published_root.generation == root_view.gen);
   query<row_type> query;
   std::map<std::string, std::string> expected;
+  using table_params = Masstree::default_table::parameters_type;
+  using table_key = Masstree::key<typename table_params::ikey_type>;
+  const auto find_slot = [](Masstree::leaf<table_params>* leaf,
+                            const std::string& text) {
+    table_key key(text.data(), text.size());
+    const auto permutation = leaf->permutation();
+    for (int index = 0; index != permutation.size(); ++index) {
+      const int slot = permutation[index];
+      if (leaf->ikey(slot) == key.ikey() && leaf->ksuf_equals(slot, key))
+        return slot;
+    }
+    return -1;
+  };
+  const std::string cow_key_a(32, 'a');
+  const std::string cow_key_b(32, 'b');
+  query.run_replace(table.table(), lcdf::Str(cow_key_a.data(), cow_key_a.size()),
+                    lcdf::Str("cow-a", 5), *ti);
+  table_key cow_search(cow_key_a.data(), cow_key_a.size());
+  typename Masstree::node_base<table_params>::nodeversion_type cow_version;
+  auto* cow_leaf = table.table().root()->reach_leaf(cow_search, cow_version, *ti);
+  const int cow_slot = find_slot(cow_leaf, cow_key_a);
+  assert(cow_slot >= 0 && cow_leaf->ksuf_external());
+  const lcdf::Str old_suffix = cow_leaf->ksuf_storage(cow_slot);
+  const std::string old_suffix_copy(old_suffix.s, old_suffix.len);
+  query.run_replace(table.table(), lcdf::Str(cow_key_b.data(), cow_key_b.size()),
+                    lcdf::Str("cow-b", 5), *ti);
+  cow_leaf = table.table().root()->reach_leaf(cow_search, cow_version, *ti);
+  const int new_cow_slot = find_slot(cow_leaf, cow_key_a);
+  assert(new_cow_slot >= 0);
+  const lcdf::Str new_suffix = cow_leaf->ksuf_storage(new_cow_slot);
+  assert(new_suffix.s != old_suffix.s);
+  assert(std::string(old_suffix.s, old_suffix.len) == old_suffix_copy);
+  expected[cow_key_a] = "cow-a";
+  expected[cow_key_b] = "cow-b";
   const auto fixed_key = [](std::uint64_t number) {
     std::string key(8, 'k');
     key[0] = static_cast<char>('A' + number);

@@ -602,7 +602,8 @@ class leaf : public node_base<P> {
     Str ksuf(int p, int keylenx) const {
         (void) keylenx;
         masstree_precondition(keylenx_has_ksuf(keylenx));
-        return ksuf_ ? ksuf_->get(p) : iksuf_[0].get(p);
+        external_ksuf_type* external = readable_external_ksuf();
+        return external ? external->get(p) : iksuf_[0].get(p);
     }
     Str ksuf(int p) const {
         return ksuf(p, keylenx_[p]);
@@ -636,16 +637,16 @@ class leaf : public node_base<P> {
     }
 
     size_t ksuf_used_capacity() const {
-        if (ksuf_)
-            return ksuf_->used_capacity();
+        if (external_ksuf_type* external = readable_external_ksuf())
+            return external->used_capacity();
         else if (extrasize64_ > 0)
             return iksuf_[0].used_capacity();
         else
             return 0;
     }
     size_t ksuf_capacity() const {
-        if (ksuf_)
-            return ksuf_->capacity();
+        if (external_ksuf_type* external = readable_external_ksuf())
+            return external->capacity();
         else if (extrasize64_ > 0)
             return iksuf_[0].capacity();
         else
@@ -655,8 +656,8 @@ class leaf : public node_base<P> {
         return ksuf_;
     }
     Str ksuf_storage(int p) const {
-        if (ksuf_)
-            return ksuf_->get(p);
+        if (external_ksuf_type* external = readable_external_ksuf())
+            return external->get(p);
         else if (extrasize64_ > 0)
             return iksuf_[0].get(p);
         else
@@ -686,8 +687,8 @@ class leaf : public node_base<P> {
     }
 
     void deallocate(threadinfo& ti) {
-        if (ksuf_)
-            ti.deallocate(ksuf_, ksuf_->capacity(),
+        if (external_ksuf_type* external = readable_external_ksuf())
+            ti.deallocate(external, external->capacity(),
                           memtag_masstree_ksuffixes);
         if (extrasize64_ != 0)
             iksuf_[0].~stringbag(); 
@@ -698,8 +699,8 @@ class leaf : public node_base<P> {
         }
     }
     void deallocate_rcu(threadinfo& ti) {
-        if (ksuf_)
-            ti.deallocate_rcu(ksuf_, ksuf_->capacity(),
+        if (external_ksuf_type* external = readable_external_ksuf())
+            ti.deallocate_rcu(external, external->capacity(),
                               memtag_masstree_ksuffixes); 
         if (this->sidle_meta.metadata.type == node_mem_type_t::local) {
             ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf, this->control_ref());
@@ -709,6 +710,20 @@ class leaf : public node_base<P> {
     }
 
   private:
+    external_ksuf_type* readable_external_ksuf() const {
+        external_ksuf_type* external = ksuf_;
+        if (!external)
+            return nullptr;
+        dsidle::InvalidateSwccRange(external, dsidle::kSwccCacheLineBytes);
+        const size_t capacity = external->capacity();
+        if (capacity > dsidle::kSwccCacheLineBytes)
+            dsidle::InvalidateSwccRange(
+                reinterpret_cast<const std::byte*>(external) + dsidle::kSwccCacheLineBytes,
+                capacity - dsidle::kSwccCacheLineBytes);
+        latency_sim::RecordSwccRead(external, capacity);
+        return external;
+    }
+
     inline void mark_deleted_layer() {
         modstate_ = modstate_deleted_layer;
     }
@@ -996,11 +1011,14 @@ leaf<P>* leaf<P>::advance_to_key(const key_type& ka, nodeversion_type& v,
     case, the key at position p is NOT copied; it is assigned to @a s. */
 template <typename P>
 void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
-    if ((ksuf_ && ksuf_->assign(p, s))
-        || (extrasize64_ > 0 && iksuf_[0].assign(p, s)))
+    external_ksuf_type* oksuf = readable_external_ksuf();
+    if (initializing && oksuf && oksuf->assign(p, s)) {
+        latency_sim::RecordSwccWrite(oksuf, oksuf->capacity());
+        dsidle::FlushSwccRange(oksuf, oksuf->capacity());
         return;
-
-    external_ksuf_type* oksuf = ksuf_;
+    }
+    if (!oksuf && extrasize64_ > 0 && iksuf_[0].assign(p, s))
+        return;
 
     permuter_type perm(permutation_);
     int n = initializing ? p : perm.size();
@@ -1021,12 +1039,15 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     for (int i = 0; i < n; ++i) {
         int mp = initializing ? i : perm[i];
         if (mp != p && has_ksuf(mp)) {
-            bool ok = nksuf->assign(mp, ksuf(mp));
+            const Str old_suffix = oksuf ? oksuf->get(mp) : iksuf_[0].get(mp);
+            bool ok = nksuf->assign(mp, old_suffix);
             assert(ok); (void) ok;
         }
     }
     bool ok = nksuf->assign(p, s);
     assert(ok); (void) ok;
+    latency_sim::RecordSwccWrite(nksuf, sz);
+    dsidle::FlushSwccRange(nksuf, sz);
     fence();
 
     // removed ksufs aren't copied to the new ksuf, but observers
