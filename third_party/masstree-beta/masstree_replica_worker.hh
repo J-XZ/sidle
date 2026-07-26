@@ -134,6 +134,7 @@ class replica_workers {
       after_cooling = true;
     }
     if (after_cooling) histogram_->decrease_tolerance_for_cold();
+    root_pin_.Refresh(ti);
     std::uint64_t nodes = 0;
     std::uint64_t accesses = 0;
     ti.rcu_start();
@@ -155,7 +156,6 @@ class replica_workers {
     ti.rcu_stop();
     histogram_->refresh(nodes, accesses);
     histogram_->adjust_threshold();
-    root_pin_.Refresh(ti);
   }
 
   void ExecuteOnce(sidle::task_type type, threadinfo& ti) {

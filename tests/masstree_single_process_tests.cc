@@ -205,8 +205,11 @@ int main() {
   assert(replicas.InternalHits() > 0);
   std::free(replicas.Invalidate(canonical_root->control_ref()));
   Masstree::root_replica_pin<replica_params> root_pin(pool, replicas);
+  replicas.SetBudgetBytes(0);
   assert(root_pin.Refresh(*ti));
   assert(root_pin.ref() == dsidle::RootControlAccessor(pool.root_control()).stable().ref);
+  assert(replicas.LocalBytes() > 0);
+  replicas.SetBudgetBytes(UINT64_MAX);
 
   // Encode a stable canonical leaf into local DRAM and read its copied row
   // without following its canonical ValueRef or suffix pointer.

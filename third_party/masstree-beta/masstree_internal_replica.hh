@@ -47,17 +47,23 @@ class internode_replica {
   }
 
   static bool Promote(const node_type& source, typename node_type::nodeversion_type version,
-                      dsidle::ReplicaDirectory& directory) {
+                      dsidle::ReplicaDirectory& directory, bool budgeted = true) {
     const auto ref = source.control_ref();
     const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
     void* buffer = Create(source);
     if (source.has_changed(version)) { std::free(buffer); return false; }
     const auto bytes = static_cast<const header*>(buffer)->bytes;
     void* old = nullptr;
-    if (!directory.TryPublish(ref, {buffer, generation, version.version_value(), bytes,
-                                    dsidle::ReplicaKind::kInternal}, &old)) {
-      std::free(buffer);
-      return false;
+    const dsidle::ReplicaSnapshot snapshot{
+        buffer, generation, version.version_value(), bytes,
+        dsidle::ReplicaKind::kInternal};
+    if (budgeted) {
+      if (!directory.TryPublish(ref, snapshot, &old)) {
+        std::free(buffer);
+        return false;
+      }
+    } else {
+      old = directory.Publish(ref, snapshot);
     }
     std::free(old);
     return true;

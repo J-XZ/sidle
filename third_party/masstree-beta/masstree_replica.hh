@@ -115,7 +115,7 @@ class leaf_replica {
   // stable version first; publication is rejected if the leaf changed while
   // its suffix/value bytes were copied.
   static bool Promote(const leaf_type& source, typename leaf_type::nodeversion_type version,
-                      dsidle::ReplicaDirectory& directory) {
+                      dsidle::ReplicaDirectory& directory, bool budgeted = true) {
     const auto ref = source.control_ref();
     const auto generation = ref.get(dsidle::SharedPoolBase())->generation;
     // A leaf's permutation and values are changed by foreground writers.  An
@@ -144,11 +144,18 @@ class leaf_replica {
       has_layer = has_layer || source.is_layer(permutation[index]);
     const auto bytes = static_cast<const header*>(buffer)->bytes;
     void* old = nullptr;
-    if (!directory.TryPublish(ref, {buffer, generation, published_version, bytes,
-      has_layer ? dsidle::ReplicaKind::kLayerLeaf : dsidle::ReplicaKind::kValueLeaf}, &old)) {
-      std::free(buffer);
-      mutable_source.unlock();
-      return false;
+    const dsidle::ReplicaSnapshot snapshot{
+        buffer, generation, published_version, bytes,
+        has_layer ? dsidle::ReplicaKind::kLayerLeaf
+                  : dsidle::ReplicaKind::kValueLeaf};
+    if (budgeted) {
+      if (!directory.TryPublish(ref, snapshot, &old)) {
+        std::free(buffer);
+        mutable_source.unlock();
+        return false;
+      }
+    } else {
+      old = directory.Publish(ref, snapshot);
     }
     // Publishing before unlock is safe: readers cannot acquire this replica
     // while the canonical version is locked, and unlock releases exactly the

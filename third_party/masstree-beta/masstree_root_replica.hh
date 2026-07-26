@@ -33,8 +33,8 @@ class root_replica_pin {
     if (root.version == root_version_ && root.ref == ref_ && existing) return true;
     existing = {};
     bool published = node->isleaf()
-        ? leaf_replica<P>::Promote(*static_cast<leaf<P>*>(node), version, directory_)
-        : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_);
+        ? leaf_replica<P>::Promote(*static_cast<leaf<P>*>(node), version, directory_, false)
+        : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_, false);
     if (!published) return false;
     if (ref_ && ref_ != root.ref) std::free(directory_.Invalidate(ref_));
     ref_ = root.ref;
