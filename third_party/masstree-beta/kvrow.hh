@@ -326,7 +326,7 @@ class query_json_scanner {
   public:
     query_json_scanner(query<R>& q, lcdf::Json& request, std::vector<uint64_t>* scan_versions)
         : q_(q), nleft_(request[3].as_i()), request_(request),
-          scan_versions_(scan_versions) {
+          scan_versions_(scan_versions), unlimited_(nleft_ == 0) {
         std::swap(request[2].value().as_s(), firstkey_);
         request_.resize(2);
         q_.scankeypos_ = 0;
@@ -356,8 +356,9 @@ class query_json_scanner {
         q_.scankeypos_ += key.length();
         request_.push_back(lcdf::Json());
         q_.emit_fields1(value, request_.back(), ti);
-        --nleft_;
-        return nleft_ != 0;
+        if (!unlimited_)
+            --nleft_;
+        return unlimited_ || nleft_ != 0;
     }
   private:
     query<R>& q_;
@@ -365,6 +366,7 @@ class query_json_scanner {
     lcdf::Json& request_;
     lcdf::String firstkey_;
     std::vector<uint64_t>* scan_versions_;
+    bool unlimited_;
 };
 
 template <typename R>
@@ -510,7 +512,7 @@ void query<R>::run_ignoring_scan(T& table, Json& request, threadinfo& ti) {
 
 template <typename R> template <typename T>
 void query<R>::run_scan(T& table, Json& request, threadinfo& ti) {
-    assert(request[3].as_i() > 0);
+    assert(request[3].as_i() >= 0);
     f_.clear();
     for (int i = 4; i != request.size(); ++i) {
         f_.push_back(request[i].as_i());
@@ -523,7 +525,7 @@ template <typename R> template <typename T>
 void query<R>::run_scan_versions(T& table, Json& request,
                                  std::vector<uint64_t>& scan_versions,
                                  threadinfo& ti) {
-    assert(request[3].as_i() > 0);
+    assert(request[3].as_i() >= 0);
     f_.clear();
     for (int i = 4; i != request.size(); ++i) {
         f_.push_back(request[i].as_i());
@@ -534,7 +536,7 @@ void query<R>::run_scan_versions(T& table, Json& request,
 
 template <typename R> template <typename T>
 void query<R>::run_rscan(T& table, Json& request, threadinfo& ti) {
-    assert(request[3].as_i() > 0);
+    assert(request[3].as_i() >= 0);
     f_.clear();
     for (int i = 4; i != request.size(); ++i) {
         f_.push_back(request[i].as_i());

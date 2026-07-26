@@ -175,6 +175,16 @@ int main() {
                       lcdf::Str(value.data(), value.size()), *ti);
   }
 
+  lcdf::Json limited_scan =
+      lcdf::Json::array(0, 0, lcdf::Str("", 0), 3);
+  query.run_scan(table.table(), limited_scan, *ti);
+  assert(limited_scan.size() == 2 + 2 * 3);
+  lcdf::Json unlimited_scan =
+      lcdf::Json::array(0, 0, lcdf::Str("", 0), 0);
+  query.run_scan(table.table(), unlimited_scan, *ti);
+  assert(unlimited_scan.size() ==
+         2 + 2 * static_cast<int>(expected.size()));
+
   for (const auto& [key, expected_value] : expected) {
     lcdf::Str value;
     assert(query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, value, *ti));

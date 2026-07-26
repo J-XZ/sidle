@@ -82,12 +82,6 @@ Options ParseOptions(int argc, char** argv) {
   }
   if (!options.batch_ops) Fail("batch_ops must be > 0"); return options;
 }
-struct ScanCounter {
-  uint64_t limit; uint64_t seen = 0;
-  template <typename S, typename K> void visit_leaf(const S&, const K&, threadinfo&) {}
-  bool visit_value(lcdf::Str, row_type*, threadinfo&) { return limit == 0 || ++seen < limit; }
-};
-
 uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentConfig& cfg,
                     Masstree::default_table* table, threadinfo* ti, uint32_t batch_ops,
                     uint64_t seed, std::atomic<uint64_t>* heartbeat,
@@ -105,7 +99,12 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
           case TraceOpKind::kPut: { const std::string value = FixedTraceValue(cfg.fixed_value_size, &rng); query.run_replace(table->table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), *ti); break; }
           case TraceOpKind::kGet: { lcdf::Str value; (void)query.run_get1(table->table(), lcdf::Str(key.data(), key.size()), 0, value, *ti); break; }
           case TraceOpKind::kDelete: (void)query.run_remove(table->table(), lcdf::Str(key.data(), key.size()), *ti); break;
-          case TraceOpKind::kScan: { ScanCounter counter{op.len}; (void)table->table().scan(lcdf::Str(key.data(), key.size()), true, counter, *ti); break; }
+          case TraceOpKind::kScan: {
+            lcdf::Json request =
+                lcdf::Json::array(0, 0, lcdf::Str(key.data(), key.size()), op.len);
+            query.run_scan(table->table(), request, *ti);
+            break;
+          }
         }
       }
       ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
