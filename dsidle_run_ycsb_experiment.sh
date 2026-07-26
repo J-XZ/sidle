@@ -12,7 +12,7 @@ vm_count=4
 round_timeout=7200
 out_dir=""
 workloads="a,b,c,d,e"
-base_config=experiment_config.jsonc
+base_config="$script_dir/experiment_config.jsonc"
 shared_numa=""
 shared_size_mb=""
 cache_flush_mb=512
@@ -356,14 +356,16 @@ printf -v reproduce_command '%s--vm-count %q ' "$reproduce_command" "$vm_count"
 ((skip_standalone_load)) && reproduce_command+='--skip-standalone-load '
 ((prepare_only)) && reproduce_command+='--prepare-only '
 ((formal_acceptance)) && reproduce_command+='--formal-acceptance '
-python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" "$formal_acceptance" <<'PY'
+python3 - "$out_dir/run_meta.json" "$warmup_rounds" "$rounds" "$record_count" "$operation_count" "$threads_per_node" "$round_timeout" "$workloads" "$base_config" "$experiment_config" "$no_latency" "$shared_numa" "$shared_size_mb" "$cache_flush_mb" "$skip_build" "$skip_vm_init" "$skip_trace_gen" "$skip_standalone_load" "$reproduce_command" "$vm_count" "$replica_budget_mb" "$trace_manifest" "$value_seed" "$sidle_background_roles" "$sidle_background_epoch_slots" "$heartbeat_threads" "$epoch_slots_per_vm" "$runnable_threads_per_vm" "$vm_cores" "$formal_acceptance" "$script_dir" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores,formal_acceptance)=sys.argv[1:]
-try: git_sha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+(path,warmup_rounds,rounds,records,ops,threads,timeout,workloads,base_config,experiment_config,no_latency,shared_numa,size,flush,skip_build,skip_vm_init,skip_trace_gen,skip_load,reproduce_command,nodes,replica_budget,trace_manifest,value_seed,background_roles,background_epoch_slots,heartbeat_threads,epoch_slots_per_vm,runnable_threads_per_vm,vm_cores,formal_acceptance,repo_root)=sys.argv[1:]
+try:
+    git_sha=subprocess.check_output(
+        ['git','-C',repo_root,'rev-parse','HEAD'], text=True).strip()
 except Exception: git_sha='unknown'
 git_tracked_clean=subprocess.call(
-    ['git','diff','--quiet','HEAD','--'],
+    ['git','-C',repo_root,'diff','--quiet','HEAD','--'],
     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL) == 0
 phase_names=['load'] + [f'workload{item}' for item in workloads.split(',')]
 config_dir=Path(experiment_config).parent
