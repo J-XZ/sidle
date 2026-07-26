@@ -189,10 +189,13 @@ class replica_workers {
     }
     if (after_cooling) histogram_->decrease_tolerance_for_cold();
     root_pin_.Refresh(ti);
+    const bool forced_demotion =
+        forced_demotion_rounds_.load(std::memory_order_relaxed) != 0;
     std::uint64_t nodes = 0;
     std::uint64_t accesses = 0;
     ti.rcu_start();
-    ForEachLeaf(table_.root(), [this, &nodes, &accesses](leaf<P>* leaf) {
+    ForEachLeaf(table_.root(),
+                [this, &nodes, &accesses, forced_demotion](leaf<P>* leaf) {
       const auto ref = leaf->control_ref();
       const auto version = leaf->stable();
       if (version.deleted() || version.locked()) return;
@@ -202,18 +205,28 @@ class replica_workers {
       ++nodes;
       accesses += count;
       const bool local = static_cast<bool>(directory_.Acquire(ref, generation, version.version_value()));
-      if (!local && hotness == sidle::sidle_histogram::type::hot)
+      if (can_promote_.load(std::memory_order_relaxed) &&
+          !local && hotness == sidle::sidle_histogram::type::hot)
         queue_.add(sidle::task_type::promotion, {ref, generation});
-      else if (local && hotness == sidle::sidle_histogram::type::cold)
+      else if (hotness == sidle::sidle_histogram::type::cold &&
+               (local || forced_demotion))
         queue_.add(sidle::task_type::demotion, {ref, generation});
     });
     ti.rcu_stop();
     histogram_->refresh(nodes, accesses);
     histogram_->adjust_threshold();
+    if (forced_demotion)
+      forced_demotion_rounds_.fetch_sub(1, std::memory_order_relaxed);
   }
 
   void ExecuteOnce(sidle::task_type type, threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
+    if (type == sidle::task_type::promotion &&
+        !can_promote_.load(std::memory_order_relaxed)) {
+      dsidle::QueuedNodeRef discarded;
+      while (queue_.get(type, discarded)) {}
+      return;
+    }
     replica_executor<P> executor(directory_, thresholds_, &queue_);
     dsidle::QueuedNodeRef candidate;
     while (queue_.get(type, candidate)) executor.ExecuteOne(type, candidate, ti);
@@ -228,6 +241,50 @@ class replica_workers {
     });
     ti.rcu_stop();
     histogram_->adjust_for_cooling();
+  }
+
+  void AdjustOnce() {
+    const auto budget = directory_.BudgetBytes();
+    const auto local = directory_.LocalBytes();
+    const double ratio = budget
+        ? static_cast<double>(local) / static_cast<double>(budget)
+        : (local ? 1.0 : 0.0);
+    const auto status = thresholds_.check_memory_usage(ratio);
+    if (status == sidle::mem_usage_status::tight) {
+      can_promote_.store(false, std::memory_order_relaxed);
+      if (!tight_) {
+        thresholds_.adjust_local_allocation_threshold(true);
+        thresholds_.adjust_demotion_depth_threshold(true);
+        tight_ = true;
+      }
+      thresholds_.adjust_hotness_watermark(false, false);
+      forced_demotion_rounds_.store(
+          sidle::default_threshold_adjust_times, std::memory_order_relaxed);
+    } else {
+      const bool recovered = tight_;
+      if (tight_) {
+        thresholds_.adjust_local_allocation_threshold(false);
+        thresholds_.adjust_demotion_depth_threshold(false);
+        tight_ = false;
+      }
+      can_promote_.store(true, std::memory_order_relaxed);
+      forced_demotion_rounds_.store(0, std::memory_order_relaxed);
+      if (!recovered && status == sidle::mem_usage_status::sufficient) {
+        thresholds_.adjust_local_allocation_threshold(false);
+        thresholds_.adjust_demotion_depth_threshold(false);
+        thresholds_.adjust_hotness_watermark(false, true);
+      } else {
+        thresholds_.adjust_hotness_watermark(false, false);
+      }
+    }
+    histogram_->adjust_threshold();
+  }
+
+  bool PromotionEnabled() const {
+    return can_promote_.load(std::memory_order_relaxed);
+  }
+  unsigned ForcedDemotionRounds() const {
+    return forced_demotion_rounds_.load(std::memory_order_relaxed);
   }
 
  private:
@@ -261,7 +318,7 @@ class replica_workers {
     }
   }
   void CoolerLoop() { BindCurrentThread(); auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, background_thread_base_ + 3); while (running_) { std::this_thread::sleep_for(cooler_interval_); CoolOnce(*ti); } }
-  void AdjusterLoop() { BindCurrentThread(); while (running_) { std::this_thread::sleep_for(adjuster_interval_); const auto budget = directory_.BudgetBytes(); if (budget == UINT64_MAX) continue; const double ratio = static_cast<double>(directory_.LocalBytes()) / budget; if (thresholds_.check_memory_usage(ratio) == sidle::mem_usage_status::tight) { thresholds_.adjust_local_allocation_threshold(true); thresholds_.adjust_demotion_depth_threshold(true); } } }
+  void AdjusterLoop() { BindCurrentThread(); while (running_) { std::this_thread::sleep_for(adjuster_interval_); AdjustOnce(); } }
 
   table_type& table_;
   dsidle::SharedPool& pool_;
@@ -273,6 +330,9 @@ class replica_workers {
   std::uint32_t shard_count_, local_shard_, background_thread_base_;
   std::chrono::milliseconds basic_interval_, cooler_interval_, adjuster_interval_;
   std::atomic<bool> running_{false};
+  std::atomic<bool> can_promote_{true};
+  std::atomic<unsigned> forced_demotion_rounds_{0};
+  bool tight_{false};
   std::thread trigger_, promotion_, demotion_, cooler_, adjuster_;
 };
 

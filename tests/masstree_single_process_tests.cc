@@ -271,6 +271,16 @@ int main() {
       table.table(), pool, replicas, worker_thresholds,
       1, 0, 1,
       std::chrono::milliseconds(1), std::chrono::milliseconds(1), std::chrono::milliseconds(1));
+  const auto resident_bytes = replicas.LocalBytes();
+  assert(resident_bytes > 0);
+  replicas.SetBudgetBytes(resident_bytes);
+  workers.AdjustOnce();
+  assert(!workers.PromotionEnabled());
+  assert(workers.ForcedDemotionRounds() ==
+         sidle::default_threshold_adjust_times);
+  replicas.SetBudgetBytes(UINT64_MAX);
+  workers.AdjustOnce();
+  assert(workers.PromotionEnabled());
   for (unsigned i = 0; i != 256; ++i) replicas.RecordAccess(canonical_leaf->control_ref());
   workers.TriggerOnce(*ti);
   workers.ExecuteOnce(sidle::task_type::promotion, *ti);
