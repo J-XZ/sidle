@@ -333,6 +333,19 @@ if (( ! skip_build )); then
   cmake -S "$script_dir" -B "$script_dir/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
   cmake --build "$script_dir/build" --target dsidle_e2e_trace_runner dsidle_shared_pool -j"$(nproc)"
 fi
+python3 - "$out_dir/run_meta.json" \
+  "$script_dir/build/dsidle_e2e_trace_runner" \
+  "$script_dir/build/dsidle_shared_pool" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+meta_path,runner,pool_tool=sys.argv[1:]
+meta=json.loads(Path(meta_path).read_text())
+meta['runner']=runner
+meta['runner_sha256']=hashlib.sha256(Path(runner).read_bytes()).hexdigest()
+meta['pool_tool']=pool_tool
+meta['pool_tool_sha256']=hashlib.sha256(Path(pool_tool).read_bytes()).hexdigest()
+Path(meta_path).write_text(json.dumps(meta,indent=2)+'\n')
+PY
 if (( ! skip_vm_init )); then
   "$script_dir/dsidle_init_vms.sh" --config "$experiment_config" --execute
 else
@@ -341,4 +354,6 @@ fi
 "$script_dir/scripts/run_dsidle_vm_ycsb_rounds.sh" \
   --prepared-dir "$out_dir" --warmup-rounds "$warmup_rounds" \
   --rounds "$rounds" --round-timeout "$round_timeout" \
-  --cache-flush-mb "$cache_flush_mb"
+  --cache-flush-mb "$cache_flush_mb" \
+  --runner "$script_dir/build/dsidle_e2e_trace_runner" \
+  --pool-tool "$script_dir/build/dsidle_shared_pool"

@@ -89,11 +89,20 @@ open(t,'w').write(json.dumps(c,separators=(',',':'))+'\n')
 PY
 done
 ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=20)
+runner_sha=$(sha256sum "$runner" | awk '{print $1}')
+recorded_runner_sha=$(python3 - "$prepared_dir/run_meta.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))['runner_sha256'])
+PY
+)
+[[ "$runner_sha" == "$recorded_runner_sha" ]] || {
+  echo "runner binary changed after run metadata was written" >&2
+  exit 1
+}
 for port in "${ports[@]}"; do
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 'mkdir -p /root/dsidle-ycsb/traces'
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$prepared_dir/guest_configs/" root@127.0.0.1:/root/dsidle-ycsb/
-  runner_sha=$(sha256sum "$runner" | awk '{print $1}')
   guest_runner_sha=$(ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
     'sha256sum /root/dsidle-ycsb/dsidle_e2e_trace_runner' | awk '{print $1}')
   [[ "$runner_sha" == "$guest_runner_sha" ]] || {

@@ -93,11 +93,19 @@ ssh_opts=(-o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyCheck
 remote_dir=/root/dsidle-bin
 remote_runner="$remote_dir/dsidle_e2e_suite_runner"
 remote_config="$remote_dir/e2e${suite}_guest.jsonc"
+runner_sha256=$(sha256sum "$runner" | awk '{print $1}')
+pool_tool_sha256=$(sha256sum "$pool_tool" | awk '{print $1}')
 for ((node = 0; node < vm_count; ++node)); do
   port=$((ssh_base_port + node))
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 "mkdir -p $remote_dir"
   rsync -a -e "ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $port" \
     "$runner" "$guest_config" "root@127.0.0.1:$remote_dir/"
+  guest_runner_sha256=$(ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
+    "sha256sum $remote_runner" | awk '{print $1}')
+  [[ "$guest_runner_sha256" == "$runner_sha256" ]] || {
+    echo "guest runner hash mismatch on node $node" >&2
+    exit 1
+  }
   # Driver must already be loaded by dsidle_init_vms.sh (ivpci + full BAR2).
   ssh "${ssh_opts[@]}" -p "$port" root@127.0.0.1 \
     "dev=\$(for d in /sys/bus/pci/devices/*; do [ \"\$(cat \"\$d/vendor\")\" = 0x1af4 ] && [ \"\$(cat \"\$d/device\")\" = 0x1110 ] && basename \"\$d\"; done); [ -n \"\$dev\" ]; [ \"\$(basename \"\$(readlink -f \"/sys/bus/pci/devices/\$dev/driver\")\")\" = ivpci ]; test -c $device_path"
@@ -109,14 +117,18 @@ git_sha=$(git -C "$repo_root" rev-parse HEAD)
 python3 - "$out_dir/run_meta.json" "$suite" "$rounds" "$config" \
   "$config_sha256" "$guest_config" "$guest_config_sha256" "$runner" \
   "$git_sha" "$vm_count" "$foreground_workers" "$vm_cores" \
-  "$cache_cpu_workers" "$cache_sweep_mb" <<'PY'
+  "$cache_cpu_workers" "$cache_sweep_mb" "$runner_sha256" \
+  "$pool_tool" "$pool_tool_sha256" <<'PY'
 import json,sys
 (path,suite,rounds,config,config_sha,guest_config,guest_sha,runner,git_sha,
- nodes,workers,vm_cores,cache_workers,cache_mb)=sys.argv[1:]
+ nodes,workers,vm_cores,cache_workers,cache_mb,runner_sha,pool_tool,
+ pool_tool_sha)=sys.argv[1:]
 meta={
     'suite':suite,'rounds':int(rounds),'config':config,
     'config_sha256':config_sha,'guest_config':guest_config,
     'guest_config_sha256':guest_sha,'runner':runner,'git_sha':git_sha,
+    'runner_sha256':runner_sha,'pool_tool':pool_tool,
+    'pool_tool_sha256':pool_tool_sha,
     'nodes':int(nodes),'workers_per_vm':int(workers),
     'vm_vcpus_per_node':int(vm_cores),'total_keys':100000,
     'cache_clear':{
@@ -126,9 +138,10 @@ meta={
 }
 open(path,'w').write(json.dumps(meta,indent=2)+'\n')
 PY
-printf 'suite=%s rounds=%s config=%s config_sha256=%s guest_config_sha256=%s runner=%s git_sha=%s vm_count=%s workers_per_vm=%s vm_vcpus_per_node=%s\n' \
+printf 'suite=%s rounds=%s config=%s config_sha256=%s guest_config_sha256=%s runner=%s runner_sha256=%s pool_tool_sha256=%s git_sha=%s vm_count=%s workers_per_vm=%s vm_vcpus_per_node=%s\n' \
   "$suite" "$rounds" "$config" "$config_sha256" "$guest_config_sha256" \
-  "$runner" "$git_sha" "$vm_count" "$foreground_workers" "$vm_cores" \
+  "$runner" "$runner_sha256" "$pool_tool_sha256" "$git_sha" "$vm_count" \
+  "$foreground_workers" "$vm_cores" \
   >"$out_dir/run.meta"
 phase_prefix="e2e${suite}"
 if [[ "$suite" == 08 ]]; then
