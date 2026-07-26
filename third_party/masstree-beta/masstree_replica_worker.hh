@@ -170,7 +170,14 @@ class replica_workers {
 
   bool PinRoot(threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
-    return root_pin_.Refresh(ti);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    do {
+      if (root_pin_.Refresh(ti))
+        return true;
+      std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
   }
 
   void Start() {

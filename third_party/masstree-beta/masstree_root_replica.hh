@@ -36,6 +36,14 @@ class root_replica_pin {
         ? leaf_replica<P>::Promote(*static_cast<leaf<P>*>(node), version, directory_, false)
         : internode_replica<P>::Promote(*static_cast<internode<P>*>(node), version, directory_, false);
     if (!published) return false;
+    const auto after =
+        dsidle::RootControlAccessor(pool_.root_control()).stable();
+    if (after.ref != root.ref ||
+        after.generation != root.generation ||
+        after.version != root.version) {
+      std::free(directory_.Invalidate(root.ref));
+      return false;
+    }
     if (ref_ && ref_ != root.ref) std::free(directory_.Invalidate(ref_));
     ref_ = root.ref;
     root_version_ = root.version;
