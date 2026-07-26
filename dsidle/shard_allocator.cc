@@ -116,7 +116,9 @@ ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
                                          (static_cast<std::uint64_t>(shard) * kSwccSizeClassCount + class_index_) * sizeof(ShardControl));
 }
 
-void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation) {
+void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head,
+                                    std::uint64_t offset,
+                                    std::uint64_t generation) {
   auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
   latency_sim::RecordHwccAtomicLoad(&head);
   auto old = head.load(std::memory_order_acquire);
@@ -133,7 +135,33 @@ void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head, std::uint6
       std::memory_order_release, std::memory_order_acquire));
 }
 
-std::uint64_t FixedBlockShardAllocator::Pop(std::atomic<std::uint64_t>& head) {
+std::uint64_t FixedBlockShardAllocator::Pop(
+    std::atomic<std::uint64_t>& head,
+    std::atomic<std::uint32_t>& pop_lock) {
+  // A tagged head prevents ABA at the CAS, but it cannot protect the
+  // preceding dereference of the head object's SWCC next pointer. Another
+  // consumer could otherwise pop and reuse that object while this consumer
+  // is reading it. Serialize consumers; producers remain lock-free.
+  for (;;) {
+    latency_sim::RecordHwccAtomicLoad(&pop_lock);
+    while (pop_lock.load(std::memory_order_relaxed) != 0) {
+      _mm_pause();
+      latency_sim::RecordHwccAtomicLoad(&pop_lock);
+    }
+    std::uint32_t expected = 0;
+    latency_sim::RecordHwccAtomicRmw(&pop_lock);
+    if (pop_lock.compare_exchange_weak(
+            expected, 1, std::memory_order_acquire,
+            std::memory_order_relaxed))
+      break;
+  }
+  struct PopUnlock {
+    std::atomic<std::uint32_t>& lock;
+    ~PopUnlock() {
+      latency_sim::RecordHwccAtomicStore(&lock);
+      lock.store(0, std::memory_order_release);
+    }
+  } unlock{pop_lock};
   latency_sim::RecordHwccAtomicLoad(&head);
   auto old = head.load(std::memory_order_acquire);
   while (const auto offset = TaggedFreeListHead::Offset(old)) {
@@ -155,9 +183,12 @@ std::uint64_t FixedBlockShardAllocator::HarvestRemote(std::uint32_t shard, std::
   auto* entry = control(shard);
   std::uint64_t harvested = 0;
   while (harvested < maximum) {
-    const auto offset = Pop(entry->remote_free_head);
+    const auto offset =
+        Pop(entry->remote_free_head, entry->remote_pop_lock);
     if (!offset) break;
-    Push(entry->local_free_head, offset, reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset)->generation);
+    Push(entry->local_free_head, offset,
+         reinterpret_cast<FreeObjectHeader*>(
+             static_cast<std::byte*>(pool_.base()) + offset)->generation);
     ++harvested;
   }
   return harvested;
@@ -166,7 +197,9 @@ std::uint64_t FixedBlockShardAllocator::HarvestRemote(std::uint32_t shard, std::
 SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
   auto* entry = control(shard);
   HarvestRemote(shard);
-  if (const auto reused = Pop(entry->local_free_head)) return SwccOffset<std::byte>(reused);
+  if (const auto reused =
+          Pop(entry->local_free_head, entry->local_pop_lock))
+    return SwccOffset<std::byte>(reused);
   latency_sim::RecordHwccAtomicRmw(&entry->bump);
   const auto offset = entry->bump.fetch_add(block_size_, std::memory_order_acq_rel);
   latency_sim::RecordHwccRead(&entry->limit, sizeof(entry->limit));

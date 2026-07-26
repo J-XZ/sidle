@@ -1,6 +1,7 @@
 #include "dsidle/shard_allocator.h"
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <cstdio>
 #include <mutex>
 #include <thread>
@@ -94,13 +95,13 @@ int main() {
   assert(reused_node == node && reused_node.get(pool.base())->generation == 2);
   dsidle::FixedBlockShardAllocator::InitializeAll(pool, 2);
   dsidle::FinalizePoolInitialization(pool);
-  dsidle::FixedBlockShardAllocator alloc(pool, 2, 64);
+  dsidle::FixedBlockShardAllocator alloc(pool, 2, 1024);
   const auto first = alloc.Allocate(0); assert(first);
   const auto pid = fork(); assert(pid >= 0);
   if (pid == 0) {
     auto attached = dsidle::SharedPool::Attach(
         path, {kPoolBytes, 0, 32ULL << 20, 32ULL << 20, 96ULL << 20});
-    dsidle::FixedBlockShardAllocator child_alloc(attached, 2, 64);
+    dsidle::FixedBlockShardAllocator child_alloc(attached, 2, 1024);
     child_alloc.Free(0, first, 9);
     _exit(0);
   }
@@ -113,8 +114,9 @@ int main() {
   std::vector<std::thread> allocator_threads;
   for (unsigned thread_index = 0; thread_index < 8; ++thread_index) {
     allocator_threads.emplace_back([&, thread_index] {
-      for (unsigned iteration = 0; iteration < 2'000; ++iteration) {
+      for (unsigned iteration = 0; iteration < 20'000; ++iteration) {
         const auto block = alloc.Allocate(0);
+        std::memset(block.get(pool.base()), 0xA5, 1024);
         {
           std::lock_guard<std::mutex> lock(live_mutex);
           assert(live_offsets.insert(block.value()).second);

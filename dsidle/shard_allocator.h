@@ -51,7 +51,9 @@ struct alignas(64) ShardControl {
   std::uint64_t limit{0};
   std::atomic<std::uint64_t> local_free_head{0};
   std::atomic<std::uint64_t> remote_free_head{0};
-  std::byte padding[32]{};
+  std::atomic<std::uint32_t> local_pop_lock{0};
+  std::atomic<std::uint32_t> remote_pop_lock{0};
+  std::byte padding[24]{};
 };
 static_assert(sizeof(ShardControl) == 64);
 
@@ -73,8 +75,10 @@ class FixedBlockShardAllocator {
 
  private:
   ShardControl* control(std::uint32_t shard) const;
-  void Push(std::atomic<std::uint64_t>& head, std::uint64_t offset, std::uint64_t generation);
-  std::uint64_t Pop(std::atomic<std::uint64_t>& head);
+  void Push(std::atomic<std::uint64_t>& head, std::uint64_t offset,
+            std::uint64_t generation);
+  std::uint64_t Pop(std::atomic<std::uint64_t>& head,
+                    std::atomic<std::uint32_t>& pop_lock);
 
   SharedPool& pool_;
   std::uint32_t shard_count_;
