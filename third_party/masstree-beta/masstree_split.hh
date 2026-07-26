@@ -211,9 +211,11 @@ bool tcursor<P>::make_split(threadinfo& ti)
     node_metadata_t parent_metadata;
     if (p) {
         parent_metadata = p->sidle_meta;
+        parent_metadata.type = p->replica_policy_type();
         p->unlock();
     }
     node_metadata_t original_metadata = n_->sidle_meta.metadata;
+    original_metadata.type = n_->replica_policy_type();
     uint8_t cur_depth = 0;
     if (parent_metadata.type != node_mem_type::unknown) {
         cur_depth = parent_metadata.depth + 1;
@@ -229,6 +231,8 @@ bool tcursor<P>::make_split(threadinfo& ti)
     auto new_node_type = node_type::strategy_manager->decide_new_node_position(parent_metadata.type, cur_depth);
     // allocate leaf with cxl policy
     node_type* child = leaf_type::make_with_cxl_policy(n_->ksuf_used_capacity(), n_->phantom_epoch(), ti, cur_depth, new_node_type, 1);
+    if (new_node_type == node_mem_type::local)
+        initial_replica_nodes_.push_back(child);
     // node_type* child = leaf_type::make(n_->ksuf_used_capacity(), n_->phantom_epoch(), ti);
     child->assign_version(*n_);
     ikey_type xikey[2];
@@ -243,6 +247,11 @@ bool tcursor<P>::make_split(threadinfo& ti)
         internode_type *next_child = 0;
 
         internode_type *p = n->locked_parent(ti);
+        if (p && p->replica_policy_type() == node_mem_type::local &&
+            std::find(refresh_replica_nodes_.begin(),
+                      refresh_replica_nodes_.end(), p) ==
+                refresh_replica_nodes_.end())
+            refresh_replica_nodes_.push_back(p);
 
         int kp = -1;
         if (n->parent_exists(p)) {
@@ -254,15 +263,20 @@ bool tcursor<P>::make_split(threadinfo& ti)
             // get the proper information for the new internal node
             if (kp >= 0) {
                 parent_metadata = p->sidle_meta;
-                masstree_invariant(parent_metadata.type != node_mem_type::unknown);
+                parent_metadata.type = p->replica_policy_type();
                 cur_depth = parent_metadata.depth + 1;
             } else {
                 parent_metadata.type = node_mem_type::unknown;
                 cur_depth = 1;
             }
-            original_metadata = n->isleaf() ? static_cast<leaf_type*>(n)->sidle_meta.metadata : static_cast<internode_type*>(n)->sidle_meta;
+            original_metadata = n->isleaf()
+                ? static_cast<leaf_type*>(n)->sidle_meta.metadata
+                : static_cast<internode_type*>(n)->sidle_meta;
+            original_metadata.type = n->replica_policy_type();
             auto new_node_type = node_type::strategy_manager->decide_new_node_position(parent_metadata.type, cur_depth);
             internode_type *nn = internode_type::make_with_cxl_policy(height + 1, ti, cur_depth, new_node_type);  
+            if (new_node_type == node_mem_type::local)
+                initial_replica_nodes_.push_back(nn);
             // internode_type *nn = internode_type::make(height + 1, ti);
             nn->child_[0] = n;
             nn->child_[1] = child;
@@ -285,9 +299,12 @@ bool tcursor<P>::make_split(threadinfo& ti)
                 node_metadata_t grandparent_metadata;
                 if (grandparent) {
                     grandparent_metadata = grandparent->sidle_meta;
+                    grandparent_metadata.type =
+                        grandparent->replica_policy_type();
                     grandparent->unlock();
                 }
                 parent_metadata = p->sidle_meta;
+                parent_metadata.type = p->replica_policy_type();
                 if (grandparent_metadata.type != node_mem_type::unknown) {
                     cur_depth = grandparent_metadata.depth + 1;
                 } else if (parent_metadata.type != node_mem_type::unknown) {
@@ -299,6 +316,8 @@ bool tcursor<P>::make_split(threadinfo& ti)
                 }  
                 auto new_node_type = node_type::strategy_manager->decide_new_node_position(parent_metadata.type, cur_depth);
                 next_child = internode_type::make_with_cxl_policy(height + 1, ti, cur_depth, new_node_type);  
+                if (new_node_type == node_mem_type::local)
+                    initial_replica_nodes_.push_back(next_child);
                 next_child->assign_version(*p);
                 next_child->mark_nonroot();
                 kp = p->split_into(next_child, kp, xikey[sense],

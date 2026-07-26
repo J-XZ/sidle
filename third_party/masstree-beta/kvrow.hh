@@ -207,9 +207,24 @@ result_t query<R>::run_put(T& table, Str key,
     // Publish the version change before unlock so other VMs reject stale local
     // copies exactly as they do for run_replace and run_remove.
     lp.node()->mark_insert();
+    auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
+    const bool refresh_local =
+        replicas && replicas->HasReplica(
+                        lp.node()->control_ref(),
+                        dsidle::LoadNodeGeneration(lp.node()->control_ref()));
+    const bool refresh_original =
+        replicas && lp.original_node() != lp.node() &&
+        replicas->HasReplica(
+            lp.original_node()->control_ref(),
+            dsidle::LoadNodeGeneration(lp.original_node()->control_ref()));
     lp.finish(1, ti);
-    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+    if (replicas) {
         std::free(replicas->Invalidate(lp.node()->control_ref()));
+        if (lp.original_node() != lp.node())
+            std::free(
+                replicas->Invalidate(lp.original_node()->control_ref()));
+    }
+    lp.publish_local_replicas(refresh_local, refresh_original);
     return inserted ? Inserted : Updated;
 }
 
@@ -258,9 +273,24 @@ result_t query<R>::run_replace(T& table, Str key, Str value, threadinfo& ti) {
     // may have copied. Bump the canonical leaf version before unlock so other
     // VMs reject their old generation/version snapshot lazily.
     lp.node()->mark_insert();
+    auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
+    const bool refresh_local =
+        replicas && replicas->HasReplica(
+                        lp.node()->control_ref(),
+                        dsidle::LoadNodeGeneration(lp.node()->control_ref()));
+    const bool refresh_original =
+        replicas && lp.original_node() != lp.node() &&
+        replicas->HasReplica(
+            lp.original_node()->control_ref(),
+            dsidle::LoadNodeGeneration(lp.original_node()->control_ref()));
     lp.finish(1, ti);
-    if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+    if (replicas) {
         std::free(replicas->Invalidate(lp.node()->control_ref()));
+        if (lp.original_node() != lp.node())
+            std::free(
+                replicas->Invalidate(lp.original_node()->control_ref()));
+    }
+    lp.publish_local_replicas(refresh_local, refresh_original);
     return inserted ? Inserted : Updated;
 }
 
@@ -297,10 +327,25 @@ bool query<R>::run_remove(T& table, Str key, threadinfo& ti) {
         // dsidle: tombstone/value removal also invalidates remote leaf copies.
         lp.node()->mark_insert();
     }
+    auto* replicas = dsidle::CurrentReplicaDirectoryOrNull();
+    const bool refresh_local =
+        found && replicas &&
+        replicas->HasReplica(
+            lp.node()->control_ref(),
+            dsidle::LoadNodeGeneration(lp.node()->control_ref()));
     lp.finish(-1, ti);
     if (found) {
-        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull())
+        if (replicas)
             std::free(replicas->Invalidate(lp.node()->control_ref()));
+        if (refresh_local) {
+            try {
+                const auto version = lp.node()->stable();
+                Masstree::leaf_replica<typename T::parameters_type>::Promote(
+                    *lp.node(), version, *replicas, !lp.node()->is_root());
+            } catch (const std::bad_alloc&) {
+                // Removal is already committed; a cache refresh is optional.
+            }
+        }
     }
     return found;
 }

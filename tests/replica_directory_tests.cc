@@ -25,6 +25,8 @@ int main() {
 
   auto* first = static_cast<char*>(std::malloc(32)); assert(first); std::strcpy(first, "first");
   assert(directory.Publish(ref, {first, 1, 8, 32, dsidle::ReplicaKind::kValueLeaf}) == nullptr);
+  assert(directory.HasReplica(ref, 1));
+  assert(!directory.HasReplica(ref, 2));
   directory.RecordAccess(ref);
   directory.RecordAccess(ref);
   assert(directory.AccessCount(ref) == 2);
@@ -47,6 +49,7 @@ int main() {
   assert(directory.LocalBytes() == 0);
   assert(!directory.Acquire(ref, 1, 16));
   std::free(directory.Invalidate(ref));
+  assert(!directory.HasReplica(ref, 1));
   assert(!directory.Acquire(ref, 1, 16));
   directory.SetBudgetBytes(32);
   auto* budgeted = static_cast<char*>(std::malloc(32)); assert(budgeted);

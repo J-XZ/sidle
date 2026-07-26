@@ -167,6 +167,11 @@ class replica_workers {
   replica_workers(const replica_workers&) = delete;
   replica_workers& operator=(const replica_workers&) = delete;
 
+  bool PinRoot(threadinfo& ti) {
+    latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
+    return root_pin_.Refresh(ti);
+  }
+
   void Start() {
     if (running_.exchange(true)) return;
     trigger_ = std::thread([this] { TriggerLoop(); });

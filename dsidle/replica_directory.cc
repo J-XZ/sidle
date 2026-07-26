@@ -114,6 +114,25 @@ ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_
   }
 }
 
+bool ReplicaDirectory::HasReplica(NodeRef ref,
+                                  std::uint64_t generation) const {
+  Slot* slot = Find(ref);
+  if (!slot) return false;
+  while (true) {
+    const auto first = slot->seq.load(std::memory_order_acquire);
+    if (first & 1) {
+      _mm_pause();
+      continue;
+    }
+    const auto local = slot->local_ptr.load(std::memory_order_relaxed);
+    const auto slot_generation =
+        slot->generation.load(std::memory_order_relaxed);
+    const auto second = slot->seq.load(std::memory_order_acquire);
+    if (first == second)
+      return local && slot_generation == generation;
+  }
+}
+
 void* ReplicaDirectory::PublishLocked(NodeRef ref, ReplicaSnapshot snapshot) {
   if (!snapshot.local_ptr || !snapshot.generation || !snapshot.bytes)
     throw std::runtime_error("invalid ReplicaDirectory publication");

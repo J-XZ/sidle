@@ -114,6 +114,7 @@ class tcursor {
     typedef typename P::threadinfo_type threadinfo;
     static constexpr int new_nodes_size = 1; // unless we make a new trie newnodes will have at most 1 item
     typedef small_vector<std::pair<leaf_type*, nodeversion_value_type>, new_nodes_size> new_nodes_type;
+    typedef small_vector<node_type*, new_nodes_size> initial_replica_nodes_type;
 
     tcursor(basic_table<P>& table, Str str)
         : ka_(str), root_(table.fix_root()) {
@@ -169,6 +170,8 @@ class tcursor {
     inline bool find_insert(threadinfo& ti);
 
     inline void finish(int answer, threadinfo& ti);
+    inline void publish_local_replicas(bool refresh_current,
+                                       bool refresh_original);
 
     inline nodeversion_value_type previous_full_version_value() const;
     inline nodeversion_value_type next_full_version_value(int state) const;
@@ -184,6 +187,8 @@ class tcursor {
     nodeversion_value_type original_v_;
     nodeversion_value_type updated_v_;
     new_nodes_type new_nodes_;
+    initial_replica_nodes_type initial_replica_nodes_;
+    initial_replica_nodes_type refresh_replica_nodes_;
 
     inline node_type* reset_retry() {
         ka_.unshift_all();

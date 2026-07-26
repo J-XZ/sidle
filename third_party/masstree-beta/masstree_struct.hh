@@ -192,6 +192,17 @@ class node_base : public make_nodeversion<P>::type {
 
     dsidle::NodeRef control_ref() const { return control_ref_; }
 
+    node_mem_type_t replica_policy_type() const {
+        if (!control_ref_)
+            return node_mem_type_t::unknown;
+        if (auto* replicas = dsidle::CurrentReplicaDirectoryOrNull()) {
+            if (replicas->HasReplica(
+                    control_ref_, dsidle::LoadNodeGeneration(control_ref_)))
+                return node_mem_type_t::local;
+        }
+        return node_mem_type_t::remote;
+    }
+
 
     inline base_type* parent() const {
         if (control_ref_) {
@@ -623,14 +634,19 @@ class leaf : public node_base<P> {
         return n;
     }
 
-    static leaf<P>* make_root(int ksufsize, leaf<P>* parent, threadinfo& ti) {
+    static leaf<P>* make_root(int ksufsize, leaf<P>* parent, threadinfo& ti,
+                              bool* initial_local = nullptr) {
         leaf<P>* n = nullptr;
         uint8_t depth = 1;
         node_mem_type_t new_node_type = node_mem_type_t::local;
-        if (parent && parent->sidle_meta.metadata.type != node_mem_type_t::unknown) {
+        if (parent) {
             depth = parent->sidle_meta.metadata.depth + 1;
-            new_node_type = node_base<P>::strategy_manager->decide_new_node_position(parent->sidle_meta.metadata.type, depth);
+            new_node_type =
+                node_base<P>::strategy_manager->decide_new_node_position(
+                    parent->replica_policy_type(), depth);
         }
+        if (initial_local)
+            *initial_local = new_node_type == node_mem_type_t::local;
         n = make_with_cxl_policy(ksufsize, parent ? parent->phantom_epoch() : phantom_epoch_type(), ti, 1, new_node_type, 1, false);
         n->next_ = nullptr;
         n->prev_ = nullptr;

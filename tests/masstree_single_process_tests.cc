@@ -176,6 +176,11 @@ int main() {
   std::map<std::string, std::string> expected;
   using table_params = Masstree::default_table::parameters_type;
   using table_key = Masstree::key<typename table_params::ikey_type>;
+  sidle::strategy_manager = sidle::sidle_strategy(1024, 80, false);
+  Masstree::node_base<table_params>::strategy_manager =
+      &sidle::strategy_manager;
+  Masstree::root_replica_pin<table_params> initial_root_pin(pool, replicas);
+  assert(initial_root_pin.Refresh(*ti));
   const auto find_slot = [](Masstree::leaf<table_params>* leaf,
                             const std::string& text) {
     table_key key(text.data(), text.size());
@@ -189,6 +194,30 @@ int main() {
   };
   const std::string cow_key_a(32, 'a');
   const std::string cow_key_b(32, 'b');
+  const std::string placement_key_a =
+      "placekey" + std::string(23, 'p') + "A";
+  const std::string placement_key_b =
+      "placekey" + std::string(23, 'p') + "B";
+  query.run_replace(
+      table.table(),
+      lcdf::Str(placement_key_a.data(), placement_key_a.size()),
+      lcdf::Str("placement-a", 11), *ti);
+  query.run_replace(
+      table.table(),
+      lcdf::Str(placement_key_b.data(), placement_key_b.size()),
+      lcdf::Str("placement-b", 11), *ti);
+  expected[placement_key_a] = "placement-a";
+  expected[placement_key_b] = "placement-b";
+  Masstree::unlocked_tcursor<table_params> placement_cursor(
+      table.table(),
+      lcdf::Str(placement_key_b.data(), placement_key_b.size()));
+  assert(placement_cursor.find_unlocked(*ti));
+  const auto placement_ref = placement_cursor.node()->control_ref();
+  assert(placement_ref != root_ref);
+  assert(replicas.HasReplica(
+      placement_ref, dsidle::LoadNodeGeneration(placement_ref)));
+  assert(replicas.HasReplica(
+      root_ref, dsidle::LoadNodeGeneration(root_ref)));
   query.run_replace(table.table(), lcdf::Str(cow_key_a.data(), cow_key_a.size()),
                     lcdf::Str("cow-a", 5), *ti);
   table_key cow_search(cow_key_a.data(), cow_key_a.size());
@@ -388,6 +417,9 @@ int main() {
 
   assert(!table.table().root()->isleaf());
   auto* canonical_root = static_cast<Masstree::internode<replica_params>*>(table.table().root());
+  assert(replicas.HasReplica(
+      canonical_root->control_ref(),
+      dsidle::LoadNodeGeneration(canonical_root->control_ref())));
   assert(dsidle::LoadCanonicalNodeBytes(canonical_root->control_ref()) ==
          sizeof(*canonical_root));
   const auto root_replica_version = canonical_root->stable();

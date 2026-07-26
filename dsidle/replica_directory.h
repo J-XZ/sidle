@@ -56,6 +56,10 @@ class ReplicaDirectory {
   // Acquires a stable local copy only if its generation/version match the
   // canonical control snapshot. The caller keeps the ReadHandle until copied.
   ReadHandle Acquire(NodeRef ref, std::uint64_t generation, std::uint64_t cached_version);
+  // Policy-only residency query. It does not dereference the buffer or require
+  // its cached canonical version to remain current while a writer holds the
+  // node lock.
+  bool HasReplica(NodeRef ref, std::uint64_t generation) const;
 
   // Publishes a fully initialized local buffer and returns the superseded
   // buffer only after all local readers have left. Caller owns/free()s it.

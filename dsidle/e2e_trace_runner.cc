@@ -194,6 +194,8 @@ int main(int argc, char** argv) {
         table.table(), pool, replicas, thresholds, cfg.vm_count, options.node,
         cfg.foreground_worker_count_per_vm, std::chrono::milliseconds(10),
         std::chrono::milliseconds(1000), std::chrono::milliseconds(1000));
+    if (!replica_workers.PinRoot(*bootstrap_ti))
+      Fail("failed to pin the canonical root replica");
     replica_workers.Start();
     const uint32_t workers = cfg.foreground_worker_count_per_vm; const uint32_t first = options.node * workers;
     std::atomic<uint64_t> heartbeat{0}, heartbeat_stop{false};

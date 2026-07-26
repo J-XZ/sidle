@@ -234,6 +234,8 @@ int main(int argc, char** argv) {
             options.node, cfg.foreground_worker_count_per_vm,
             std::chrono::milliseconds(10), std::chrono::milliseconds(1000),
             std::chrono::milliseconds(1000));
+    if (!replica_workers.PinRoot(*ti))
+      Fail("failed to pin the canonical root replica");
     replica_workers.Start();
     RunResult result;
     if (options.phase == "e2e08_fill") result = Put(table, pool, replicas, suite, phase_barrier, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);

@@ -69,7 +69,11 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     leaf_type* twig_head = n_;
     leaf_type* twig_tail = n_;
     while (kcmp == 0) {
-        leaf_type* nl = leaf_type::make_root(0, twig_tail, ti);
+        bool initial_local = false;
+        leaf_type* nl =
+            leaf_type::make_root(0, twig_tail, ti, &initial_local);
+        if (initial_local)
+            initial_replica_nodes_.push_back(nl);
         nl->assign_initialize_for_layer(0, oka);
         if (twig_head != n_)
             twig_tail->lv_[0] = nl;
@@ -91,7 +95,11 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
             + n_->iksuf_[0].overhead(n_->width);
     else
         ksufsize = 0;
-    leaf_type *nl = leaf_type::make_root(ksufsize, twig_tail, ti);
+    bool initial_local = false;
+    leaf_type *nl =
+        leaf_type::make_root(ksufsize, twig_tail, ti, &initial_local);
+    if (initial_local)
+        initial_replica_nodes_.push_back(nl);
     nl->assign_initialize(0, kcmp < 0 ? oka : ka_, ti);
     nl->assign_initialize(1, kcmp < 0 ? ka_ : oka, ti);
     nl->lv_[kcmp > 0] = n_->lv_[kx_.p];
@@ -145,6 +153,47 @@ void tcursor<P>::finish_insert()
     perm.insert_from_back(kx_.i);
     fence();
     n_->permutation_ = perm.value();
+}
+
+template <typename P>
+inline void tcursor<P>::publish_local_replicas(bool refresh_current,
+                                               bool refresh_original)
+{
+    auto* directory = dsidle::CurrentReplicaDirectoryOrNull();
+    if (!directory)
+        return;
+    const auto publish = [directory](node_type* node) {
+        try {
+            const auto version = node->stable();
+            if (version.deleted() || version.locked())
+                return;
+            if (node->isleaf())
+                leaf_replica<P>::Promote(
+                    *static_cast<leaf_type*>(node), version, *directory,
+                    !node->is_root());
+            else
+                internode_replica<P>::Promote(
+                    *static_cast<internode_type*>(node), version, *directory,
+                    !node->is_root());
+        } catch (const std::bad_alloc&) {
+            // The canonical insertion has already committed. A local replica
+            // is an optional cache, so local DRAM exhaustion must not turn a
+            // successful write into a replay-visible failure.
+        }
+    };
+    for (node_type* node : refresh_replica_nodes_) {
+        std::free(directory->Invalidate(node->control_ref()));
+        publish(node);
+    }
+    bool current_was_initial = false;
+    for (node_type* node : initial_replica_nodes_) {
+        publish(node);
+        current_was_initial = current_was_initial || node == n_;
+    }
+    if (refresh_current && !current_was_initial)
+        publish(n_);
+    if (refresh_original && original_n_ != n_)
+        publish(original_n_);
 }
 
 template <typename P>
