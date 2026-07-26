@@ -27,9 +27,11 @@
 #include <vector>
 
 namespace {
+// Match cxlkv's runner default; formal YCSB passes its recorded seed explicitly.
+constexpr uint64_t kDefaultValueSeed = 0x43584c4b56545241ULL;
 enum class TraceOpKind { kPut, kGet, kDelete, kScan };
 struct TraceOp { TraceOpKind kind; std::string key; uint64_t len; };
-struct Options { std::string config = dsidle::DefaultExperimentConfigPath(); std::string phase = "load"; uint32_t node = 0; uint32_t batch_ops = 4096; uint64_t min_duration_sec = 0; bool bootstrap = false; };
+struct Options { std::string config = dsidle::DefaultExperimentConfigPath(); std::string phase = "load"; uint32_t node = 0; uint32_t batch_ops = 4096; uint64_t value_seed = kDefaultValueSeed; uint64_t min_duration_sec = 0; bool bootstrap = false; };
 
 [[noreturn]] void Fail(const std::string& text) { throw std::runtime_error(text); }
 uint64_t ParseUnsigned(std::string_view text, const char* label) {
@@ -106,9 +108,10 @@ Options ParseOptions(int argc, char** argv) {
     else if (arg == "--phase") options.phase = take("--phase");
     else if (arg == "--node") options.node = static_cast<uint32_t>(ParseUnsigned(take("--node"), "node"));
     else if (arg == "--batch-ops") options.batch_ops = static_cast<uint32_t>(ParseUnsigned(take("--batch-ops"), "batch_ops"));
+    else if (arg == "--value-seed") options.value_seed = ParseUnsigned(take("--value-seed"), "value_seed");
     else if (arg == "--min-duration-sec") options.min_duration_sec = ParseUnsigned(take("--min-duration-sec"), "min_duration_sec");
     else if (arg == "--bootstrap") options.bootstrap = true;
-    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_trace_runner [--config PATH] --phase NAME --node N [--batch-ops N] [--min-duration-sec N] [--bootstrap]\n"; std::exit(0); }
+    else if (arg == "--help") { std::cout << "usage: dsidle_e2e_trace_runner [--config PATH] --phase NAME --node N [--batch-ops N] [--value-seed N] [--min-duration-sec N] [--bootstrap]\n"; std::exit(0); }
     else Fail("unknown argument: " + arg);
   }
   if (!options.batch_ops) Fail("batch_ops must be > 0"); return options;
@@ -139,8 +142,11 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
             }
           }
         }
-        ++total; heartbeat->fetch_add(1, std::memory_order_relaxed);
+        ++total;
       }
+      // Keep progress accounting out of the per-operation hot path.  The
+      // prefetched batch is the existing TLS aggregation boundary.
+      heartbeat->fetch_add(batch.size(), std::memory_order_relaxed);
     }
   } while (std::chrono::steady_clock::now() < deadline);
   ti->rcu_drain(); return total;
@@ -155,7 +161,12 @@ int main(int argc, char** argv) {
     if (cfg.latency_inject.enabled)
       Fail("enabled latency injection requires a RelWithDebInfo/non-Debug build");
 #endif
-    auto pool = dsidle::SharedPool::Attach(cfg.shared_path, cfg.shared_size_mb << 20);
+    const dsidle::PoolLayout expected_layout{
+        cfg.shared_size_mb << 20, cfg.hwcc.offset_mb << 20,
+        cfg.hwcc.size_mb << 20, cfg.swcc.offset_mb << 20,
+        cfg.swcc.size_mb << 20};
+    auto pool =
+        dsidle::SharedPool::Attach(cfg.shared_path, expected_layout);
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
@@ -226,7 +237,13 @@ int main(int argc, char** argv) {
       }
       if (ti) {
         try {
-          counts[worker] = ReplayFile(std::filesystem::path(cfg.trace_dir) / ("worker" + std::to_string(first + worker) + ".txt"), cfg, &table, ti, options.batch_ops, 0x43584c4b56545241ULL ^ (uint64_t(first + worker) << 32), &heartbeat, deadline);
+        counts[worker] = ReplayFile(
+            std::filesystem::path(cfg.trace_dir) /
+                ("worker" + std::to_string(first + worker) + ".txt"),
+            cfg, &table, ti, options.batch_ops,
+            options.value_seed ^ (uint64_t(first + worker) << 32) ^
+                uint64_t(worker),
+            &heartbeat, deadline);
         } catch (...) {
           std::lock_guard<std::mutex> lock(worker_mutex);
           if (!worker_failure) worker_failure = std::current_exception();

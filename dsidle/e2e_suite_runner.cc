@@ -188,7 +188,7 @@ RunResult ReadAndVerify(Masstree::default_table& table,
                        const Suite& suite, uint32_t node, uint32_t nodes,
                        uint32_t workers, uint64_t generation) {
   const uint64_t node_count = CountForPart(kRecords, nodes, node);
-  return RunWorkers(table, pool, replicas, phase_barrier, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
+  return RunWorkers(table, pool, replicas, phase_barrier, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); const bool found = query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti); if (!found || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs: index=" + std::to_string(index) + " found=" + std::to_string(found) + " actual_bytes=" + std::to_string(actual.len) + " expected_bytes=" + std::to_string(expected.size())); } return count; });
 }
 }  // namespace
 
@@ -198,7 +198,12 @@ int main(int argc, char** argv) {
     if (options.node >= cfg.vm_count || cfg.vm_count < 4) Fail("suite runner requires a four-node config");
     const auto suite = ParseSuite(options.phase);
     if (cfg.fixed_key_size != suite.key_bytes || cfg.fixed_value_size != suite.value_bytes) Fail("config fixed key/value sizes do not match suite");
-    auto pool = dsidle::SharedPool::Attach(cfg.shared_path, cfg.shared_size_mb << 20);
+    const dsidle::PoolLayout expected_layout{
+        cfg.shared_size_mb << 20, cfg.hwcc.offset_mb << 20,
+        cfg.hwcc.size_mb << 20, cfg.swcc.offset_mb << 20,
+        cfg.swcc.size_mb << 20};
+    auto pool =
+        dsidle::SharedPool::Attach(cfg.shared_path, expected_layout);
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
