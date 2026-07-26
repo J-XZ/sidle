@@ -85,6 +85,7 @@ struct Stats {
 
 CacheModel ParseCacheModel(const std::string &value);
 const char *CacheModelName(CacheModel model);
+Config ValidateConfig(Config config);
 LatencySimulator &GlobalLatencySimulator();
 bool InstrumentationEnabledFast();
 void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag);

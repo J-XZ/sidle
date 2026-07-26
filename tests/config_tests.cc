@@ -42,6 +42,61 @@ int main() {
   assert(!parsed_compatible.verbose && !parsed_compatible.extra_check);
   assert(parsed_compatible.shared_path == "/tmp/ivshmem_shared_mem");
 
+  std::string exponent_latency_json = compatible_json;
+  auto zero_read =
+      exponent_latency_json.find("\"swcc_read_ns_per_line\":0");
+  assert(zero_read != std::string::npos);
+  exponent_latency_json.replace(
+      zero_read, std::string("\"swcc_read_ns_per_line\":0").size(),
+      "\"swcc_read_ns_per_line\":1e2");
+  {
+    std::ofstream output(compatible);
+    output << exponent_latency_json;
+  }
+  assert(dsidle::LoadExperimentConfig(compatible)
+             .latency_inject.swcc_read_ns_per_line == 100.0);
+
+  std::string zero_capacity_json = compatible_json;
+  auto one_capacity =
+      zero_capacity_json.find("\"cache_capacity_lines\":1");
+  assert(one_capacity != std::string::npos);
+  zero_capacity_json.replace(
+      one_capacity, std::string("\"cache_capacity_lines\":1").size(),
+      "\"cache_capacity_lines\":0");
+  {
+    std::ofstream output(compatible);
+    output << zero_capacity_json;
+  }
+  bool zero_capacity_rejected = false;
+  try {
+    (void)dsidle::LoadExperimentConfig(compatible);
+  } catch (const std::runtime_error& error) {
+    zero_capacity_rejected =
+        std::string(error.what()).find("cache_capacity_lines") !=
+        std::string::npos;
+  }
+  assert(zero_capacity_rejected);
+
+  std::string negative_latency_json = compatible_json;
+  zero_read = negative_latency_json.find("\"swcc_read_ns_per_line\":0");
+  assert(zero_read != std::string::npos);
+  negative_latency_json.replace(
+      zero_read, std::string("\"swcc_read_ns_per_line\":0").size(),
+      "\"swcc_read_ns_per_line\":-1");
+  {
+    std::ofstream output(compatible);
+    output << negative_latency_json;
+  }
+  bool negative_latency_rejected = false;
+  try {
+    (void)dsidle::LoadExperimentConfig(compatible);
+  } catch (const std::runtime_error& error) {
+    negative_latency_rejected =
+        std::string(error.what()).find("swcc_read_ns_per_line") !=
+        std::string::npos;
+  }
+  assert(negative_latency_rejected);
+
   std::string missing_mode_json = compatible_json;
   auto required_verbose = missing_mode_json.find("\"verbose\":false,");
   assert(required_verbose != std::string::npos);

@@ -112,7 +112,10 @@ void ValidateObjectKeys(const std::string& object, const char* section,
 
 std::uint64_t Integer(const std::string& object, const std::string& name) {
   std::smatch match;
-  if (!std::regex_search(object, match, std::regex("\\\"" + name + "\\\"\\s*:\\s*([0-9]+)")))
+  if (!std::regex_search(
+          object, match,
+          std::regex("\\\"" + name +
+                     "\\\"\\s*:\\s*((?:0|[1-9][0-9]*))\\s*[,}]")))
     throw std::runtime_error("missing integer: " + name);
   return std::stoull(match[1]);
 }
@@ -128,7 +131,13 @@ bool Boolean(const std::string& object, const std::string& name) {
   return m[1] == "true";
 }
 double Number(const std::string& object, const std::string& name) {
-  std::smatch m; if (!std::regex_search(object, m, std::regex("\\\"" + name + "\\\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)"))) throw std::runtime_error("missing number: " + name);
+  std::smatch m;
+  if (!std::regex_search(
+          object, m,
+          std::regex("\\\"" + name +
+                     "\\\"\\s*:\\s*(-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?"
+                     "(?:[eE][+-]?[0-9]+)?)\\s*[,}]")))
+    throw std::runtime_error("missing number: " + name);
   return std::stod(m[1]);
 }
 
@@ -207,6 +216,12 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   l.enabled=Boolean(latency,"enabled"); l.foreground_enabled=Boolean(latency,"foreground_enabled"); l.merge_enabled=Boolean(latency,"merge_enabled"); l.stats_enabled=Boolean(latency,"stats_enabled"); l.cache_line_bytes=Integer(latency,"cache_line_bytes");
   l.swcc_read_ns_per_line=Number(latency,"swcc_read_ns_per_line"); l.swcc_write_ns_per_line=Number(latency,"swcc_write_ns_per_line"); l.swcc_flush_ns_per_line=Number(latency,"swcc_flush_ns_per_line"); l.hwcc_read_ns_per_line=Number(latency,"hwcc_read_ns_per_line"); l.hwcc_write_ns_per_line=Number(latency,"hwcc_write_ns_per_line"); l.hwcc_atomic_load_ns=Number(latency,"hwcc_atomic_load_ns"); l.hwcc_atomic_store_ns=Number(latency,"hwcc_atomic_store_ns"); l.hwcc_atomic_rmw_ns=Number(latency,"hwcc_atomic_rmw_ns");
   l.cache_model=latency_sim::ParseCacheModel(String(latency,"cache_model")); l.cache_hits_enabled=Boolean(latency,"cache_hits_enabled"); l.cache_capacity_lines=Integer(latency,"cache_capacity_lines"); l.cache_associativity=Integer(latency,"cache_associativity"); l.cache_fixed_hit_rate=Number(latency,"cache_fixed_hit_rate"); l.cache_hit_extra_ns=Number(latency,"cache_hit_extra_ns");
+  try {
+    l = latency_sim::ValidateConfig(l);
+  } catch (const std::invalid_argument& error) {
+    throw std::runtime_error(
+        std::string("invalid dsidle.latency_inject: ") + error.what());
+  }
   if (l.enabled && (config.verbose || config.extra_check))
     throw std::runtime_error(
         "latency injection requires dsidle.verbose=false and "

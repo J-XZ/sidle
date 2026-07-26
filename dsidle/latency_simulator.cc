@@ -120,7 +120,7 @@ void AddStats(Stats *s, PoolKind p, uint64_t raw, uint64_t hits, uint64_t misses
   if (p == PoolKind::kSwcc) add(s->swcc_raw_line_accesses,s->swcc_cache_hits,s->swcc_cache_misses,s->swcc_delayed_ns); else add(s->hwcc_raw_line_accesses,s->hwcc_cache_hits,s->hwcc_cache_misses,s->hwcc_delayed_ns);
 }
 std::mutex &StatsMutex() { static std::mutex mutex; return mutex; }
-Config ValidateConfig(Config config) {
+Config ValidateConfigImpl(Config config) {
   if (!config.cache_line_bytes)
     throw std::invalid_argument(
         "latency simulator cache_line_bytes must be > 0");
@@ -155,6 +155,9 @@ Config ValidateConfig(Config config) {
 
 CacheModel ParseCacheModel(const std::string &value) { if (value == "none") return CacheModel::kNone; if (value == "fixed_hit_rate") return CacheModel::kFixedHitRate; if (value == "per_thread_lru") return CacheModel::kPerThreadLru; throw std::invalid_argument("unknown latency cache model: " + value); }
 const char *CacheModelName(CacheModel model) { return model == CacheModel::kNone ? "none" : model == CacheModel::kFixedHitRate ? "fixed_hit_rate" : model == CacheModel::kPerThreadLru ? "per_thread_lru" : "unknown"; }
+Config ValidateConfig(Config config) {
+  return ValidateConfigImpl(config);
+}
 LatencySimulator &GlobalLatencySimulator() { static LatencySimulator simulator; return simulator; }
 bool InstrumentationEnabledFast() { return g_instrumentation_enabled.load(std::memory_order_relaxed); }
 void PrintAndResetLatencySimulatorStats(std::ostream& output, const char* tag) {
