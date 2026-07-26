@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include "dsidle/latency_simulator.h"
+#include "dsidle/swcc_visibility.h"
 
 namespace dsidle {
 
@@ -84,9 +85,10 @@ T* ResolveCanonicalNode(NodeRef ref) {
       !control->canonical_swcc_offset)
     throw std::runtime_error("NodeRef does not name a published canonical node");
   T* canonical = SwccOffset<T>(control->canonical_swcc_offset).get(base);
-  // Every canonical NodeRef decode starts a node-body traversal. Account the
-  // first cache line here; deeper field walks are naturally charged by their
-  // value/ksuffix and visibility wrappers.
+  // NodeControl publishes only the SWCC offset.  Invalidate before the first
+  // canonical-body access; in particular, nodeversion::load() must not read a
+  // stale control_ref_ from this first cache line.
+  InvalidateSwccRange(canonical, kSwccCacheLineBytes);
   latency_sim::RecordSwccRead(canonical, 64);
   return canonical;
 }

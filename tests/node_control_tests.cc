@@ -17,6 +17,12 @@ int main() {
   assert(ref.get(pool.base())->allocation_state == dsidle::NodeAllocationState::kAllocating);
   assert(ref.get(pool.base())->generation == 1);
   slab.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
+  auto* canonical = reinterpret_cast<std::uint64_t*>(
+      static_cast<std::byte*>(pool.base()) + (2ULL << 20));
+  *canonical = 0x5349444c45ULL;
+  dsidle::FlushSwccRange(canonical, sizeof(*canonical));
+  assert(dsidle::ResolveCanonicalNode<std::uint64_t>(ref) == canonical);
+  assert(*dsidle::ResolveCanonicalNode<std::uint64_t>(ref) == 0x5349444c45ULL);
   dsidle::RootControlAccessor root(pool.root_control());
   root.publish(ref, 1);
   const auto root_view = root.stable();
