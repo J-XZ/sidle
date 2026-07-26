@@ -44,6 +44,8 @@ endif()
 
 add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc dsidle/shard_allocator.cc dsidle/replica_directory.cc dsidle/latency_simulator.cc)
 target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(
+  dsidle PUBLIC DSIDLE_CMAKE_BUILD_TYPE="$<CONFIG>")
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
 
@@ -109,9 +111,15 @@ add_test(NAME dsidle_ycsb_summarizer_tests
     "out=$(mktemp -d /tmp/dsidle-ycsb-summary.XXXXXX); python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\" && grep -q 'avg_ops_sum' \"$out/ycsb_summary.csv\" && grep -q 'ops_per_sec_p90' \"$out/ycsb_summary.csv\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_ycsb_experiment.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ycsb_logs)
 set_tests_properties(dsidle_ycsb_summarizer_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_vm_e2e_harness_tests
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vm_e2e_harness.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_vm_e2e.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/clear_dsidle_caches.py)
+set_tests_properties(dsidle_vm_e2e_harness_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_prepare_only_tests
   COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/run_meta.json\" && test -s \"$out/result/trace_manifest.json\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(m[\"warmup_rounds\"] != 1 or m[\"value_seed\"] != 4851300051586183745 or m[\"sidle_background_roles_per_node\"] != 5 or m[\"background_epoch_slots_per_node\"] != 4 or m[\"epoch_slots_per_node\"] != 5 or m[\"runnable_threads_per_node\"] != 7)' \"$out/result/run_meta.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\""
+    "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/run_meta.json\" && test -s \"$out/result/trace_manifest.json\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); t=json.load(open(sys.argv[2])); sys.exit(m[\"warmup_rounds\"] != 1 or m[\"value_seed\"] != 4851300051586183745 or m[\"sidle_background_roles_per_node\"] != 5 or m[\"background_epoch_slots_per_node\"] != 4 or m[\"epoch_slots_per_node\"] != 5 or m[\"runnable_threads_per_node\"] != 7 or m[\"shared_size_mb\"] != 2048 or m[\"requested_shared_size_mb\"] != 2048 or m[\"shared_memory_size_source\"] != \"explicit\" or len(t[\"trace_set_sha256\"]) != 64 or any(len(w[\"sha256\"]) != 64 for p in t[\"phases\"].values() for w in p[\"workers\"].values()))' \"$out/result/run_meta.json\" \"$out/result/trace_manifest.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\" && ! \"$1\" --prepare-only --out-dir \"$out/reserve\" --shared-reserve-mb 4096 >/dev/null 2>&1 && test ! -e \"$out/reserve\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_prepare_only_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_trace_generation_tests

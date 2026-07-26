@@ -8,6 +8,7 @@
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_set>
 
 namespace dsidle {
@@ -210,11 +211,10 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
     throw std::runtime_error(
         "latency injection requires dsidle.verbose=false and "
         "dsidle.extra_check=false");
-#ifndef NDEBUG
-  if (l.enabled)
+  if (l.enabled &&
+      std::string_view(DSIDLE_CMAKE_BUILD_TYPE) != "RelWithDebInfo")
     throw std::runtime_error(
-        "latency injection requires a RelWithDebInfo/non-Debug build");
-#endif
+        "latency injection requires an exact RelWithDebInfo build");
   if (!PowerOfTwo(config.shared_size_mb) || config.hwcc.offset_mb != 0 ||
       config.swcc.offset_mb != config.hwcc.size_mb ||
       config.hwcc.size_mb + config.swcc.size_mb != config.shared_size_mb ||

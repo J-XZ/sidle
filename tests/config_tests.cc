@@ -79,8 +79,28 @@ int main() {
     invalid_latency_rejected =
         std::string(error.what()).find("verbose=false") != std::string::npos;
   }
-  std::remove(compatible);
   assert(invalid_latency_rejected);
+
+  std::string build_type_latency_json = compatible_json;
+  enabled = build_type_latency_json.find("\"enabled\":false");
+  assert(enabled != std::string::npos);
+  build_type_latency_json.replace(
+      enabled, std::string("\"enabled\":false").size(), "\"enabled\":true");
+  {
+    std::ofstream output(compatible);
+    output << build_type_latency_json;
+  }
+  bool build_type_latency_accepted = true;
+  try {
+    (void)dsidle::LoadExperimentConfig(compatible);
+  } catch (const std::runtime_error& error) {
+    build_type_latency_accepted = false;
+    assert(std::string(error.what()).find("exact RelWithDebInfo") !=
+           std::string::npos);
+  }
+  assert(build_type_latency_accepted ==
+         (std::string(DSIDLE_CMAKE_BUILD_TYPE) == "RelWithDebInfo"));
+  std::remove(compatible);
 
   const char* invalid = "/tmp/dsidle-invalid-config.jsonc";
   std::ofstream output(invalid);
