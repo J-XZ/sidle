@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -87,29 +88,100 @@ uint64_t ReadIndex(const Suite& suite, uint32_t node, uint32_t worker, uint64_t 
       (uint64_t(node) << 32U) ^ (uint64_t(worker + 1) << 16U) ^ seq;
   return SplitMix64(seed) % kRecords;
 }
-uint64_t RunWorkers(Masstree::default_table& table, dsidle::SharedPool& pool,
-                    dsidle::ReplicaDirectory& replicas, uint32_t vm_count,
-                    uint32_t node, uint32_t workers,
-                    const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
-  std::vector<std::thread> threads; std::vector<uint64_t> counts(workers); std::exception_ptr failure; std::mutex failure_mutex;
-  for (uint32_t worker = 0; worker < workers; ++worker) threads.emplace_back([&, worker] { try { dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node); dsidle::ConfigureCurrentReplicaDirectory(replicas); threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, worker); counts[worker] = operation(worker, *ti); } catch (...) { std::lock_guard<std::mutex> lock(failure_mutex); if (!failure) failure = std::current_exception(); } });
-  for (auto& thread : threads) thread.join(); if (failure) std::rethrow_exception(failure);
-  uint64_t total = 0; for (const auto count : counts) total += count; return total;
+struct RunResult {
+  uint64_t operations{};
+  uint64_t duration_us{};
+  uint64_t start_barrier_us{};
+};
+RunResult RunWorkers(
+    Masstree::default_table& table, dsidle::SharedPool& pool,
+    dsidle::ReplicaDirectory& replicas,
+    dsidle::SharedPhaseBarrierView& phase_barrier, uint32_t vm_count,
+    uint32_t node, uint32_t workers,
+    const std::function<uint64_t(uint32_t, threadinfo&)>& operation) {
+  std::vector<std::thread> threads;
+  std::vector<uint64_t> counts(workers);
+  std::exception_ptr failure;
+  std::mutex mutex;
+  std::condition_variable cv;
+  uint32_t ready = 0, done = 0;
+  bool start = false;
+  for (uint32_t worker = 0; worker < workers; ++worker)
+    threads.emplace_back([&, worker] {
+      threadinfo* ti = nullptr;
+      try {
+        dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node);
+        dsidle::ConfigureCurrentReplicaDirectory(replicas);
+        ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!failure) failure = std::current_exception();
+      }
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++ready;
+        cv.notify_all();
+        cv.wait(lock, [&] { return start; });
+      }
+      if (ti) {
+        try {
+          counts[worker] = operation(worker, *ti);
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (!failure) failure = std::current_exception();
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++done;
+        cv.notify_all();
+      }
+    });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return ready == workers; });
+  }
+  const auto barrier_begin = std::chrono::steady_clock::now();
+  phase_barrier.Wait();
+  const auto barrier_end = std::chrono::steady_clock::now();
+  const auto begin = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    start = true;
+    cv.notify_all();
+  }
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return done == workers; });
+  }
+  const auto end = std::chrono::steady_clock::now();
+  for (auto& thread : threads) thread.join();
+  if (failure) std::rethrow_exception(failure);
+  RunResult result;
+  for (const auto count : counts) result.operations += count;
+  result.duration_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           end - begin).count();
+  result.start_barrier_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          barrier_end - barrier_begin).count();
+  return result;
 }
-uint64_t Put(Masstree::default_table& table, dsidle::SharedPool& pool,
+RunResult Put(Masstree::default_table& table, dsidle::SharedPool& pool,
              dsidle::ReplicaDirectory& replicas, const Suite& suite,
+             dsidle::SharedPhaseBarrierView& phase_barrier,
              uint32_t node, uint32_t nodes, uint32_t workers,
              uint64_t generation) {
   const uint64_t node_start = StartForPart(kRecords, nodes, node), node_count = CountForPart(kRecords, nodes, node);
-  return RunWorkers(table, pool, replicas, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const auto key = Key(suite, node_start + start + i), value = Value(suite, node_start + start + i, generation); latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti); } return count; });
+  return RunWorkers(table, pool, replicas, phase_barrier, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const auto key = Key(suite, node_start + start + i), value = Value(suite, node_start + start + i, generation); latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); query.run_replace(table.table(), lcdf::Str(key.data(), key.size()), lcdf::Str(value.data(), value.size()), ti); } return count; });
 }
-uint64_t ReadAndVerify(Masstree::default_table& table,
+RunResult ReadAndVerify(Masstree::default_table& table,
                        dsidle::SharedPool& pool,
                        dsidle::ReplicaDirectory& replicas,
+                       dsidle::SharedPhaseBarrierView& phase_barrier,
                        const Suite& suite, uint32_t node, uint32_t nodes,
                        uint32_t workers, uint64_t generation) {
   const uint64_t node_count = CountForPart(kRecords, nodes, node);
-  return RunWorkers(table, pool, replicas, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
+  return RunWorkers(table, pool, replicas, phase_barrier, nodes, node, workers, [&](uint32_t worker, threadinfo& ti) { query<row_type> query; const uint64_t start = StartForPart(node_count, workers, worker), count = CountForPart(node_count, workers, worker); for (uint64_t i = 0; i < count; ++i) { const uint64_t index = ReadIndex(suite, node, worker, start + i); const auto key = Key(suite, index), expected = Value(suite, index, generation); lcdf::Str actual; latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground); if (!query.run_get1(table.table(), lcdf::Str(key.data(), key.size()), 0, actual, ti) || actual.len != expected.size() || std::memcmp(actual.s, expected.data(), actual.len) != 0) Fail("cross-VM read value differs from expected bytes"); } return count; });
 }
 }  // namespace
 
@@ -131,7 +203,8 @@ int main(int argc, char** argv) {
     threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
     if (options.bootstrap) table.initialize(*ti, cfg.hot_percentage_seed);
-    dsidle::SharedExperimentPhaseBarrier(pool).Wait();
+    auto phase_barrier = dsidle::SharedExperimentPhaseBarrier(pool);
+    phase_barrier.Wait();
     if (!options.bootstrap) table.table().attach();
     const auto epoch_slots_per_vm =
         pool.static_layout()->epoch_slot_count / cfg.vm_count;
@@ -145,18 +218,28 @@ int main(int argc, char** argv) {
             std::chrono::milliseconds(10), std::chrono::milliseconds(1000),
             std::chrono::milliseconds(1000));
     replica_workers.Start();
-    const auto begin = std::chrono::steady_clock::now();
-    uint64_t operations = 0;
-    if (options.phase == "e2e08_fill") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e08_read") operations = ReadAndVerify(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e09_fill") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
-    else if (options.phase == "e2e09_update") operations = Put(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
-    else if (options.phase == "e2e09_read") operations = ReadAndVerify(table, pool, replicas, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
+    RunResult result;
+    if (options.phase == "e2e08_fill") result = Put(table, pool, replicas, suite, phase_barrier, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e08_read") result = ReadAndVerify(table, pool, replicas, phase_barrier, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_fill") result = Put(table, pool, replicas, suite, phase_barrier, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 0);
+    else if (options.phase == "e2e09_update") result = Put(table, pool, replicas, suite, phase_barrier, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
+    else if (options.phase == "e2e09_read") result = ReadAndVerify(table, pool, replicas, phase_barrier, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else Fail("unknown suite phase action");
-    dsidle::SharedExperimentPhaseBarrier(pool).Wait();
+    const auto end_barrier_begin = std::chrono::steady_clock::now();
+    phase_barrier.Wait();
+    const auto end_barrier_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - end_barrier_begin).count();
     replica_workers.Stop();
-    const uint64_t duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count());
-    std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << operations << " duration_us=" << duration << " trace_first=0 trace_workers=1 batch_ops=0\n";
+    const char* role = options.node == 0 ? "leader" : "follower";
+    std::cout << "E2E_BARRIER_TIME_US node=" << options.node
+              << " role=" << role << " phase_id=1 duration_us="
+              << result.start_barrier_us << " phase=" << options.phase
+              << "_start\n";
+    std::cout << "E2E_BARRIER_TIME_US node=" << options.node
+              << " role=" << role << " phase_id=2 duration_us="
+              << end_barrier_us << " phase=" << options.phase << "_end\n";
+    std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << result.operations << " duration_us=" << result.duration_us << " trace_first=" << options.node * cfg.foreground_worker_count_per_vm << " trace_workers=" << cfg.foreground_worker_count_per_vm << " batch_ops=0\n";
     latency_sim::PrintAndResetLatencySimulatorStats(std::cout, options.phase.c_str());
     std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes
               << " swcc_bytes=" << pool.header()->swcc_bytes
