@@ -41,10 +41,12 @@ cmake --build build -j"$(nproc)"
 `build/` 产物并 rsync 到 guest。
 
 ```bash
-scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 08 --rounds 10 \
+scripts/run_dsidle_vm_e2e_rounds.sh --execute --formal-acceptance \
+  --suite 08 --rounds 10 \
   --runner build/dsidle_e2e_suite_runner \
   --pool-tool build/dsidle_shared_pool
-scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 09 --rounds 10 \
+scripts/run_dsidle_vm_e2e_rounds.sh --execute --formal-acceptance \
+  --suite 09 --rounds 10 \
   --runner build/dsidle_e2e_suite_runner \
   --pool-tool build/dsidle_shared_pool
 ```
@@ -52,12 +54,16 @@ scripts/run_dsidle_vm_e2e_rounds.sh --execute --suite 09 --rounds 10 \
 脚本每轮重置 pool，并在 host 与四台 guest 清 page cache、执行 4×64MiB CPU
 cache sweep。它严格校验每个节点的 `TIME/ops/workers` 与 suite marker，记录
 git/config SHA256 和每轮 exit code，并输出与 cxlkv 同口径的
-`avg-round-max` JSON/CSV/Markdown 汇总。
+`avg-round-max` JSON/CSV/Markdown 汇总。只有显式
+`--formal-acceptance` 且精确满足冻结合同的运行才原子生成
+`acceptance.meta`；开发运行只生成 `run_complete.meta`。正式清单绑定 git、
+runner、pool tool、host/guest 配置、逐轮元数据、节点日志和汇总文件的 SHA256。
 
 YCSB 的 load 也是并发写入：4 VM、每 VM 4 worker 同时回放；没有串行 load 路径。
 
 ```bash
-./dsidle_run_ycsb_experiment.sh --vm-count 4 --warmup-rounds 1 --rounds 10 \
+./dsidle_run_ycsb_experiment.sh --formal-acceptance \
+  --vm-count 4 --warmup-rounds 1 --rounds 10 \
   --record-count 100000 --operation-count 100000 \
   --threads-per-node 4 --workloads a,b,c,d,e \
   --shared-size-mb 32768 --no-latency

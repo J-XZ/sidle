@@ -41,7 +41,7 @@ git submodule update --init --recursive
 ./dsidle_run_ycsb_experiment.sh --help
 
 out=$(mktemp -d /tmp/dsidle-ycsb-guide.XXXXXX)
-./dsidle_run_ycsb_experiment.sh \
+./dsidle_run_ycsb_experiment.sh --formal-acceptance \
   --prepare-only --out-dir "$out/result" \
   --workloads a,e --record-count 10 --operation-count 20 \
   --threads-per-node 2 --round-timeout 30 \
@@ -83,6 +83,13 @@ normalization：
 trace-set SHA；`trace_manifest.json` 再严格核对上述计数及逐 worker SHA。公平
 比较必须只生成一次，并把同一组 worker 文件原样交给 cxlkv 与 D-SIDLE。其他规模
 不做归一化，manifest 记录其原始随机划分。
+
+`--formal-acceptance` 是 fail-closed 开关：它要求 tracked worktree 干净，并
+锁定 1 个预热轮、10 个正式轮、4 VM×4 worker、每 VM 8 vCPU、32GiB、
+独立 load、A–E、100k/100k 与 `--no-latency`。完成后才生成
+`acceptance.meta`，其中绑定 Git SHA、runner/pool/config/trace/normalization、
+每个 phase 的逐轮状态、四节点日志与汇总 SHA256；普通开发运行只生成
+`run_complete.meta`。已有任一完成标记的目录不会被复用。
 
 runner 日志可用下列命令生成 JSON、CSV 与报告：
 

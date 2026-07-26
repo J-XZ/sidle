@@ -22,9 +22,9 @@ agent）的直接指令。执行协议见紧随其后的「施工执行协议」
    `e2e_08/09` 各 10 轮，以及 4 VM×4 foreground worker 的 100k
    YCSB 独立 load 与 A/B/C/D/E 各 10 轮。任一阶段发现 bug：修 bug →
    commit → 从全体验收第 1 项重新开始，不继承此前通过轮次。不存在以 phase
-   名称冒充独立负载的“补充套件”。全部连续达标后执行 **§7.4 最终基线差异校验与清扫**
-   （对基线全量 diff 审计、删除死代码与脚手架、复验），再完成 §6.5
-   清单与文档收尾。
+   名称冒充独立负载的“补充套件”。开始连续验收前必须先完成 **§7.4 最终基线
+   差异校验与清扫**及延迟插入审计，并提交推送冻结代码；验收期间除修 bug 外
+   不再改代码。全部连续达标后只补记不可执行的结果文档。
 4. **构建配置**：默认与验收一律用 **RelWithDebInfo =
    `-O3 -g3 -march=native -flto=full`（与 cxlkv 对齐）**。Debug/ASAN/
    UBSAN 构建**可选**——仅在排查具体 bug（偶发失败、疑似 UAF）时临时
@@ -207,7 +207,7 @@ software latency-injected result"。
 
 ## 1.4 安全约束（不可违反）
 
-- 禁止 push 到任何远程；允许本地 commit；禁止 `git reset --hard`、
+- 是否 push 由当轮用户授权决定；本轮要求每项修复后推送当前分支。禁止 `git reset --hard`、
   `git clean -fd`（回滚到基线的操作须用户明确确认后按 0.1 执行）；禁止
   覆盖用户已有未提交修改；禁止重新 clone。
 - 禁止重启服务器；**未经用户明确允许禁止重启/重建 VM**；禁止
@@ -335,7 +335,7 @@ experiment_config 段）与根 `experiment_config.jsonc`。
   },
   "host_cpu": {
     "reserved_cores": [34],           // 宿主机脚本/SSH
-    "ivshmem_server_cores": [32, 33],
+    "ivshmem_server_cores": [32, 33], // 兼容字段；ivshmem-plain 无 server，解析后忽略
     "vm_cores": [0, 1, /* … */ 31]    // 长度 ≥ count * core_count_per_vm
   },
   "e2e": {
@@ -353,8 +353,8 @@ experiment_config 段）与根 `experiment_config.jsonc`。
     "fixed_key_size": 32,             // 正式 YCSB/e2e_ycsb 默认 32；e2e_08 覆盖为 8；e2e_09 value=1000
     "fixed_value_size": 32,
     "trace_dir": "...",               // 本仓 runner 配置；非 cxlkv 根 e2e 字段
-    "verbose": false,                 // cxlkv policy 同名必填键；延迟注入开启时必须 false
-    "extra_check": false,             // cxlkv policy 同名必填键；延迟注入开启时必须 false
+    "verbose": false,                 // cxlkv policy 兼容键；当前 parse-and-ignore；延迟开启须 false
+    "extra_check": false,             // cxlkv policy 兼容键；当前 parse-and-ignore；延迟开启须 false
     "latency_inject": { /* §4.6 全字段；schema ≡ cxlkv LatencyInjectPolicyConfig */ }
   }
 }
@@ -371,8 +371,11 @@ experiment_config 段）与根 `experiment_config.jsonc`。
    相同或更近的节点。`shared_memory.numa_node` ∩ `vm.numa_node` ≠ ∅ 时：
    正式性能 / YCSB 对比 / §6.0 e2e **hard fail**；仅本地功能调试允许
    `--allow-overlapping-numa` 并在报告声明（对齐 cxlkv“单 NUMA 退化须说明”）。
-3. `host_cpu` 三组核列表互不重叠、在线、且每个核落在 `vm.numa_node` 覆盖的
-   NUMA 上；`vm_cores` 长度 ≥ `vm.count * vm.core_count_per_vm`。
+3. `reserved_cores` 与 `vm_cores` 互不重叠、在线，且 `vm_cores` 落在
+   `vm.numa_node` 覆盖的 NUMA 上；`vm_cores` 长度 ≥
+   `vm.count * vm.core_count_per_vm`。`ivshmem_server_cores` 仅为兼容 cxlkv
+   根配置而必填；本仓使用 `ivshmem-plain`、不启动 ivshmem-server，因此解析后
+   明确忽略，不校验或预留这些核。
 4. 配置选择环境变量：`DSIDLE_EXPERIMENT_CONFIG_JSONC`（语义同 cxlkv
    `CXLKV_EXPERIMENT_CONFIG_JSONC`）指向另一份完整 jsonc；默认
    `experiment_config.jsonc`。
@@ -492,7 +495,7 @@ trace/YCSB 同构）外：
 | `shared_memory.numa_node` | [1]（与 `vm.numa_node=[0]` 分离） |
 | `vm.count` / `core_count_per_vm` / `mem_size_mb_per_vm` | 4 / 8 / 2048 |
 | `vm.ssh_base_port` / `first_ip` / `bridge_tap_ip` | 10022 / 192.168.100.2 / 192.168.100.1 |
-| `host_cpu` 三组核数 | reserved 1、ivshmem 2、vm_cores 32 |
+| `host_cpu` | reserved 1、vm_cores 32；ivshmem_server_cores=2 仅兼容、plain 模式不预留 |
 | `e2e.foreground_worker_count_per_vm` | 4 |
 | `dsidle.replica_budget_mb` | 1536 |
 | 构建 | 默认与验收 = RelWithDebInfo `-O3 -g3 -march=native -flto=full`（与 cxlkv 对齐；禁关 LTO 做正式对比）；Debug/ASAN 可选、非门槛 |
@@ -1175,7 +1178,7 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
 | trace 格式 | **与 cxlkv 逐字节同构**：`<OP> <KEY_LEN> <LEN><KEY>`（`LEN` 与 `KEY` 紧挨、无空格）；文件 `<trace_dir>/worker<N>.txt`；OP∈PUT/GET/DELETE/SCAN；GET/DELETE 要求 `LEN=0`；SCAN 的 `LEN`=limit。解析器对齐 cxlkv `ParseTraceLine` 语义（本仓库可命名为 `ParseTraceLine`，勿另造格式） |
 | PUT 值 | trace **不含 value 正文**；runner 用与 cxlkv 相同的 `FixedTraceValue`（字符集 `'!'..'~'`，长度=`fixed_value_size`，每 worker 独立 RNG）；忽略 PUT 行内 `LEN` 作为实际写入长度 |
 | key 定长 | runner 将 key 右填空格至 `fixed_key_size`（与 cxlkv `FixedTraceKey` 一致） |
-| `dsidle/e2e_trace_runner` | 每 VM 一进程；按 `foreground_worker_count_per_vm` 起 N 线程，线程 t 回放 `worker{node*N+t}.txt`；将每条 trace op 映射为 §1.5.3 的 Put/Get/Delete/Scan；**跨 VM 相位屏障**：cxlkv = bridge+tap + guest IP 上 `sdl::notify`；本仓默认 **ivshmem/共享内存 barrier 或 host 侧 SSH 编排**（刻意分歧，须在修改日志声明；**禁止**在无 tap/guest 互通时声称 TCP `sdl::notify` 同构）；屏障耗时**不计入**应力窗口。输出与 cxlkv 逐字段对齐：`E2E_TRACE_HEARTBEAT phase=<p> node=<n> ops=<delta> total=<cum> elapsed_s=<s>`（**每 ≥1s 一次，禁止每 op 打印**）、`E2E_TRACE_TIME_US phase=<p> node=<n> ops=<ops> duration_us=<us> trace_first=<f> trace_workers=<w> batch_ops=<b>`、`LATENCY_SIM_STATS`、`DSIDLE_MEMORY_STATS`；可选本仓诊断行不得冒充 cxlkv 字段名（**禁止**发明 `E2E_TRACE_OP_COUNTS` 并标为 cxlkv 对齐）。全部计数用 TLS，仅相位边界聚合，HWCC 诊断计数只在相位边界写 |
+| `dsidle/e2e_trace_runner` | 每 VM 一进程；按 `foreground_worker_count_per_vm` 起 N 线程，线程 t 回放 `worker{node*N+t}.txt`；将每条 trace op 映射为 §1.5.3 的 Put/Get/Delete/Scan；`--batch-ops` 控制真实的分批 trace 读取/预取，不是兼容空壳。**跨 VM 相位屏障**：cxlkv = bridge+tap + guest IP 上 `sdl::notify`；本仓默认 **ivshmem/共享内存 barrier 或 host 侧 SSH 编排**（刻意分歧，须在修改日志声明；**禁止**在无 tap/guest 互通时声称 TCP `sdl::notify` 同构）；屏障耗时**不计入**应力窗口。输出与 cxlkv 逐字段对齐：`E2E_TRACE_HEARTBEAT phase=<p> node=<n> ops=<delta> total=<cum> elapsed_s=<s>`（当前与 cxlkv 一致用每 op shared atomic、每 ≥1s 输出一次）、`E2E_TRACE_TIME_US phase=<p> node=<n> ops=<ops> duration_us=<us> trace_first=<f> trace_workers=<w> batch_ops=<b>`、`LATENCY_SIM_STATS`、`DSIDLE_MEMORY_STATS`；可选本仓诊断行不得冒充 cxlkv 字段名。普通 op 计数在线程本地累积并在相位边界聚合；heartbeat 的共享 atomic 是双方共同口径，HWCC 诊断计数只在相位边界写 |
 | YCSB-cpp | 见 §1.5.2 / 4.9：同 SHA submodule + 本仓库独立生成入口 |
 | 正式性能约束 | RelWithDebInfo、verbose=false、extra_check=false；不满足拒绝打正式性能标记 |
 
@@ -1200,7 +1203,8 @@ cache_hit_extra_ns`。`merge_enabled` 映射为后台副本/回收路径开关�
    - **预检（对齐 cxlkv，正式路径 hard fail）**：
      1. shared/vm NUMA 集合均存在于宿主机；
      2. 多 NUMA 主机上 shared∩vm 必须为空（重叠仅当 `--allow-overlapping-numa`）；
-     3. `host_cpu` 三组互斥、在线、核∈ vm NUMA；
+     3. `reserved_cores`/`vm_cores` 互斥且在线，`vm_cores`∈vm NUMA；
+        `ivshmem_server_cores` 在 ivshmem-plain 模式只解析、不校验或预留；
      4. `len(vm_cores) ≥ count×core_count`；
      5. MemAvailable（含可回收旧 QEMU RSS）≥ 全部 VM RAM；
      6. `size_mb` 为 2 的幂；
@@ -1375,7 +1379,7 @@ benchmark 语义）、选项表、load 说明、快速命令、中断恢复、�
 改造完成后，**只有同时满足下列全部条件**，才允许在文档/口头上声称
 “关键路径无已知 bug / 可进入正式对比”：
 
-1. **全部单元测试通过**（§6.1，RelWithDebInfo；CTest 零失败）。
+1. **全部单元测试连续 10 轮通过**（§6.1，RelWithDebInfo；CTest 零失败）。
 2. **真实 `e2e_08/09` 各连续通过 ≥10 轮**（§6.3；禁止用 CTest smoke
    冒充真实 VM 100k e2e）。
 3. **100k YCSB 独立 load 与 A/B/C/D/E 各连续通过 ≥10 轮**：4 VM×每 VM
@@ -1456,10 +1460,15 @@ e2e 代替）。正式完成判定要求 RelWithDebInfo 全套连续通过 10 �
    正式完成判定必须使用 `dsidle_run_ycsb_experiment.sh` 对独立 load 和
    A/B/C/D/E 执行完整矩阵并严格校验 trace manifest。
 
-编排要求：唯一交付
-`scripts/run_dsidle_e2e_rounds.sh --suite {08|09|ycsb}`，默认
-`--rounds 10`；通用开发回放可显式指定 `--phase`，但不得把 phase 标签称为
-独立套件。正式 YCSB 矩阵由 `dsidle_run_ycsb_experiment.sh` 唯一编排。
+编排要求：`scripts/run_dsidle_e2e_rounds.sh --suite {08|09|ycsb}` 只负责
+宿主多进程开发 smoke；通用开发回放可显式指定 `--phase`，但不得把 phase
+标签称为独立套件。正式 VM 08/09 必须使用
+`scripts/run_dsidle_vm_e2e_rounds.sh --formal-acceptance --rounds 10`，正式
+YCSB 矩阵必须使用
+`dsidle_run_ycsb_experiment.sh --formal-acceptance`。只有精确满足冻结合同、
+tracked worktree clean 且完成全部轮次时才生成原子 JSON `acceptance.meta`；
+开发运行只生成 `run_complete.meta`。正式清单绑定 Git/配置/二进制/trace、
+每轮状态、所有节点日志与汇总 SHA256。
 失败立即停止并保留日志；修 bug 后从全体验收第 1 项重新开始。
 
 吞吐口径（按套件；勿混用字段名）：
@@ -1518,7 +1527,7 @@ e2e 代替）。正式完成判定要求 RelWithDebInfo 全套连续通过 10 �
 
 ## 6.5 验收清单
 
-1. **§6.0 硬门槛已满足**：全部单元测试通过；`dsidle_e2e_08` /
+1. **§6.0 硬门槛已满足**：全部单元测试连续 10 轮通过；`dsidle_e2e_08` /
    `dsidle_e2e_09` / `dsidle_e2e_ycsb` 各 ≥10 轮通过且日志入修改日志；
 2. §1.6–§1.8：NUMA 配置/脚本与 cxlkv 同构；HWCC/SWCC 落位与一致性假设对齐
    `AGENTS.md`；无故意弱性能路径；延迟模拟与 cxlkv 机制同一；
