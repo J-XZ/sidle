@@ -188,12 +188,14 @@ class replica_workers {
 
   void TriggerOnce(threadinfo& ti, bool forced_demotion = false) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
+    if (forced_demotion)
+      called_by_adjuster_.store(true, std::memory_order_relaxed);
     bool after_cooling = false;
     while (histogram_->cooling() && running_.load(std::memory_order_relaxed)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       after_cooling = true;
     }
-    if (forced_demotion && after_cooling)
+    if (called_by_adjuster_.load(std::memory_order_relaxed) && after_cooling)
       histogram_->decrease_tolerance_for_cold();
     root_pin_.Refresh(ti);
     std::uint64_t nodes = 0;
@@ -509,6 +511,7 @@ class replica_workers {
   std::chrono::milliseconds basic_interval_, cooler_interval_, adjuster_interval_;
   std::atomic<bool> running_{false};
   std::atomic<bool> can_promote_{true};
+  std::atomic<bool> called_by_adjuster_{false};
   std::atomic<unsigned> forced_demotion_rounds_{0};
   std::mutex adjuster_mutex_;
   std::mutex worker_mutex_;
