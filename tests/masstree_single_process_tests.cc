@@ -333,6 +333,48 @@ int main() {
   typename replica_node_type::nodeversion_type layered_version;
   auto* layered_leaf =
       table.table().root()->reach_leaf(layered_search, layered_version, *ti);
+  if (latency_sim::TscSpinAvailableForTest()) {
+    const auto permutation = layered_leaf->permutation();
+    std::uint64_t expected_swcc_lines = 0;
+    for (int index = 0; index < permutation.size(); ++index) {
+      const int slot = permutation[index];
+      if (layered_leaf->has_ksuf(slot)) {
+        const auto suffix = layered_leaf->ksuf_storage(slot);
+        if (layered_leaf->ksuf_external()) {
+          using layered_leaf_type =
+              Masstree::leaf<replica_params>;
+          const auto* external =
+              static_cast<typename layered_leaf_type::external_ksuf_type*>(
+                  layered_leaf->ksuf_);
+          expected_swcc_lines += CacheLinesTouched(
+              external,
+              layered_leaf_type::external_ksuf_type::overhead(
+                  layered_leaf_type::width));
+        }
+        expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
+      }
+      if (!layered_leaf->is_layer(slot)) {
+        const auto value = layered_leaf->lv_[slot].value();
+        expected_swcc_lines += CacheLinesTouched(value, value->size());
+      }
+    }
+    latency_sim::Config latency;
+    latency.enabled = true;
+    latency.stats_enabled = true;
+    latency_sim::GlobalLatencySimulator().Configure(latency);
+    void* layered_snapshot = nullptr;
+    {
+      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
+      layered_snapshot =
+          Masstree::leaf_replica<replica_params>::Create(
+              *layered_leaf, permutation);
+    }
+    const auto stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(stats.swcc_raw_line_accesses == expected_swcc_lines);
+    std::free(layered_snapshot);
+    latency_sim::GlobalLatencySimulator().Configure({});
+  }
   assert(Masstree::leaf_replica<replica_params>::Promote(
       *layered_leaf, layered_version, replicas));
   {

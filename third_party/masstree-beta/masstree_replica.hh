@@ -65,7 +65,7 @@ class leaf_replica {
         bytes += item.suffix.len;
       }
       if (item.is_layer) {
-        item.layer_ref = source.lv_[slot].layer()->control_ref();
+        item.layer_ref = source.lv_[slot].layer_ref();
       } else {
         item.value = source.lv_[slot].value();
         if (!item.value)
