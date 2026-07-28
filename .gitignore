@@ -1,6 +1,7 @@
 build/
 build-jammy/
 */build/
+exp_data/
 .vscode
 *.log
 *.txt

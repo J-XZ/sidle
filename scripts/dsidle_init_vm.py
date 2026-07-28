@@ -767,13 +767,8 @@ def main() -> int:
     validate_numa_separation(
         shared_nodes, vm_nodes, args.allow_overlapping_numa
     )
-    validate_host_cpu_topology(
-        vm_nodes,
-        count,
-        cores,
-        reserved,
-        vm_cores,
-    )
+    topology_args = (vm_nodes, count, cores, reserved, vm_cores)
+    validate_host_cpu_topology(*topology_args)
     if not args.no_host_tuning:
         check_host_perf_tuning()
 
@@ -797,15 +792,7 @@ def main() -> int:
         # configured CPU contract after real tuning and before any VM state is
         # destroyed or rewritten.
         if not dry:
-            validate_host_cpu_topology(
-                shared_nodes,
-                vm_nodes,
-                count,
-                cores,
-                reserved,
-                ivshmem_cores,
-                vm_cores,
-            )
+            validate_host_cpu_topology(*topology_args)
             check_host_perf_tuning()
 
     print(

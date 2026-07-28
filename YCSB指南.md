@@ -1,5 +1,24 @@
 # D-SIDLE YCSB 指南
 
+## 最小可用命令：
+
+cd /root/code/sidle
+./dsidle_make_vm_img.sh
+./dsidle_init_vms.sh --apply-host-tuning --execute
+
+OUT=exp_data/dsidle-ycsb-1m-4vm4t-$(date -u +%Y%m%dT%H%M%SZ)
+./dsidle_run_ycsb_experiment.sh \
+  --out-dir "$OUT" \
+  --vm-count 4 --threads-per-node 4 \
+  --record-count 1000000 --operation-count 1000000 \
+  --workloads a,b,c,d,e \
+  --shared-size-mb 32768 \
+  --warmup-rounds 0 --rounds 1 --round-timeout 14400 \
+  --no-latency
+
+# 结束后
+./dsidle_kill_vms.sh --execute
+
 ## 当前可用范围
 
 `dsidle_run_ycsb_experiment.sh` 支持 1、2 或 4 VM 实验。它校验 workload 矩阵、

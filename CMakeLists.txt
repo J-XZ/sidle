@@ -176,9 +176,12 @@ set_tests_properties(
   PROPERTIES RESOURCE_LOCK dsidle_e2e_pool)
 add_test(NAME dsidle_vm_scripts_dry_run
   COMMAND /bin/sh -c
-    "\"$1\" --dry-run --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run --config \"$2\" && \"$5\" --dry-run"
+    "\"$1\" --dry-run --apply-host-tuning --config \"$2\" && \"$3\" --dry-run --config \"$2\" && \"$4\" --dry-run --config \"$2\" && \"$5\" --dry-run"
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_init_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/experiment_config.jsonc ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_check_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_kill_vms.sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_make_vm_img.sh)
 set_tests_properties(dsidle_vm_scripts_dry_run PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_init_vm_topology_tests
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dsidle_init_vm.py)
+set_tests_properties(dsidle_init_vm_topology_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dsidle_config_tests tests/config_tests.cc)
 target_link_libraries(dsidle_config_tests PRIVATE dsidle)
