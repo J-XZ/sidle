@@ -200,7 +200,8 @@ int main(int argc, char** argv) {
     dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node);
     dsidle::ReplicaDirectory replicas(pool); dsidle::ConfigureCurrentReplicaDirectory(replicas);
     replicas.SetBudgetBytes(cfg.replica_budget_mb << 20);
-    latency_sim::GlobalLatencySimulator().Configure(cfg.latency_inject);
+    dsidle::ConfigureLatencySimulatorForPool(pool, cfg.latency_inject,
+                                             options.node);
     sidle::strategy_manager = sidle::sidle_strategy(
         cfg.replica_budget_mb, cfg.hot_percentage_seed, false);
     Masstree::node_base<Masstree::default_query_table_params>::strategy_manager =
@@ -232,12 +233,14 @@ int main(int argc, char** argv) {
     else if (options.phase == "e2e09_update") result = Put(table, pool, replicas, suite, phase_barrier, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else if (options.phase == "e2e09_read") result = ReadAndVerify(table, pool, replicas, phase_barrier, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else Fail("unknown suite phase action");
+    replica_workers.Stop();
+    // Stop local background workers before the drain barrier. The remote log
+    // is validated only after every VM has stopped producing events.
     const auto end_barrier_begin = std::chrono::steady_clock::now();
     phase_barrier.Wait();
     const auto end_barrier_us =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - end_barrier_begin).count();
-    replica_workers.Stop();
     const char* role = options.node == 0 ? "leader" : "follower";
     std::cout << "E2E_BARRIER_TIME_US node=" << options.node
               << " role=" << role << " phase_id=1 duration_us="

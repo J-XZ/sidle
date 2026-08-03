@@ -23,15 +23,22 @@ ReplicaDirectory::ReplicaDirectory(const SharedPool& pool)
   if (!node_control_offset_ || !capacity_)
     throw std::runtime_error("ReplicaDirectory requires initialized NodeControl metadata");
   for (std::uint64_t index = 0; index < segment_count_; ++index)
-    segments_[index].store(nullptr, std::memory_order_relaxed);
+    latency_sim::CountedAtomicStore(
+        segments_[index], static_cast<Segment*>(nullptr),
+        std::memory_order_relaxed, latency_sim::AtomicDomain::kLocalDram);
 }
 
 ReplicaDirectory::~ReplicaDirectory() {
   if (current_replica_directory == this) current_replica_directory = nullptr;
   for (std::uint64_t index = 0; index < segment_count_; ++index) {
-    Segment* segment = segments_[index].load(std::memory_order_relaxed);
+    Segment* segment = latency_sim::CountedAtomicLoad(
+        segments_[index], std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
     if (!segment) continue;
-    for (Slot& slot : segment->slots) std::free(slot.local_ptr.load(std::memory_order_relaxed));
+    for (Slot& slot : segment->slots)
+      std::free(latency_sim::CountedAtomicLoad(
+          slot.local_ptr, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram));
     delete segment;
   }
 }
@@ -44,7 +51,10 @@ ReplicaDirectory::ReadHandle& ReplicaDirectory::ReadHandle::operator=(ReadHandle
 }
 ReplicaDirectory::ReadHandle::~ReadHandle() { Reset(); }
 void ReplicaDirectory::ReadHandle::Reset() {
-  if (slot_) slot_->readers.fetch_sub(1, std::memory_order_release);
+  if (slot_)
+    latency_sim::CountedAtomicFetchSub(
+        slot_->readers, std::uint32_t{1}, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
   slot_ = nullptr;
 }
 
@@ -59,27 +69,38 @@ std::uint64_t ReplicaDirectory::Index(NodeRef ref) const {
 
 ReplicaDirectory::Slot* ReplicaDirectory::Find(NodeRef ref) const {
   const auto index = Index(ref);
-  Segment* segment = segments_[index / kSlotsPerSegment].load(std::memory_order_acquire);
+  Segment* segment = latency_sim::CountedAtomicLoad(
+      segments_[index / kSlotsPerSegment], std::memory_order_acquire,
+      latency_sim::AtomicDomain::kLocalDram);
   return segment ? &segment->slots[index % kSlotsPerSegment] : nullptr;
 }
 
 ReplicaDirectory::Slot* ReplicaDirectory::Ensure(NodeRef ref) const {
   const auto index = Index(ref);
   auto& published = segments_[index / kSlotsPerSegment];
-  Segment* segment = published.load(std::memory_order_acquire);
+  Segment* segment = latency_sim::CountedAtomicLoad(
+      published, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kLocalDram);
   if (!segment) {
     std::lock_guard<std::mutex> lock(segment_mutex_);
-    segment = published.load(std::memory_order_relaxed);
+    segment = latency_sim::CountedAtomicLoad(
+        published, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
     if (!segment) {
       segment = new Segment{};
-      published.store(segment, std::memory_order_release);
+      latency_sim::CountedAtomicStore(
+          published, segment, std::memory_order_release,
+          latency_sim::AtomicDomain::kLocalDram);
     }
   }
   return &segment->slots[index % kSlotsPerSegment];
 }
 
 void ReplicaDirectory::WaitForReaders(Slot& slot) {
-  while (slot.readers.load(std::memory_order_acquire) != 0) _mm_pause();
+  while (latency_sim::CountedAtomicLoad(
+             slot.readers, std::memory_order_acquire,
+             latency_sim::AtomicDomain::kLocalDram) != 0)
+    _mm_pause();
 }
 
 ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_t generation,
@@ -87,26 +108,52 @@ ReplicaDirectory::ReadHandle ReplicaDirectory::Acquire(NodeRef ref, std::uint64_
   Slot* slot = Find(ref);
   if (!slot) return {};
   while (true) {
-    slot->readers.fetch_add(1, std::memory_order_acquire);
-    const auto first = slot->seq.load(std::memory_order_acquire);
-    if (first & 1) { slot->readers.fetch_sub(1, std::memory_order_release); continue; }
-    ReplicaSnapshot snapshot{slot->local_ptr.load(std::memory_order_relaxed),
-                             slot->generation.load(std::memory_order_relaxed),
-                             slot->cached_version.load(std::memory_order_relaxed),
-                             slot->bytes.load(std::memory_order_relaxed),
-                             static_cast<ReplicaKind>(slot->kind.load(std::memory_order_relaxed))};
-    const auto second = slot->seq.load(std::memory_order_acquire);
+    latency_sim::CountedAtomicFetchAdd(
+        slot->readers, std::uint32_t{1}, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
+    const auto first = latency_sim::CountedAtomicLoad(
+        slot->seq, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
+    if (first & 1) {
+      latency_sim::CountedAtomicFetchSub(
+          slot->readers, std::uint32_t{1}, std::memory_order_release,
+          latency_sim::AtomicDomain::kLocalDram);
+      continue;
+    }
+    ReplicaSnapshot snapshot{
+        latency_sim::CountedAtomicLoad(
+            slot->local_ptr, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram),
+        latency_sim::CountedAtomicLoad(
+            slot->generation, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram),
+        latency_sim::CountedAtomicLoad(
+            slot->cached_version, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram),
+        latency_sim::CountedAtomicLoad(
+            slot->bytes, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram),
+        static_cast<ReplicaKind>(latency_sim::CountedAtomicLoad(
+            slot->kind, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram))};
+    const auto second = latency_sim::CountedAtomicLoad(
+        slot->seq, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
     if (first == second && !(second & 1) && snapshot.local_ptr &&
         snapshot.generation == generation && snapshot.cached_version == cached_version)
       return ReadHandle(slot, snapshot);
-    slot->readers.fetch_sub(1, std::memory_order_release);
+    latency_sim::CountedAtomicFetchSub(
+        slot->readers, std::uint32_t{1}, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
     if (first == second && !(second & 1)) {
       std::lock_guard<std::mutex> lock(budget_mutex_);
       std::uint64_t stale_bytes = 0;
       void* stale = InvalidateOlderLocked(
           ref, generation, cached_version, &stale_bytes);
       if (stale) {
-        local_bytes_.fetch_sub(stale_bytes, std::memory_order_release);
+        latency_sim::CountedAtomicFetchSub(
+            local_bytes_, stale_bytes, std::memory_order_release,
+            latency_sim::AtomicDomain::kLocalDram);
         std::free(stale);
       }
       return {};
@@ -119,16 +166,24 @@ bool ReplicaDirectory::HasLocalPlacement(
   Slot* slot = Find(ref);
   if (!slot) return false;
   while (true) {
-    const auto first = slot->seq.load(std::memory_order_acquire);
+    const auto first = latency_sim::CountedAtomicLoad(
+        slot->seq, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
     if (first & 1) {
       _mm_pause();
       continue;
     }
     const auto desired =
-        slot->desired_local.load(std::memory_order_relaxed);
+        latency_sim::CountedAtomicLoad(
+            slot->desired_local, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram);
     const auto slot_generation =
-        slot->generation.load(std::memory_order_relaxed);
-    const auto second = slot->seq.load(std::memory_order_acquire);
+        latency_sim::CountedAtomicLoad(
+            slot->generation, std::memory_order_relaxed,
+            latency_sim::AtomicDomain::kLocalDram);
+    const auto second = latency_sim::CountedAtomicLoad(
+        slot->seq, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
     if (first == second)
       return desired && slot_generation == generation;
   }
@@ -138,21 +193,47 @@ void* ReplicaDirectory::PublishLocked(NodeRef ref, ReplicaSnapshot snapshot) {
   if (!snapshot.local_ptr || !snapshot.generation || !snapshot.bytes)
     throw std::runtime_error("invalid ReplicaDirectory publication");
   Slot& slot = *Ensure(ref);
-  auto sequence = slot.seq.load(std::memory_order_acquire);
+  auto sequence = latency_sim::CountedAtomicLoad(
+      slot.seq, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kLocalDram);
   while (true) {
-    if (sequence & 1) { _mm_pause(); sequence = slot.seq.load(std::memory_order_acquire); continue; }
-    if (slot.seq.compare_exchange_weak(sequence, sequence + 1, std::memory_order_acq_rel,
-                                       std::memory_order_acquire)) break;
+    if (sequence & 1) {
+      _mm_pause();
+      sequence = latency_sim::CountedAtomicLoad(
+          slot.seq, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kLocalDram);
+      continue;
+    }
+    if (latency_sim::CountedCompareExchangeWeak(
+            slot.seq, sequence, sequence + 1, std::memory_order_acq_rel,
+            std::memory_order_acquire, latency_sim::AtomicDomain::kLocalDram))
+      break;
   }
   WaitForReaders(slot);
-  void* old = slot.local_ptr.load(std::memory_order_relaxed);
-  slot.generation.store(snapshot.generation, std::memory_order_relaxed);
-  slot.cached_version.store(snapshot.cached_version, std::memory_order_relaxed);
-  slot.bytes.store(snapshot.bytes, std::memory_order_relaxed);
-  slot.kind.store(static_cast<std::uint32_t>(snapshot.kind), std::memory_order_relaxed);
-  slot.local_ptr.store(snapshot.local_ptr, std::memory_order_relaxed);
-  slot.desired_local.store(true, std::memory_order_relaxed);
-  slot.seq.store(sequence + 2, std::memory_order_release);
+  void* old = latency_sim::CountedAtomicLoad(
+      slot.local_ptr, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.generation, snapshot.generation, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.cached_version, snapshot.cached_version, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.bytes, snapshot.bytes, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.kind, static_cast<std::uint32_t>(snapshot.kind),
+      std::memory_order_relaxed, latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.local_ptr, snapshot.local_ptr, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.desired_local, true, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot.seq, sequence + 2, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
   return old;
 }
 
@@ -160,9 +241,14 @@ void* ReplicaDirectory::Publish(NodeRef ref, ReplicaSnapshot snapshot) {
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* prior = Find(ref);
   auto old_bytes =
-      prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+      prior ? latency_sim::CountedAtomicLoad(
+                   prior->bytes, std::memory_order_relaxed,
+                   latency_sim::AtomicDomain::kLocalDram)
+            : 0;
   void* old = PublishLocked(ref, snapshot);
-  local_bytes_.fetch_add(snapshot.bytes - old_bytes, std::memory_order_release);
+  latency_sim::CountedAtomicFetchAdd(
+      local_bytes_, snapshot.bytes - old_bytes, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
   return old;
 }
 
@@ -171,22 +257,36 @@ bool ReplicaDirectory::TryPublish(NodeRef ref, ReplicaSnapshot snapshot, void** 
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* prior = Find(ref);
   auto old_bytes =
-      prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
-  auto current = local_bytes_.load(std::memory_order_relaxed);
-  const auto budget = budget_bytes_.load(std::memory_order_relaxed);
+      prior ? latency_sim::CountedAtomicLoad(
+                   prior->bytes, std::memory_order_relaxed,
+                   latency_sim::AtomicDomain::kLocalDram)
+            : 0;
+  auto current = latency_sim::CountedAtomicLoad(
+      local_bytes_, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  const auto budget = latency_sim::CountedAtomicLoad(
+      budget_bytes_, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
   if (snapshot.bytes > budget)
     return false;
   if (current - old_bytes > budget - snapshot.bytes) {
     ReclaimRetiredLocked();
-    current = local_bytes_.load(std::memory_order_relaxed);
+    current = latency_sim::CountedAtomicLoad(
+        local_bytes_, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
     prior = Find(ref);
     old_bytes =
-        prior ? prior->bytes.load(std::memory_order_relaxed) : 0;
+        prior ? latency_sim::CountedAtomicLoad(
+                     prior->bytes, std::memory_order_relaxed,
+                     latency_sim::AtomicDomain::kLocalDram)
+              : 0;
     if (current - old_bytes > budget - snapshot.bytes)
       return false;
   }
   *superseded = PublishLocked(ref, snapshot);
-  local_bytes_.store(current - old_bytes + snapshot.bytes, std::memory_order_release);
+  latency_sim::CountedAtomicStore(
+      local_bytes_, current - old_bytes + snapshot.bytes,
+      std::memory_order_release, latency_sim::AtomicDomain::kLocalDram);
   return true;
 }
 
@@ -197,57 +297,93 @@ bool ReplicaDirectory::TryRefresh(NodeRef ref, ReplicaSnapshot snapshot,
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* prior = Find(ref);
   if (!prior ||
-      !prior->desired_local.load(std::memory_order_relaxed) ||
-      prior->generation.load(std::memory_order_relaxed) !=
+      !latency_sim::CountedAtomicLoad(
+          prior->desired_local, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram) ||
+      latency_sim::CountedAtomicLoad(
+          prior->generation, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram) !=
           snapshot.generation)
     return false;
   const auto old_bytes =
-      prior->bytes.load(std::memory_order_relaxed);
-  auto current =
-      local_bytes_.load(std::memory_order_relaxed);
-  const auto budget =
-      budget_bytes_.load(std::memory_order_relaxed);
+      latency_sim::CountedAtomicLoad(
+          prior->bytes, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram);
+  auto current = latency_sim::CountedAtomicLoad(
+      local_bytes_, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  const auto budget = latency_sim::CountedAtomicLoad(
+      budget_bytes_, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
   if (budgeted) {
     if (snapshot.bytes > budget)
       return false;
     if (current - old_bytes > budget - snapshot.bytes) {
       ReclaimRetiredLocked();
-      current = local_bytes_.load(std::memory_order_relaxed);
+      current = latency_sim::CountedAtomicLoad(
+          local_bytes_, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram);
       if (current - old_bytes > budget - snapshot.bytes)
         return false;
     }
   }
   *superseded = PublishLocked(ref, snapshot);
-  local_bytes_.store(current - old_bytes + snapshot.bytes,
-                     std::memory_order_release);
+  latency_sim::CountedAtomicStore(
+      local_bytes_, current - old_bytes + snapshot.bytes,
+      std::memory_order_release, latency_sim::AtomicDomain::kLocalDram);
   return true;
 }
 
 void* ReplicaDirectory::InvalidateLocked(NodeRef ref) {
   Slot* slot = Find(ref);
   if (!slot) return nullptr;
-  auto sequence = slot->seq.load(std::memory_order_acquire);
+  auto sequence = latency_sim::CountedAtomicLoad(
+      slot->seq, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kLocalDram);
   while (true) {
-    if (sequence & 1) { _mm_pause(); sequence = slot->seq.load(std::memory_order_acquire); continue; }
-    if (slot->seq.compare_exchange_weak(sequence, sequence + 1, std::memory_order_acq_rel,
-                                       std::memory_order_acquire)) break;
+    if (sequence & 1) {
+      _mm_pause();
+      sequence = latency_sim::CountedAtomicLoad(
+          slot->seq, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kLocalDram);
+      continue;
+    }
+    if (latency_sim::CountedCompareExchangeWeak(
+            slot->seq, sequence, sequence + 1, std::memory_order_acq_rel,
+            std::memory_order_acquire, latency_sim::AtomicDomain::kLocalDram))
+      break;
   }
   WaitForReaders(*slot);
-  void* old = slot->local_ptr.exchange(nullptr, std::memory_order_relaxed);
-  slot->cached_version.store(0, std::memory_order_relaxed);
-  slot->bytes.store(0, std::memory_order_relaxed);
-  slot->kind.store(0, std::memory_order_relaxed);
-  slot->generation.store(0, std::memory_order_relaxed);
-  slot->desired_local.store(false, std::memory_order_relaxed);
-  slot->seq.store(sequence + 2, std::memory_order_release);
+  void* old = latency_sim::CountedAtomicExchange(
+      slot->local_ptr, static_cast<void*>(nullptr), std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->cached_version, std::uint64_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->bytes, std::uint64_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->kind, std::uint32_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->generation, std::uint64_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->desired_local, false, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->seq, sequence + 2, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
   return old;
 }
 
 void ReplicaDirectory::ReclaimRetiredLocked() {
   for (std::uint64_t segment_index = 0;
        segment_index < segment_count_; ++segment_index) {
-    Segment* segment =
-        segments_[segment_index].load(std::memory_order_acquire);
+    Segment* segment = latency_sim::CountedAtomicLoad(
+        segments_[segment_index], std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
     if (!segment)
       continue;
     for (std::uint64_t slot_index = 0;
@@ -258,27 +394,33 @@ void ReplicaDirectory::ReclaimRetiredLocked() {
         return;
       Slot& slot = segment->slots[slot_index];
       const auto generation =
-          slot.generation.load(std::memory_order_relaxed);
+          latency_sim::CountedAtomicLoad(
+              slot.generation, std::memory_order_relaxed,
+              latency_sim::AtomicDomain::kLocalDram);
       if (!generation &&
-          !slot.local_ptr.load(std::memory_order_relaxed))
+          !latency_sim::CountedAtomicLoad(
+              slot.local_ptr, std::memory_order_relaxed,
+              latency_sim::AtomicDomain::kLocalDram))
         continue;
       const NodeRef ref(
           node_control_offset_ + index * sizeof(NodeControl));
       auto* control = ref.get(SharedPoolBase());
-      latency_sim::RecordHwccAtomicLoad(
-          &control->allocation_state);
-      const auto state =
-          control->allocation_state.load(std::memory_order_acquire);
-      latency_sim::RecordHwccRead(
-          &control->generation, sizeof(control->generation));
+      const auto state = latency_sim::CountedAtomicLoad(
+          control->allocation_state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc);
+      const auto control_generation = latency_sim::CountedMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &control->generation);
       if (state == NodeAllocationState::kPublished &&
-          control->generation == generation)
+          control_generation == generation)
         continue;
-      const auto bytes =
-          slot.bytes.load(std::memory_order_relaxed);
+      const auto bytes = latency_sim::CountedAtomicLoad(
+          slot.bytes, std::memory_order_relaxed,
+          latency_sim::AtomicDomain::kLocalDram);
       void* stale = InvalidateLocked(ref);
       if (stale) {
-        local_bytes_.fetch_sub(bytes, std::memory_order_release);
+        latency_sim::CountedAtomicFetchSub(
+            local_bytes_, bytes, std::memory_order_release,
+            latency_sim::AtomicDomain::kLocalDram);
         std::free(stale);
       }
     }
@@ -293,96 +435,146 @@ void* ReplicaDirectory::InvalidateOlderLocked(
   *removed_bytes = 0;
   Slot* slot = Find(ref);
   if (!slot) return nullptr;
-  auto sequence = slot->seq.load(std::memory_order_acquire);
+  auto sequence = latency_sim::CountedAtomicLoad(
+      slot->seq, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kLocalDram);
   while (true) {
     if (sequence & 1) {
       _mm_pause();
-      sequence = slot->seq.load(std::memory_order_acquire);
+      sequence = latency_sim::CountedAtomicLoad(
+          slot->seq, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kLocalDram);
       continue;
     }
-    if (slot->seq.compare_exchange_weak(sequence, sequence + 1,
-                                        std::memory_order_acq_rel,
-                                        std::memory_order_acquire))
+    if (latency_sim::CountedCompareExchangeWeak(
+            slot->seq, sequence, sequence + 1, std::memory_order_acq_rel,
+            std::memory_order_acquire, latency_sim::AtomicDomain::kLocalDram))
       break;
   }
   // Lazy pruning is opportunistic: unlike an explicit publisher/evictor it
   // must not stall a foreground miss behind another valid ReadHandle.
-  if (slot->readers.load(std::memory_order_acquire) != 0) {
-    slot->seq.store(sequence + 2, std::memory_order_release);
+  if (latency_sim::CountedAtomicLoad(
+          slot->readers, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kLocalDram) != 0) {
+    latency_sim::CountedAtomicStore(
+        slot->seq, sequence + 2, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
     return nullptr;
   }
   auto* control = ref.get(SharedPoolBase());
   const auto state = control ? LoadNodeAllocationState(ref)
                              : NodeAllocationState::kFree;
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
   const auto canonical_version = control
-      ? control->version_and_state.load(std::memory_order_acquire)
+      ? latency_sim::CountedAtomicLoad(
+            control->version_and_state, std::memory_order_acquire,
+            latency_sim::AtomicDomain::kHwcc)
       : 0;
   if (!control ||
       (state != NodeAllocationState::kPublished &&
        state != NodeAllocationState::kRetiring) ||
       LoadNodeGeneration(ref) != generation ||
       canonical_version != cached_version) {
-    slot->seq.store(sequence + 2, std::memory_order_release);
+    latency_sim::CountedAtomicStore(
+        slot->seq, sequence + 2, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
     return nullptr;
   }
-  const auto slot_generation = slot->generation.load(std::memory_order_relaxed);
-  const auto slot_version = slot->cached_version.load(std::memory_order_relaxed);
+  const auto slot_generation = latency_sim::CountedAtomicLoad(
+      slot->generation, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  const auto slot_version = latency_sim::CountedAtomicLoad(
+      slot->cached_version, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
   if (slot_generation == generation && slot_version == cached_version) {
-    slot->seq.store(sequence + 2, std::memory_order_release);
+    latency_sim::CountedAtomicStore(
+        slot->seq, sequence + 2, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
     return nullptr;
   }
-  *removed_bytes = slot->bytes.load(std::memory_order_relaxed);
-  void* stale = slot->local_ptr.exchange(nullptr, std::memory_order_relaxed);
-  slot->cached_version.store(0, std::memory_order_relaxed);
-  slot->bytes.store(0, std::memory_order_relaxed);
-  slot->kind.store(0, std::memory_order_relaxed);
+  *removed_bytes = latency_sim::CountedAtomicLoad(
+      slot->bytes, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  void* stale = latency_sim::CountedAtomicExchange(
+      slot->local_ptr, static_cast<void*>(nullptr), std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->cached_version, std::uint64_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->bytes, std::uint64_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  latency_sim::CountedAtomicStore(
+      slot->kind, std::uint32_t{0}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
   if (slot_generation != generation) {
-    slot->generation.store(0, std::memory_order_relaxed);
-    slot->desired_local.store(false, std::memory_order_relaxed);
+    latency_sim::CountedAtomicStore(
+        slot->generation, std::uint64_t{0}, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
+    latency_sim::CountedAtomicStore(
+        slot->desired_local, false, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
   }
-  slot->seq.store(sequence + 2, std::memory_order_release);
+  latency_sim::CountedAtomicStore(
+      slot->seq, sequence + 2, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
   return stale;
 }
 
 void* ReplicaDirectory::Invalidate(NodeRef ref) {
   std::lock_guard<std::mutex> lock(budget_mutex_);
   Slot* slot = Find(ref);
-  const auto old_bytes = slot ? slot->bytes.load(std::memory_order_relaxed) : 0;
+  const auto old_bytes = slot ? latency_sim::CountedAtomicLoad(
+                                     slot->bytes, std::memory_order_relaxed,
+                                     latency_sim::AtomicDomain::kLocalDram)
+                              : 0;
   void* old = InvalidateLocked(ref);
-  if (old) local_bytes_.fetch_sub(old_bytes, std::memory_order_release);
+  if (old)
+    latency_sim::CountedAtomicFetchSub(
+        local_bytes_, old_bytes, std::memory_order_release,
+        latency_sim::AtomicDomain::kLocalDram);
   return old;
 }
 
 void* ReplicaDirectory::ResetForReuse(NodeRef ref) {
   Slot& slot = *Ensure(ref);
   void* old = Invalidate(ref);
-  slot.access_count.store(0, std::memory_order_release);
+  latency_sim::CountedAtomicStore(
+      slot.access_count, std::uint16_t{0}, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
   return old;
 }
 
 void ReplicaDirectory::SetBudgetBytes(std::uint64_t bytes) {
   if (LocalBytes() > bytes) throw std::runtime_error("replica budget below current local usage");
-  budget_bytes_.store(bytes, std::memory_order_release);
+  latency_sim::CountedAtomicStore(
+      budget_bytes_, bytes, std::memory_order_release,
+      latency_sim::AtomicDomain::kLocalDram);
 }
 
 void ReplicaDirectory::RecordAccess(NodeRef ref) const {
-  Ensure(ref)->access_count.fetch_add(1, std::memory_order_relaxed);
+  latency_sim::CountedAtomicFetchAdd(
+      Ensure(ref)->access_count, std::uint16_t{1}, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
 }
 
 std::uint64_t ReplicaDirectory::AccessCount(NodeRef ref) const {
-  if (Slot* slot = Find(ref)) return slot->access_count.load(std::memory_order_relaxed);
+  if (Slot* slot = Find(ref))
+    return latency_sim::CountedAtomicLoad(
+        slot->access_count, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
   return 0;
 }
 
 void ReplicaDirectory::HalveAccess(NodeRef ref) const {
   Slot* slot = Find(ref);
   if (!slot) return;
-  auto value = slot->access_count.load(std::memory_order_relaxed);
-  while (!slot->access_count.compare_exchange_weak(value, value >> 1,
-                                                    std::memory_order_relaxed,
-                                                    std::memory_order_relaxed)) {}
+  auto value = latency_sim::CountedAtomicLoad(
+      slot->access_count, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram);
+  while (!latency_sim::CountedCompareExchangeWeak(
+      slot->access_count, value, static_cast<std::uint16_t>(value >> 1),
+      std::memory_order_relaxed, std::memory_order_relaxed,
+      latency_sim::AtomicDomain::kLocalDram)) {}
 }
 
 }  // namespace dsidle

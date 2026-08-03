@@ -31,6 +31,7 @@ ALLOWLIST = {
     "dsidle/shared_pool.h",
     "third_party/masstree-beta/kvthread.cc",
     "third_party/masstree-beta/kvthread.hh",
+    "third_party/masstree-beta/dsidle_value_access.hh",
     "third_party/masstree-beta/masstree.hh",
     "third_party/masstree-beta/masstree_get.hh",
     "third_party/masstree-beta/masstree_insert.hh",

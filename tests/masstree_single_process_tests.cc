@@ -25,15 +25,6 @@
 #include <vector>
 
 namespace {
-std::uint64_t CacheLinesTouched(const void* address, std::size_t bytes,
-                                std::size_t line_bytes = 64) {
-  if (!address || !bytes) return 0;
-  const auto first = reinterpret_cast<std::uintptr_t>(address) / line_bytes;
-  const auto last =
-      (reinterpret_cast<std::uintptr_t>(address) + bytes - 1) / line_bytes;
-  return last - first + 1;
-}
-
 struct ScanCollector {
   std::vector<std::pair<std::string, std::string>> rows;
   template <typename S, typename K>
@@ -280,9 +271,8 @@ int main() {
         static_cast<typename cow_leaf_type::external_ksuf_type*>(cow_leaf->ksuf_);
     assert(external);
     latency_sim::Config suffix_latency;
-    suffix_latency.enabled = true;
-    suffix_latency.stats_enabled = true;
-    suffix_latency.cache_line_bytes = 1;
+    suffix_latency.remote_cache_invalidation.enabled = true;
+    suffix_latency.remote_cache_invalidation.cache_line_bytes = 1;
     latency_sim::GlobalLatencySimulator().Configure(suffix_latency);
     {
       latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
@@ -291,30 +281,11 @@ int main() {
     }
     const auto suffix_stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(suffix_stats.swcc_raw_line_accesses ==
-           cow_leaf_type::external_ksuf_type::overhead(cow_leaf_type::width) +
-               static_cast<std::uint64_t>(new_suffix.len));
-
-    std::uint64_t expected_swcc_lines =
-        CacheLinesTouched(
-            external,
-            cow_leaf_type::external_ksuf_type::overhead(
-                cow_leaf_type::width));
-    for (int index = 0; index < cow_permutation.size(); ++index) {
-      const int slot = cow_permutation[index];
-      if (cow_leaf->has_ksuf(slot)) {
-        const auto suffix = cow_leaf->ksuf_storage(slot);
-        expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
-      }
-      if (!cow_leaf->is_layer(slot)) {
-        const auto value = cow_leaf->lv_[slot].value();
-        assert(value);
-        expected_swcc_lines += CacheLinesTouched(value, value->size());
-      }
-    }
+    // Ordinary SWCC suffix reads are not remote hardware-coherence events.
+    // Only a real flush/visibility handoff is sent to that state machine.
+    assert(suffix_stats.remote_events == 0);
     latency_sim::Config latency;
-    latency.enabled = true;
-    latency.stats_enabled = true;
+    latency.remote_cache_invalidation.enabled = true;
     latency_sim::GlobalLatencySimulator().Configure(latency);
     void* measured_replica = nullptr;
     {
@@ -324,7 +295,7 @@ int main() {
     }
     const auto stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(stats.swcc_raw_line_accesses == expected_swcc_lines);
+    assert(stats.remote_events == 0);
     std::free(measured_replica);
     latency_sim::GlobalLatencySimulator().Configure({});
   }
@@ -402,31 +373,8 @@ int main() {
       table.table().root()->reach_leaf(layered_search, layered_version, *ti);
   if (latency_sim::TscSpinAvailableForTest()) {
     const auto permutation = layered_leaf->permutation();
-    std::uint64_t expected_swcc_lines = 0;
-    if (layered_leaf->ksuf_external()) {
-      using layered_leaf_type = Masstree::leaf<replica_params>;
-      const auto* external =
-          static_cast<typename layered_leaf_type::external_ksuf_type*>(
-              layered_leaf->ksuf_);
-      expected_swcc_lines += CacheLinesTouched(
-          external,
-          layered_leaf_type::external_ksuf_type::overhead(
-              layered_leaf_type::width));
-    }
-    for (int index = 0; index < permutation.size(); ++index) {
-      const int slot = permutation[index];
-      if (layered_leaf->has_ksuf(slot)) {
-        const auto suffix = layered_leaf->ksuf_storage(slot);
-        expected_swcc_lines += CacheLinesTouched(suffix.s, suffix.len);
-      }
-      if (!layered_leaf->is_layer(slot)) {
-        const auto value = layered_leaf->lv_[slot].value();
-        expected_swcc_lines += CacheLinesTouched(value, value->size());
-      }
-    }
     latency_sim::Config latency;
-    latency.enabled = true;
-    latency.stats_enabled = true;
+    latency.remote_cache_invalidation.enabled = true;
     latency_sim::GlobalLatencySimulator().Configure(latency);
     void* layered_snapshot = nullptr;
     {
@@ -437,7 +385,7 @@ int main() {
     }
     const auto stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(stats.swcc_raw_line_accesses == expected_swcc_lines);
+    assert(stats.remote_events == 0);
     std::free(layered_snapshot);
     latency_sim::GlobalLatencySimulator().Configure({});
   }
@@ -503,9 +451,8 @@ int main() {
     const int slot = find_slot(canonical_leaf, replica_key_text);
     assert(slot >= 0 && !canonical_leaf->is_layer(slot));
     latency_sim::Config prefetch_latency;
-    prefetch_latency.enabled = true;
-    prefetch_latency.stats_enabled = true;
-    prefetch_latency.cache_line_bytes = 1;
+    prefetch_latency.remote_cache_invalidation.enabled = true;
+    prefetch_latency.remote_cache_invalidation.cache_line_bytes = 1;
     latency_sim::GlobalLatencySimulator().Configure(prefetch_latency);
     {
       latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
@@ -513,16 +460,16 @@ int main() {
     }
     assert(latency_sim::GlobalLatencySimulator()
                .TakeStatsAndReset()
-               .swcc_raw_line_accesses == 0);
+               .remote_events == 0);
     std::size_t value_bytes = 0;
     {
       latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
       const auto value = canonical_leaf->lv_[slot].value();
       value_bytes = value->size();
     }
-    assert(latency_sim::GlobalLatencySimulator()
-               .TakeStatsAndReset()
-               .swcc_raw_line_accesses == value_bytes);
+    const auto prefetch_stats =
+        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
+    assert(prefetch_stats.remote_events == 0);
     latency_sim::GlobalLatencySimulator().Configure({});
   }
   void* encoded_leaf = Masstree::leaf_replica<replica_params>::Create(
@@ -551,10 +498,7 @@ int main() {
   const auto promote_version = canonical_leaf->stable();
   if (latency_sim::TscSpinAvailableForTest()) {
     latency_sim::Config promotion_latency;
-    promotion_latency.enabled = true;
-    promotion_latency.stats_enabled = true;
-    promotion_latency.swcc_write_ns_per_line = 3;
-    promotion_latency.swcc_flush_ns_per_line = 5;
+    promotion_latency.remote_cache_invalidation.enabled = true;
     latency_sim::GlobalLatencySimulator().Configure(promotion_latency);
     {
       latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
@@ -563,7 +507,9 @@ int main() {
     }
     const auto promotion_stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(promotion_stats.swcc_raw_line_accesses > 0);
+    // Promotion validates/publishes NodeControl in HWCC; its SWCC body
+    // accesses still do not manufacture coherence events.
+    assert(promotion_stats.remote_events > 0);
     assert(promotion_stats.swcc_delayed_ns == 0);
     std::free(replicas.Invalidate(canonical_leaf->control_ref()));
     latency_sim::GlobalLatencySimulator().Configure({});
@@ -608,8 +554,7 @@ int main() {
   }
   if (latency_sim::TscSpinAvailableForTest()) {
     latency_sim::Config latency;
-    latency.enabled = true;
-    latency.stats_enabled = true;
+    latency.remote_cache_invalidation.enabled = true;
     latency_sim::GlobalLatencySimulator().Configure(latency);
     dsidle::ReplicaDirectory empty_replicas(pool);
     dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
@@ -639,8 +584,8 @@ int main() {
     const auto local_get_stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
     assert(local_get_used_replica);
-    assert(local_get_stats.swcc_raw_line_accesses == 0);
-    assert(canonical_get_stats.swcc_raw_line_accesses > 0);
+    assert(local_get_stats.remote_swcc_explicit_handoffs == 0);
+    assert(canonical_get_stats.remote_events > 0);
 
     dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
     ReplicaPointerScanCollector canonical_scan{
@@ -669,8 +614,7 @@ int main() {
     const auto replica_stats =
         latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
     assert(measured_replica_scan.used_replica);
-    assert(replica_stats.swcc_raw_line_accesses <
-           canonical_stats.swcc_raw_line_accesses);
+    assert(replica_stats.remote_events < canonical_stats.remote_events);
     latency_sim::GlobalLatencySimulator().Configure({});
   }
   ReplicaPointerScanCollector replica_scan{

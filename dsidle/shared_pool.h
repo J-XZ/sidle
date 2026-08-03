@@ -11,6 +11,10 @@
 namespace dsidle {
 
 constexpr std::uint64_t kPoolMagic = 0x445349444c455031ULL;  // "DSIDLEP1"
+constexpr std::uint64_t kRemoteInstrumentationMagic = 0x44534952454d4f54ULL;
+constexpr std::uint64_t kDsidleHwccPoolId = 0x445349444c454857ULL;
+constexpr std::uint64_t kDsidleSwccPoolId = 0x445349444c455357ULL;
+constexpr std::uint64_t kRemoteRecordBytes = latency_sim::kRemoteEventRecordBytes;
 // Version 3 assigned NodeControl's former padding to authoritative HWCC
 // parent/phantom metadata. Version 4 assigns ShardControl padding to the
 // consumer locks that protect free-object link dereferences. Reject older
@@ -50,7 +54,23 @@ struct PoolInitialization {
   std::uint32_t vm_count{};
   std::uint32_t max_threads_per_vm{};
   std::uint64_t node_control_capacity{2'097'152};
+  bool remote_instrumentation_enabled{false};
+  std::uint64_t remote_event_log_capacity{};
+  std::uint64_t remote_shared_sequencer_offset{192};
 };
+
+struct alignas(64) RemoteInstrumentationHeader {
+  std::uint64_t magic{};
+  std::uint64_t version{1};
+  std::uint64_t sequence_offset{};
+  std::uint64_t event_log_offset{};
+  std::uint64_t event_log_capacity{};
+  std::uint64_t record_bytes{kRemoteRecordBytes};
+  std::uint64_t hwcc_pool_id{kDsidleHwccPoolId};
+  std::uint64_t reserved{};
+};
+static_assert(sizeof(RemoteInstrumentationHeader) == 64 &&
+              alignof(RemoteInstrumentationHeader) == 64);
 
 // The fixed first cache line is deliberately small: all extensible metadata
 // follows it in the prescribed HWCC order in later M1 steps.
@@ -118,6 +138,9 @@ SharedEpochTable SharedEpochSlots(SharedPool& pool);
 SharedEpochClockView SharedEpochState(SharedPool& pool);
 SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool);
 std::string DescribeHwccBudget(const SharedPool& pool);
+void ConfigureLatencySimulatorForPool(SharedPool& pool,
+                                      const latency_sim::Config& config,
+                                      std::uint32_t node_id);
 
 // The Masstree runtime binds one process-local shard before creating its
 // threadinfos. Persistent data allocation is then always in SWCC; no DAX or
@@ -125,6 +148,11 @@ std::string DescribeHwccBudget(const SharedPool& pool);
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard);
 SharedPool& CurrentSharedPool();
+// Non-throwing probe for instrumentation adapters that may see process-local
+// value rows before a shared pool is attached.  The throwing accessors remain
+// the correctness boundary for business paths that require a pool.
+void* SharedPoolBaseOrNull() noexcept;
+SharedPool* CurrentSharedPoolOrNull() noexcept;
 std::uint32_t CurrentSwccShard();
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size);
 std::uint32_t CurrentSwccOwner(SwccOffset<std::byte> block, std::uint64_t size);

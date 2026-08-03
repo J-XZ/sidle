@@ -37,10 +37,14 @@ def formal_config() -> dict:
             "fixed_key_size": 32,
             "fixed_value_size": 32,
             "latency_inject": {
-                "enabled": False,
-                "foreground_enabled": False,
-                "merge_enabled": False,
-                "stats_enabled": False,
+                "fixed_latency": {
+                    "enabled": False,
+                    "foreground_enabled": False,
+                    "background_enabled": False,
+                },
+                "hwcc_access_count": {"enabled": False},
+                "atomic_count": {"enabled": False},
+                "remote_cache_invalidation": {"enabled": False},
             },
         },
     }

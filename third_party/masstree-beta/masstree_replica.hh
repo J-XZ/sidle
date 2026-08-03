@@ -2,6 +2,7 @@
 #define MASSTREE_REPLICA_HH
 
 #include "masstree_struct.hh"
+#include "dsidle_value_access.hh"
 #include "dsidle/replica_directory.h"
 
 #include <array>
@@ -49,6 +50,7 @@ class leaf_replica {
       bool is_layer{};
       lcdf::Str suffix{};
       value_pointer value{};
+      std::size_t value_bytes{};
       dsidle::NodeRef layer_ref{};
     };
 
@@ -65,18 +67,19 @@ class leaf_replica {
       if (source.has_ksuf(slot)) {
         item.suffix = external_suffixes
             ? leaf_type::readable_external_ksuf_value(
-                  external_suffixes, slot)
+                  external_suffixes, slot, false)
             : source.ksuf_storage(slot);
         bytes += item.suffix.len;
       }
       if (item.is_layer) {
         item.layer_ref = source.lv_[slot].layer_ref();
       } else {
-        item.value = source.lv_[slot].value();
+        item.value = source.lv_[slot].value(false);
         if (!item.value)
           throw std::runtime_error("cannot replicate null Masstree value");
         bytes = Align(bytes, alignof(value_type));
-        bytes += item.value->size();
+        item.value_bytes = item.value->size(false);
+        bytes += item.value_bytes;
       }
       snapshot[static_cast<std::size_t>(index)] = item;
     }
@@ -97,6 +100,7 @@ class leaf_replica {
         destination.suffix_bytes = static_cast<std::uint16_t>(item.suffix.len);
         destination.suffix_offset = static_cast<std::uint32_t>(cursor);
         std::memcpy(memory + cursor, item.suffix.s, item.suffix.len);
+        dsidle_masstree::ReadSwcc(item.suffix.s, item.suffix.len);
         cursor += item.suffix.len;
       }
       if (destination.is_layer) {
@@ -104,10 +108,12 @@ class leaf_replica {
       } else {
         cursor = Align(cursor, alignof(value_type));
         destination.value_offset = static_cast<std::uint32_t>(cursor);
-        destination.value_bytes =
-            static_cast<std::uint32_t>(item.value->size());
-        std::memcpy(memory + cursor, item.value, item.value->size());
-        cursor += item.value->size();
+        destination.value_bytes = static_cast<std::uint32_t>(item.value_bytes);
+        std::memcpy(memory + cursor, item.value, item.value_bytes);
+        // The destination is a process-local replica; only the canonical
+        // source read belongs to SWCC accounting.
+        dsidle_masstree::ReadSwcc(item.value, item.value_bytes);
+        cursor += item.value_bytes;
       }
     }
     if (cursor != bytes) { std::free(memory); throw std::runtime_error("Masstree leaf replica size mismatch"); }

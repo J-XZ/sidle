@@ -23,29 +23,35 @@ struct rowversion {
         v_.u = 0;
     }
     bool dirty() {
-        return v_.dirty;
+        return dsidle_masstree::LoadSwcc(&v_).dirty;
     }
     void setdirty() {
-        v_.u = v_.u | 0x80000000;
+        value_t value = dsidle_masstree::LoadSwcc(&v_);
+        value.u |= 0x80000000;
+        dsidle_masstree::StoreSwcc(&v_, value);
     }
     void clear() {
-        v_.u = v_.u & 0x7fffffff;
+        value_t value = dsidle_masstree::LoadSwcc(&v_);
+        value.u &= 0x7fffffff;
+        dsidle_masstree::StoreSwcc(&v_, value);
     }
     void clearandbump() {
-        v_.u = (v_.u + 1) & 0x7fffffff;
+        value_t value = dsidle_masstree::LoadSwcc(&v_);
+        value.u = (value.u + 1) & 0x7fffffff;
+        dsidle_masstree::StoreSwcc(&v_, value);
     }
     rowversion stable() const {
-        value_t x = v_;
+        value_t x = dsidle_masstree::LoadSwcc(&v_);
         while (x.dirty) {
             relax_fence();
-            x = v_;
+            x = dsidle_masstree::LoadSwcc(&v_);
         }
         acquire_fence();
         return x;
     }
     bool has_changed(rowversion x) const {
         fence();
-        return x.v_.ctr != v_.ctr;
+        return x.v_.ctr != dsidle_masstree::LoadSwcc(&v_).ctr;
     }
   private:
     union value_t {
@@ -99,7 +105,7 @@ class value_versioned_array {
 
     void print(FILE *f, const char *prefix, int indent, Str key,
                kvtimestamp_t initial_ts, const char *suffix = "") {
-        kvtimestamp_t adj_ts = timestamp_sub(ts_, initial_ts);
+        kvtimestamp_t adj_ts = timestamp_sub(timestamp(), initial_ts);
         fprintf(f, "%s%*s%.*s = ### @" PRIKVTSPARTS "%s\n", prefix, indent, "",
                 key.len, key.s, KVTS_HIGHPART(adj_ts), KVTS_LOWPART(adj_ts), suffix);
     }
@@ -136,18 +142,23 @@ inline value_versioned_array::value_versioned_array()
 }
 
 inline kvtimestamp_t value_versioned_array::timestamp() const {
-    return ts_;
+    return dsidle_masstree::LoadSwcc(&ts_);
 }
 
 inline int value_versioned_array::ncol() const {
-    return ncol_;
+    return dsidle_masstree::LoadSwcc(&ncol_);
 }
 
 inline Str value_versioned_array::col(int i) const {
-    if (unsigned(i) < unsigned(ncol_) && cols_[i])
-        return Str(cols_[i]->s, cols_[i]->len);
-    else
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    if (unsigned(i) >= unsigned(ncol))
         return Str();
+    auto* col = dsidle_masstree::LoadSwcc(&cols_[i]);
+    if (!col)
+        return Str();
+    const auto len = dsidle_masstree::LoadSwcc(&col->len);
+    dsidle_masstree::ReadSwcc(col->s, len);
+    return Str(col->s, len);
 }
 
 inline size_t value_versioned_array::shallow_size(int ncol) {
@@ -155,7 +166,7 @@ inline size_t value_versioned_array::shallow_size(int ncol) {
 }
 
 inline size_t value_versioned_array::shallow_size() const {
-    return shallow_size(ncol_);
+    return shallow_size(dsidle_masstree::LoadSwcc(&ncol_));
 }
 
 inline value_versioned_array* value_versioned_array::create(const Json* first, const Json* last, kvtimestamp_t ts, threadinfo& ti) {
@@ -165,10 +176,11 @@ inline value_versioned_array* value_versioned_array::create(const Json* first, c
 
 inline value_versioned_array* value_versioned_array::create1(Str value, kvtimestamp_t ts, threadinfo& ti) {
     value_versioned_array* row = (value_versioned_array*) ti.allocate(shallow_size(1), memtag_value);
-    row->ts_ = ts;
-    row->ver_ = rowversion();
-    row->ncol_ = row->ncol_cap_ = 1;
-    row->cols_[0] = value_array::make_column(value, ti);
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->ver_, rowversion());
+    dsidle_masstree::StoreSwcc(&row->ncol_, static_cast<short>(1));
+    dsidle_masstree::StoreSwcc(&row->ncol_cap_, static_cast<short>(1));
+    dsidle_masstree::StoreSwcc(&row->cols_[0], value_array::make_column(value, ti));
     return row;
 }
 
@@ -190,15 +202,16 @@ value_versioned_array::checkpoint_read(PARSER& par, kvtimestamp_t ts,
     Str col;
     for (unsigned i = 0; i != ncol; i++) {
         par >> col;
-        row->cols_[i] = value_array::make_column(col, ti);
+        dsidle_masstree::StoreSwcc(&row->cols_[i], value_array::make_column(col, ti));
     }
     return row;
 }
 
 template <typename UNPARSER>
 void value_versioned_array::checkpoint_write(UNPARSER& unpar) const {
-    unpar.write_array_header(ncol_);
-    for (short i = 0; i != ncol_; ++i)
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    unpar.write_array_header(ncol);
+    for (short i = 0; i != ncol; ++i)
         unpar << col(i);
 }
 

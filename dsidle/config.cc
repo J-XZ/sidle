@@ -104,7 +104,8 @@ void ValidateObjectKeys(const std::string& object, const char* section,
   std::unordered_set<std::string> actual;
   for (const auto& key : ObjectKeys(object)) {
     if (!allowed.count(key)) throw std::runtime_error(std::string("unknown key in ") + section + ": " + key);
-    actual.emplace(key);
+    if (!actual.emplace(key).second)
+      throw std::runtime_error(std::string("duplicate key in ") + section + ": " + key);
   }
   for (const char* key : required)
     if (!actual.count(key)) throw std::runtime_error(std::string("missing key in ") + section + ": " + key);
@@ -139,6 +140,23 @@ double Number(const std::string& object, const std::string& name) {
                      "(?:[eE][+-]?[0-9]+)?)\\s*[,}]")))
     throw std::runtime_error("missing number: " + name);
   return std::stod(m[1]);
+}
+
+std::vector<std::uint64_t> UnsignedArray(const std::string& object,
+                                         const std::string& name) {
+  std::smatch match;
+  if (!std::regex_search(object, match,
+                         std::regex("\\\"" + name +
+                                    "\\\"\\s*:\\s*(\\[[\\s\\S]*?\\])")))
+    throw std::runtime_error("missing unsigned array: " + name);
+  if (match[1].str().find('-') != std::string::npos)
+    throw std::runtime_error("negative value in unsigned array: " + name);
+  std::vector<std::uint64_t> values;
+  const std::regex number("(?:0|[1-9][0-9]*)");
+  for (std::sregex_iterator it(match[1].first, match[1].second, number), end;
+       it != end; ++it)
+    values.push_back(std::stoull(it->str()));
+  return values;
 }
 
 std::vector<int> NumaNodes(const std::string& object, const std::string& name) {
@@ -205,28 +223,118 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   config.fixed_key_size = static_cast<std::uint32_t>(Integer(local, "fixed_key_size"));
   config.fixed_value_size = static_cast<std::uint32_t>(Integer(local, "fixed_value_size"));
   config.trace_dir = String(local, "trace_dir");
-  // cxlkv keeps these required policy switches next to latency_inject.
-  // D-SIDLE's single-file policy section places them at the same logical
-  // level and enforces the same latency-mode restriction.
   config.verbose = Boolean(local, "verbose");
   config.extra_check = Boolean(local, "extra_check");
   const auto latency = Section(local, "latency_inject");
-  ValidateObjectKeys(latency, "dsidle.latency_inject", {"enabled", "foreground_enabled", "merge_enabled", "stats_enabled", "cache_line_bytes", "swcc_read_ns_per_line", "swcc_write_ns_per_line", "swcc_flush_ns_per_line", "hwcc_read_ns_per_line", "hwcc_write_ns_per_line", "hwcc_atomic_load_ns", "hwcc_atomic_store_ns", "hwcc_atomic_rmw_ns", "cache_model", "cache_hits_enabled", "cache_capacity_lines", "cache_associativity", "cache_fixed_hit_rate", "cache_hit_extra_ns"});
   auto& l = config.latency_inject;
-  l.enabled=Boolean(latency,"enabled"); l.foreground_enabled=Boolean(latency,"foreground_enabled"); l.merge_enabled=Boolean(latency,"merge_enabled"); l.stats_enabled=Boolean(latency,"stats_enabled"); l.cache_line_bytes=Integer(latency,"cache_line_bytes");
-  l.swcc_read_ns_per_line=Number(latency,"swcc_read_ns_per_line"); l.swcc_write_ns_per_line=Number(latency,"swcc_write_ns_per_line"); l.swcc_flush_ns_per_line=Number(latency,"swcc_flush_ns_per_line"); l.hwcc_read_ns_per_line=Number(latency,"hwcc_read_ns_per_line"); l.hwcc_write_ns_per_line=Number(latency,"hwcc_write_ns_per_line"); l.hwcc_atomic_load_ns=Number(latency,"hwcc_atomic_load_ns"); l.hwcc_atomic_store_ns=Number(latency,"hwcc_atomic_store_ns"); l.hwcc_atomic_rmw_ns=Number(latency,"hwcc_atomic_rmw_ns");
-  l.cache_model=latency_sim::ParseCacheModel(String(latency,"cache_model")); l.cache_hits_enabled=Boolean(latency,"cache_hits_enabled"); l.cache_capacity_lines=Integer(latency,"cache_capacity_lines"); l.cache_associativity=Integer(latency,"cache_associativity"); l.cache_fixed_hit_rate=Number(latency,"cache_fixed_hit_rate"); l.cache_hit_extra_ns=Number(latency,"cache_hit_extra_ns");
-  try {
-    l = latency_sim::ValidateConfig(l);
-  } catch (const std::invalid_argument& error) {
-    throw std::runtime_error(
-        std::string("invalid dsidle.latency_inject: ") + error.what());
-  }
-  if (l.enabled && (config.verbose || config.extra_check))
+  const auto fixed = Section(latency, "fixed_latency");
+  const auto hwcc_count = Section(latency, "hwcc_access_count");
+  const auto atomic = Section(latency, "atomic_count");
+  const auto remote = Section(latency, "remote_cache_invalidation");
+  ValidateObjectKeys(fixed, "dsidle.latency_inject.fixed_latency",
+                     {"enabled", "cache_line_bytes", "swcc_fixed_ns_per_line",
+                      "hwcc_fixed_ns_per_line", "foreground_enabled",
+                      "background_enabled", "delayed_time_stats_enabled"});
+  ValidateObjectKeys(hwcc_count, "dsidle.latency_inject.hwcc_access_count",
+                     {"enabled", "cache_line_bytes", "read_enabled",
+                      "write_enabled", "operation_count_enabled",
+                      "line_count_enabled", "byte_count_enabled",
+                      "breakdown_by_scope_enabled", "breakdown_by_tag_enabled",
+                      "max_tags"});
+  ValidateObjectKeys(atomic, "dsidle.latency_inject.atomic_count",
+                     {"enabled", "hwcc_enabled", "owner_private_swcc_enabled",
+                      "local_dram_enabled", "load_enabled", "store_enabled",
+                      "cas_enabled", "exchange_enabled",
+                      "fetch_arithmetic_enabled", "fetch_bitwise_enabled",
+                      "result_breakdown_enabled", "fence_enabled",
+                      "wait_notify_enabled", "memory_order_breakdown_enabled",
+                      "scope_breakdown_enabled", "tag_breakdown_enabled",
+                      "max_tags"});
+  ValidateObjectKeys(remote, "dsidle.latency_inject.remote_cache_invalidation",
+                     {"enabled", "dirty_handoff_enabled",
+                      "clean_copy_invalidation_enabled",
+                      "dirty_eviction_writeback_enabled",
+                      "swcc_explicit_visibility_handoff_enabled",
+                      "cache_line_bytes", "node_count",
+                      "cache_size_bytes_per_node", "total_cpu_cache_size_bytes",
+                      "cache_size_bytes_by_node", "cache_instances_per_node",
+                      "associativity", "capacity_mode", "replacement_policy",
+                      "lfu_counter_bits", "lfu_aging_interval_accesses",
+                      "lfu_tie_breaker", "scope_breakdown_enabled",
+                      "tag_breakdown_enabled", "max_tags",
+                      "shared_sequencer_offset", "event_log_capacity"});
+
+  auto& fixed_config = l.fixed_latency;
+  fixed_config.enabled = Boolean(fixed, "enabled");
+  fixed_config.cache_line_bytes = Integer(fixed, "cache_line_bytes");
+  fixed_config.swcc_fixed_ns_per_line = Number(fixed, "swcc_fixed_ns_per_line");
+  fixed_config.hwcc_fixed_ns_per_line = Number(fixed, "hwcc_fixed_ns_per_line");
+  fixed_config.foreground_enabled = Boolean(fixed, "foreground_enabled");
+  fixed_config.background_enabled = Boolean(fixed, "background_enabled");
+  fixed_config.delayed_time_stats_enabled = Boolean(fixed, "delayed_time_stats_enabled");
+
+  auto& hwcc_config = l.hwcc_access_count;
+  hwcc_config.enabled = Boolean(hwcc_count, "enabled");
+  hwcc_config.cache_line_bytes = Integer(hwcc_count, "cache_line_bytes");
+  hwcc_config.read_enabled = Boolean(hwcc_count, "read_enabled");
+  hwcc_config.write_enabled = Boolean(hwcc_count, "write_enabled");
+  hwcc_config.operation_count_enabled = Boolean(hwcc_count, "operation_count_enabled");
+  hwcc_config.line_count_enabled = Boolean(hwcc_count, "line_count_enabled");
+  hwcc_config.byte_count_enabled = Boolean(hwcc_count, "byte_count_enabled");
+  hwcc_config.breakdown_by_scope_enabled = Boolean(hwcc_count, "breakdown_by_scope_enabled");
+  hwcc_config.breakdown_by_tag_enabled = Boolean(hwcc_count, "breakdown_by_tag_enabled");
+  hwcc_config.max_tags = Integer(hwcc_count, "max_tags");
+
+  auto& atomic_config = l.atomic_count;
+  atomic_config.enabled = Boolean(atomic, "enabled");
+  atomic_config.hwcc_enabled = Boolean(atomic, "hwcc_enabled");
+  atomic_config.owner_private_swcc_enabled = Boolean(atomic, "owner_private_swcc_enabled");
+  atomic_config.local_dram_enabled = Boolean(atomic, "local_dram_enabled");
+  atomic_config.load_enabled = Boolean(atomic, "load_enabled");
+  atomic_config.store_enabled = Boolean(atomic, "store_enabled");
+  atomic_config.cas_enabled = Boolean(atomic, "cas_enabled");
+  atomic_config.exchange_enabled = Boolean(atomic, "exchange_enabled");
+  atomic_config.fetch_arithmetic_enabled = Boolean(atomic, "fetch_arithmetic_enabled");
+  atomic_config.fetch_bitwise_enabled = Boolean(atomic, "fetch_bitwise_enabled");
+  atomic_config.result_breakdown_enabled = Boolean(atomic, "result_breakdown_enabled");
+  atomic_config.fence_enabled = Boolean(atomic, "fence_enabled");
+  atomic_config.wait_notify_enabled = Boolean(atomic, "wait_notify_enabled");
+  atomic_config.memory_order_breakdown_enabled = Boolean(atomic, "memory_order_breakdown_enabled");
+  atomic_config.scope_breakdown_enabled = Boolean(atomic, "scope_breakdown_enabled");
+  atomic_config.tag_breakdown_enabled = Boolean(atomic, "tag_breakdown_enabled");
+  atomic_config.max_tags = Integer(atomic, "max_tags");
+
+  auto& remote_config = l.remote_cache_invalidation;
+  remote_config.enabled = Boolean(remote, "enabled");
+  remote_config.dirty_handoff_enabled = Boolean(remote, "dirty_handoff_enabled");
+  remote_config.clean_copy_invalidation_enabled = Boolean(remote, "clean_copy_invalidation_enabled");
+  remote_config.dirty_eviction_writeback_enabled = Boolean(remote, "dirty_eviction_writeback_enabled");
+  remote_config.swcc_explicit_visibility_handoff_enabled = Boolean(remote, "swcc_explicit_visibility_handoff_enabled");
+  remote_config.cache_line_bytes = Integer(remote, "cache_line_bytes");
+  remote_config.node_count = Integer(remote, "node_count");
+  remote_config.cache_size_bytes_per_node = Integer(remote, "cache_size_bytes_per_node");
+  remote_config.total_cpu_cache_size_bytes = Integer(remote, "total_cpu_cache_size_bytes");
+  remote_config.cache_size_bytes_by_node = UnsignedArray(remote, "cache_size_bytes_by_node");
+  remote_config.cache_instances_per_node = Integer(remote, "cache_instances_per_node");
+  remote_config.associativity = Integer(remote, "associativity");
+  remote_config.capacity_mode = String(remote, "capacity_mode");
+  remote_config.replacement_policy = String(remote, "replacement_policy");
+  remote_config.lfu_counter_bits = Integer(remote, "lfu_counter_bits");
+  remote_config.lfu_aging_interval_accesses = Integer(remote, "lfu_aging_interval_accesses");
+  remote_config.lfu_tie_breaker = String(remote, "lfu_tie_breaker");
+  remote_config.scope_breakdown_enabled = Boolean(remote, "scope_breakdown_enabled");
+  remote_config.tag_breakdown_enabled = Boolean(remote, "tag_breakdown_enabled");
+  remote_config.max_tags = Integer(remote, "max_tags");
+  remote_config.shared_sequencer_offset = Integer(remote, "shared_sequencer_offset");
+  remote_config.event_log_capacity = Integer(remote, "event_log_capacity");
+
+  const bool hardware_enabled = fixed_config.enabled || hwcc_config.enabled ||
+                                atomic_config.enabled || remote_config.enabled;
+  if (hardware_enabled && (config.verbose || config.extra_check))
     throw std::runtime_error(
         "latency injection requires dsidle.verbose=false and "
         "dsidle.extra_check=false");
-  if (l.enabled &&
+  if (hardware_enabled &&
       std::string_view(DSIDLE_CMAKE_BUILD_TYPE) != "RelWithDebInfo")
     throw std::runtime_error(
         "latency injection requires an exact RelWithDebInfo build");
@@ -237,6 +345,14 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
       config.hot_percentage_seed > 100 ||
       !config.fixed_key_size || !config.fixed_value_size)
     throw std::runtime_error("invalid D-SIDLE shared-memory layout or topology");
+  if (remote_config.node_count != config.vm_count)
+    throw std::runtime_error("remote_cache_invalidation.node_count must equal vm.count");
+  try {
+    latency_sim::LatencySimulator validator(l);
+    (void)validator;
+  } catch (const std::exception& error) {
+    throw std::runtime_error(std::string("invalid dsidle.latency_inject: ") + error.what());
+  }
   return config;
 }
 

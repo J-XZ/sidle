@@ -103,8 +103,8 @@ int main() {
                      dsidle::MasstreeNodeVersionBits::vsplit_lowbit));
 
   latency_sim::Config latency;
-  latency.enabled = true;
-  latency.stats_enabled = true;
+  latency.hwcc_access_count.enabled = true;
+  latency.hwcc_access_count.line_count_enabled = true;
   latency_sim::GlobalLatencySimulator().Configure(latency);
   {
     latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
@@ -113,12 +113,11 @@ int main() {
   }
   const auto latency_stats =
       latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-  assert(latency_stats.hwcc_raw_line_accesses > 0);
-  // A stable canonical-node read is deliberately billed once for the exact
-  // node envelope; RootControl contributes HWCC traffic only.
-  assert(latency_stats.swcc_raw_line_accesses ==
-         (dsidle::LoadCanonicalNodeBytes(ref) + latency.cache_line_bytes - 1) /
-             latency.cache_line_bytes);
+  assert(latency_stats.RawLineAccesses(latency_sim::PoolKind::kHwcc) > 0);
+  // Canonical SWCC observations do not become hardware-coherence ordinary
+  // read/write counts merely because the observation passed through a local
+  // simulator.
+  assert(latency_stats.RawLineAccesses(latency_sim::PoolKind::kSwcc) == 0);
   latency_sim::GlobalLatencySimulator().Configure({});
 
   slab.Retire(ref, 7);

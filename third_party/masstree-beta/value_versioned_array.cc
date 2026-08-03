@@ -19,27 +19,36 @@
 
 value_versioned_array* value_versioned_array::make_sized_row(int ncol, kvtimestamp_t ts, threadinfo& ti) {
     value_versioned_array* row = (value_versioned_array*) ti.allocate(shallow_size(ncol), memtag_value);
-    row->ts_ = ts;
-    row->ver_ = rowversion();
-    row->ncol_ = row->ncol_cap_ = ncol;
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->ver_, rowversion());
+    dsidle_masstree::StoreSwcc(&row->ncol_, static_cast<short>(ncol));
+    dsidle_masstree::StoreSwcc(&row->ncol_cap_, static_cast<short>(ncol));
     memset(row->cols_, 0, sizeof(row->cols_[0]) * ncol);
+    dsidle_masstree::WriteSwcc(row->cols_, sizeof(row->cols_[0]) * ncol);
     return row;
 }
 
 void value_versioned_array::snapshot(value_versioned_array*& storage,
                                      const std::vector<index_type>& f, threadinfo& ti) const {
-    if (!storage || storage->ncol_cap_ < ncol_) {
+    const auto current_ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    const auto current_ts = dsidle_masstree::LoadSwcc(&ts_);
+    if (!storage || dsidle_masstree::LoadSwcc(&storage->ncol_cap_) < current_ncol) {
         if (storage)
             storage->deallocate(ti);
-        storage = make_sized_row(ncol_, ts_, ti);
+        storage = make_sized_row(current_ncol, current_ts, ti);
     }
-    storage->ncol_ = ncol_;
+    dsidle_masstree::StoreSwcc(&storage->ncol_, static_cast<short>(current_ncol));
     rowversion v1 = ver_.stable();
     while (1) {
-        if (f.size() == 1)
-            storage->cols_[f[0]] = cols_[f[0]];
-        else
-            memcpy(storage->cols_, cols_, sizeof(cols_[0]) * storage->ncol_);
+        if (f.size() == 1) {
+            auto* source = dsidle_masstree::LoadSwcc(&cols_[f[0]]);
+            dsidle_masstree::StoreSwcc(&storage->cols_[f[0]], source);
+        } else {
+            const auto bytes = sizeof(cols_[0]) * current_ncol;
+            memcpy(storage->cols_, cols_, bytes);
+            dsidle_masstree::ReadSwcc(cols_, bytes);
+            dsidle_masstree::WriteSwcc(storage->cols_, bytes);
+        }
         rowversion v2 = ver_.stable();
         if (!v1.has_changed(v2))
             break;
@@ -52,29 +61,41 @@ value_versioned_array::update(const Json* first, const Json* last,
                               kvtimestamp_t ts, threadinfo& ti,
                               bool always_copy) {
     int ncol = last[-2].as_u() + 1;
+    const auto old_ncol = static_cast<int>(dsidle_masstree::LoadSwcc(&ncol_));
+    const auto old_ncol_cap = static_cast<int>(
+        dsidle_masstree::LoadSwcc(&ncol_cap_));
     value_versioned_array* row;
-    if (ncol > ncol_cap_ || always_copy) {
+    if (ncol > old_ncol_cap || always_copy) {
         row = (value_versioned_array*) ti.allocate(shallow_size(ncol), memtag_value);
-        row->ts_ = ts;
-        row->ver_ = rowversion();
-        row->ncol_ = row->ncol_cap_ = ncol;
-        memcpy(row->cols_, cols_, sizeof(cols_[0]) * ncol_);
+        dsidle_masstree::StoreSwcc(&row->ts_, ts);
+        dsidle_masstree::StoreSwcc(&row->ver_, rowversion());
+        dsidle_masstree::StoreSwcc(&row->ncol_, static_cast<short>(ncol));
+        dsidle_masstree::StoreSwcc(&row->ncol_cap_, static_cast<short>(ncol));
+        const auto bytes = sizeof(cols_[0]) * old_ncol;
+        memcpy(row->cols_, cols_, bytes);
+        dsidle_masstree::ReadSwcc(cols_, bytes);
+        dsidle_masstree::WriteSwcc(row->cols_, bytes);
     } else
         row = this;
-    if (ncol > ncol_)
-        memset(row->cols_ + ncol_, 0, sizeof(cols_[0]) * (ncol - ncol_));
+    if (ncol > old_ncol) {
+        const auto bytes = sizeof(cols_[0]) * (ncol - old_ncol);
+        memset(row->cols_ + old_ncol, 0, bytes);
+        dsidle_masstree::WriteSwcc(row->cols_ + old_ncol, bytes);
+    }
 
     if (row == this) {
         ver_.setdirty();
         fence();
     }
-    if (row->ncol_ < ncol)
-        row->ncol_ = ncol;
+    if (dsidle_masstree::LoadSwcc(&row->ncol_) < ncol)
+        dsidle_masstree::StoreSwcc(&row->ncol_, static_cast<short>(ncol));
 
     for (; first != last; first += 2) {
         unsigned idx = first[0].as_u();
-        value_array::deallocate_column_rcu(row->cols_[idx], ti);
-        row->cols_[idx] = value_array::make_column(first[1].as_s(), ti);
+        value_array::deallocate_column_rcu(
+            dsidle_masstree::LoadSwcc(&row->cols_[idx]), ti);
+        dsidle_masstree::StoreSwcc(&row->cols_[idx],
+                                   value_array::make_column(first[1].as_s(), ti));
     }
 
     if (row == this) {
@@ -85,13 +106,16 @@ value_versioned_array::update(const Json* first, const Json* last,
 }
 
 void value_versioned_array::deallocate(threadinfo &ti) {
-    for (short i = 0; i < ncol_; ++i)
-        value_array::deallocate_column(cols_[i], ti);
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    for (short i = 0; i < ncol; ++i)
+        value_array::deallocate_column(dsidle_masstree::LoadSwcc(&cols_[i]), ti);
     ti.deallocate(this, shallow_size(), memtag_value);
 }
 
 void value_versioned_array::deallocate_rcu(threadinfo &ti) {
-    for (short i = 0; i < ncol_; ++i)
-        value_array::deallocate_column_rcu(cols_[i], ti);
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    for (short i = 0; i < ncol; ++i)
+        value_array::deallocate_column_rcu(
+            dsidle_masstree::LoadSwcc(&cols_[i]), ti);
     ti.deallocate_rcu(this, shallow_size(), memtag_value);
 }

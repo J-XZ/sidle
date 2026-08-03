@@ -30,20 +30,20 @@ template <typename N, bool CONCURRENT = N::concurrent> struct btree_leaflink {};
 // operations.
 template <typename N> struct btree_leaflink<N, true> {
   private:
-    static inline void invalidate_next(N* n) {
+    static inline N* invalidate_next(N* n) {
         dsidle::InvalidateSwccRange(&n->next_, sizeof(n->next_));
-        latency_sim::RecordSwccRead(&n->next_, sizeof(n->next_));
+        return latency_sim::CountedMemoryLoadAs<N*>(
+            latency_sim::PoolKind::kSwcc, &n->next_);
     }
-    static inline void invalidate_prev(N* n) {
+    static inline N* invalidate_prev(N* n) {
         dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
-        latency_sim::RecordSwccRead(&n->prev_, sizeof(n->prev_));
+        return latency_sim::CountedMemoryLoadAs<N*>(
+            latency_sim::PoolKind::kSwcc, &n->prev_);
     }
     static inline void flush_next(N* n) {
-        latency_sim::RecordSwccWrite(&n->next_, sizeof(n->next_));
         dsidle::FlushSwccRange(&n->next_, sizeof(n->next_));
     }
     static inline void flush_prev(N* n) {
-        latency_sim::RecordSwccWrite(&n->prev_, sizeof(n->prev_));
         dsidle::FlushSwccRange(&n->prev_, sizeof(n->prev_));
     }
     template <typename SF>
@@ -57,8 +57,7 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static inline N *lock_next(N *n, SF spin_function) {
         lock_link(n, spin_function);
-        invalidate_next(n);
-        return n->next_;
+        return invalidate_next(n);
     }
 
   public:
@@ -73,18 +72,22 @@ template <typename N> struct btree_leaflink<N, true> {
     /** @overload */
     template <typename SF>
     static void link_split(N *n, N *nr, SF spin_function) {
-        nr->prev_ = n;
+        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                             &nr->prev_, n);
         N *next = lock_next(n, spin_function);
-        nr->next_ = next;
+        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                             &nr->next_, next);
         // nr is not reachable yet. Publish its complete initialized body,
         // including both links, before the predecessor edge exposes it.
         nr->publish_body_before_edge();
         if (next) {
-            next->prev_ = nr;
+            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                                 &next->prev_, nr);
             flush_prev(next);
         }
         fence();
-        n->next_ = nr;
+        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                             &n->next_, nr);
         flush_next(n);
         unlock_link(n);
     }
@@ -101,29 +104,33 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static void change_link(N *n, N *nn, SF spin_function) {
         N *next = lock_next(n, spin_function);
-        nn->next_ = next;
+        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                             &nn->next_, next);
         flush_next(nn);
         if (next) {
-            next->prev_ = nn;
+            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                                 &next->prev_, nn);
             flush_prev(next);
         }
         fence();
         N *prev = nullptr;
         while (1) {
-            invalidate_prev(n);
-            prev = n->prev_;
+            prev = invalidate_prev(n);
             if (!prev)
                 break;
             lock_link(prev, spin_function);
-            invalidate_next(prev);
-            if (prev->next_.ref() == n->control_ref())
+            const N* observed_next = invalidate_next(prev);
+            if (observed_next && observed_next->control_ref() ==
+                    n->control_ref())
                 break;
             unlock_link(prev);
             spin_function();
         }
         if (prev) {
-            prev->next_ = nn;
-            nn->prev_ = prev;
+            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                                 &prev->next_, nn);
+            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                                 &nn->prev_, prev);
             flush_next(prev);
             flush_prev(nn);
             unlock_link(prev);
@@ -147,21 +154,23 @@ template <typename N> struct btree_leaflink<N, true> {
         N *next = lock_next(n, spin_function);
         N *prev;
         while (1) {
-            invalidate_prev(n);
-            prev = n->prev_;
+            prev = invalidate_prev(n);
             lock_link(prev, spin_function);
-            invalidate_next(prev);
-            if (prev->next_.ref() == n->control_ref())
+            const N* observed_next = invalidate_next(prev);
+            if (observed_next && observed_next->control_ref() ==
+                    n->control_ref())
                 break;
             unlock_link(prev);
             spin_function();
         }
         if (next) {
-            next->prev_ = prev;
+            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                                 &next->prev_, prev);
             flush_prev(next);
         }
         fence();
-        prev->next_ = next;
+        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+                                             &prev->next_, next);
         flush_next(prev);
         unlock_link(prev);
         unlock_link(n);

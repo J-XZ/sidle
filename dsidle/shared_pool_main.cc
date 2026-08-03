@@ -40,7 +40,13 @@ int main(int argc, char** argv) {
                                     config.hwcc.size_mb << 20, config.swcc.offset_mb << 20,
                                     config.swcc.size_mb << 20};
     auto pool = dsidle::SharedPool::InitializeExisting(config.shared_path, layout);
-    dsidle::InitializePoolMetadata(pool, {config.vm_count, max_threads, node_capacity});
+    dsidle::InitializePoolMetadata(
+        pool, {config.vm_count, max_threads, node_capacity,
+               config.latency_inject.remote_cache_invalidation.enabled,
+               config.latency_inject.remote_cache_invalidation.enabled
+                   ? config.latency_inject.remote_cache_invalidation.event_log_capacity
+                   : 0,
+               config.latency_inject.remote_cache_invalidation.shared_sequencer_offset});
     dsidle::FixedBlockShardAllocator::InitializeAll(pool, config.vm_count);
     dsidle::FinalizePoolInitialization(pool);
     std::cout << dsidle::DescribeHwccBudget(pool) << '\n';

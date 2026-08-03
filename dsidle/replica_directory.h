@@ -82,11 +82,27 @@ class ReplicaDirectory {
   // Cooler action: preserve the original SIDLE `access_time >>= 1` rule on
   // the process-local dense counter instead of touching canonical SWCC data.
   void HalveAccess(NodeRef ref) const;
-  void RecordInternalHit() { internal_hits_.fetch_add(1, std::memory_order_relaxed); }
-  std::uint64_t InternalHits() const { return internal_hits_.load(std::memory_order_relaxed); }
+  void RecordInternalHit() {
+    latency_sim::CountedAtomicFetchAdd(
+        internal_hits_, std::uint64_t{1}, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
+  }
+  std::uint64_t InternalHits() const {
+    return latency_sim::CountedAtomicLoad(
+        internal_hits_, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kLocalDram);
+  }
   void SetBudgetBytes(std::uint64_t bytes);
-  std::uint64_t LocalBytes() const { return local_bytes_.load(std::memory_order_acquire); }
-  std::uint64_t BudgetBytes() const { return budget_bytes_.load(std::memory_order_acquire); }
+  std::uint64_t LocalBytes() const {
+    return latency_sim::CountedAtomicLoad(
+        local_bytes_, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
+  }
+  std::uint64_t BudgetBytes() const {
+    return latency_sim::CountedAtomicLoad(
+        budget_bytes_, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kLocalDram);
+  }
 
  private:
   static constexpr std::uint64_t kSlotsPerSegment = 4096;

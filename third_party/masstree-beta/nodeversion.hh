@@ -175,8 +175,8 @@ class nodeversion {
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
         if (control_ref_ && publish_canonical) {
             // dsidle: publish the exact canonical allocation before releasing
-            // the matching HWCC version. RecordSwccWrite intentionally uses
-            // the same node-envelope upper bound as the original Masstree
+            // the matching HWCC version. The range observation uses the same
+            // node-envelope upper bound as the original Masstree
             // mutation path: fields are written directly by many inline
             // helpers, so exact dirty-line tracking would require replacing
             // the upstream control flow with pervasive wrappers. Flush remains
@@ -186,7 +186,8 @@ class nodeversion {
                 dsidle::LoadCanonicalSwccOffset(control_ref_);
             const auto canonical_bytes =
                 dsidle::LoadCanonicalNodeBytes(control_ref_);
-            latency_sim::RecordSwccWrite(
+            latency_sim::GlobalLatencySimulator().RecordRange(
+                latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite,
                 canonical, canonical_bytes);
             dsidle::FlushSwccRange(
                 canonical, canonical_bytes);
@@ -269,28 +270,30 @@ class nodeversion {
         if (!control_ref_) return v_;
         auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                              ->version_and_state;
-        latency_sim::RecordHwccAtomicLoad(version);
-        return static_cast<value_type>(
-            version->load(std::memory_order_acquire));
+        return static_cast<value_type>(latency_sim::CountedAtomicLoad(
+            *version, std::memory_order_acquire,
+            latency_sim::AtomicDomain::kHwcc));
     }
     void store(value_type value) {
         if (!control_ref_) v_ = value;
         else {
             auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                                  ->version_and_state;
-            latency_sim::RecordHwccAtomicStore(version);
-            version->store(value, std::memory_order_release);
+            const std::uint64_t desired = value;
+            latency_sim::CountedAtomicStore(
+                *version, desired, std::memory_order_release,
+                latency_sim::AtomicDomain::kHwcc);
         }
     }
     bool compare_exchange(value_type expected, value_type desired) {
         if (!control_ref_) return bool_cmpxchg(&v_, expected, desired);
         std::uint64_t observed = expected;
+        const std::uint64_t desired_value = desired;
         auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                              ->version_and_state;
-        latency_sim::RecordHwccAtomicRmw(version);
-        return version->compare_exchange_strong(
-            observed, desired, std::memory_order_acq_rel,
-            std::memory_order_acquire);
+        return latency_sim::CountedCompareExchangeStrong(
+            *version, observed, desired_value, std::memory_order_acq_rel,
+            std::memory_order_acquire, latency_sim::AtomicDomain::kHwcc);
     }
     void invalidate_canonical() const {
         if (!control_ref_) return;
@@ -306,7 +309,8 @@ class nodeversion {
         // inline accessor. This is distinct from external value/ksuf payloads,
         // which have their own byte-accurate accounting.
         dsidle::InvalidateSwccRange(canonical, canonical_bytes);
-        latency_sim::RecordSwccRead(
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
             canonical, canonical_bytes);
     }
     value_type v_{};

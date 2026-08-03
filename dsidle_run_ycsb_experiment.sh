@@ -135,11 +135,12 @@ swcc = shared.setdefault('swcc', {})
 hwcc['offset_mb'], hwcc['size_mb'] = 0, 1024
 swcc['offset_mb'], swcc['size_mb'] = 1024, size - 1024
 latency = config.setdefault('dsidle', {}).setdefault('latency_inject', {})
-latency['cache_model'] = 'none'
-latency['cache_hits_enabled'] = False
 if int(no_latency):
-    for key in ('enabled', 'foreground_enabled', 'merge_enabled', 'stats_enabled'):
-        latency[key] = False
+    for section in ('fixed_latency', 'hwcc_access_count', 'atomic_count',
+                    'remote_cache_invalidation'):
+        latency[section]['enabled'] = False
+    latency['fixed_latency']['foreground_enabled'] = False
+    latency['fixed_latency']['background_enabled'] = False
 open(output, 'w').write(json.dumps(config, separators=(',', ':')) + '\n')
 PY
 vm_cores=$(python3 - "$experiment_config" <<'PY'

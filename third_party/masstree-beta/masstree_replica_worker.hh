@@ -5,6 +5,28 @@
 
 #include "masstree_internal_replica.hh"
 #include "masstree_replica.hh"
+
+namespace dsidle_replica_worker_detail {
+
+template <typename T>
+inline T Load(const std::atomic<T>& value, std::memory_order order) {
+  return latency_sim::CountedAtomicLoad(
+      value, order, latency_sim::AtomicDomain::kLocalDram);
+}
+
+template <typename T>
+inline void Store(std::atomic<T>& value, T desired, std::memory_order order) {
+  latency_sim::CountedAtomicStore(
+      value, desired, order, latency_sim::AtomicDomain::kLocalDram);
+}
+
+template <typename T>
+inline T Exchange(std::atomic<T>& value, T desired, std::memory_order order) {
+  return latency_sim::CountedAtomicExchange(
+      value, desired, order, latency_sim::AtomicDomain::kLocalDram);
+}
+
+}  // namespace dsidle_replica_worker_detail
 #include "masstree_root_replica.hh"
 #include "masstree_scan.hh"
 #include "sidle_meta.hh"
@@ -187,7 +209,8 @@ class replica_workers {
   }
 
   void Start() {
-    if (running_.exchange(true)) return;
+    if (dsidle_replica_worker_detail::Exchange(
+            running_, true, std::memory_order_seq_cst)) return;
     trigger_ = std::thread([this] { TriggerLoop(); });
     promotion_ = std::thread([this] { ExecutorLoop(sidle::task_type::promotion); });
     demotion_ = std::thread([this] { ExecutorLoop(sidle::task_type::demotion); });
@@ -197,7 +220,8 @@ class replica_workers {
   void Stop() {
     {
       std::lock_guard<std::mutex> lock(worker_mutex_);
-      if (!running_.exchange(false))
+      if (!dsidle_replica_worker_detail::Exchange(
+              running_, false, std::memory_order_seq_cst))
         return;
     }
     worker_wakeup_.notify_all();
@@ -208,13 +232,16 @@ class replica_workers {
   void TriggerOnce(threadinfo& ti, bool forced_demotion = false) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     if (forced_demotion)
-      called_by_adjuster_.store(true, std::memory_order_relaxed);
+      dsidle_replica_worker_detail::Store(
+          called_by_adjuster_, true, std::memory_order_relaxed);
     bool after_cooling = false;
-    while (histogram_->cooling() && running_.load(std::memory_order_relaxed)) {
+    while (histogram_->cooling() && dsidle_replica_worker_detail::Load(
+                                         running_, std::memory_order_relaxed)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       after_cooling = true;
     }
-    if (called_by_adjuster_.load(std::memory_order_relaxed) && after_cooling)
+    if (dsidle_replica_worker_detail::Load(
+            called_by_adjuster_, std::memory_order_relaxed) && after_cooling)
       histogram_->decrease_tolerance_for_cold();
     root_pin_.Refresh(ti);
     std::uint64_t nodes = 0;
@@ -236,7 +263,8 @@ class replica_workers {
         const bool valid = static_cast<bool>(
             directory_.Acquire(
                 ref, generation, version.version_value()));
-        if (can_promote_.load(std::memory_order_relaxed) &&
+        if (dsidle_replica_worker_detail::Load(
+                can_promote_, std::memory_order_relaxed) &&
             !valid && hotness == sidle::sidle_histogram::type::hot)
           queue_.add(sidle::task_type::promotion, {ref, generation});
         else if (hotness == sidle::sidle_histogram::type::cold &&
@@ -251,7 +279,8 @@ class replica_workers {
   void ExecuteOnce(sidle::task_type type, threadinfo& ti) {
     latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
     if (type == sidle::task_type::promotion &&
-        !can_promote_.load(std::memory_order_relaxed)) {
+        !dsidle_replica_worker_detail::Load(
+            can_promote_, std::memory_order_relaxed)) {
       dsidle::QueuedNodeRef discarded;
       while (queue_.get(type, discarded)) {}
       return;
@@ -276,10 +305,12 @@ class replica_workers {
   void AdjustOnce() { AdjustOnceImpl(); }
 
   bool PromotionEnabled() const {
-    return can_promote_.load(std::memory_order_relaxed);
+    return dsidle_replica_worker_detail::Load(
+        can_promote_, std::memory_order_relaxed);
   }
   unsigned ForcedDemotionRounds() const {
-    return forced_demotion_rounds_.load(std::memory_order_relaxed);
+    return dsidle_replica_worker_detail::Load(
+        forced_demotion_rounds_, std::memory_order_relaxed);
   }
  private:
   sidle::mem_usage_status MemoryStatus() const {
@@ -293,12 +324,14 @@ class replica_workers {
 
   bool RunForcedDemotionRound() {
     std::unique_lock<std::mutex> lock(worker_mutex_);
-    if (!running_.load(std::memory_order_relaxed))
+    if (!dsidle_replica_worker_detail::Load(
+            running_, std::memory_order_relaxed))
       return false;
     const std::uint64_t requested = ++requested_adjustment_round_;
     worker_wakeup_.notify_all();
     worker_wakeup_.wait(lock, [this, requested] {
-      return !running_.load(std::memory_order_relaxed) ||
+      return !dsidle_replica_worker_detail::Load(
+                 running_, std::memory_order_relaxed) ||
              completed_adjustment_round_ >= requested;
     });
     return completed_adjustment_round_ >= requested;
@@ -310,21 +343,26 @@ class replica_workers {
     // threshold changes exclude an in-flight trigger/demotion, and each forced
     // trigger is acknowledged only after the existing demotion executor drains
     // its queue. The adjuster can then recheck the real local-byte budget.
-    const bool coordinated = running_.load(std::memory_order_relaxed);
+    const bool coordinated = dsidle_replica_worker_detail::Load(
+        running_, std::memory_order_relaxed);
     if (coordinated) {
       std::unique_lock<std::mutex> lock(worker_mutex_);
       worker_wakeup_.wait(lock, [this] {
-        return !running_.load(std::memory_order_relaxed) ||
+        return !dsidle_replica_worker_detail::Load(
+                   running_, std::memory_order_relaxed) ||
                (!trigger_active_ && !demotion_active_);
       });
-      if (!running_.load(std::memory_order_relaxed))
+      if (!dsidle_replica_worker_detail::Load(
+              running_, std::memory_order_relaxed))
         return;
       adjustment_active_ = true;
     }
 
     const auto finish_adjustment = [this, coordinated] {
-      forced_demotion_rounds_.store(0, std::memory_order_relaxed);
-      can_promote_.store(true, std::memory_order_relaxed);
+      dsidle_replica_worker_detail::Store(
+          forced_demotion_rounds_, 0u, std::memory_order_relaxed);
+      dsidle_replica_worker_detail::Store(
+          can_promote_, true, std::memory_order_relaxed);
       if (coordinated) {
         {
           std::lock_guard<std::mutex> lock(worker_mutex_);
@@ -336,19 +374,24 @@ class replica_workers {
 
     auto status = MemoryStatus();
     if (status == sidle::mem_usage_status::tight) {
-      can_promote_.store(false, std::memory_order_relaxed);
+      dsidle_replica_worker_detail::Store(
+          can_promote_, false, std::memory_order_relaxed);
       thresholds_.adjust_local_allocation_threshold(true);
       thresholds_.adjust_demotion_depth_threshold(true);
-      forced_demotion_rounds_.store(
-          sidle::default_threshold_adjust_times, std::memory_order_relaxed);
+      dsidle_replica_worker_detail::Store(
+          forced_demotion_rounds_,
+          static_cast<unsigned>(sidle::default_threshold_adjust_times),
+          std::memory_order_relaxed);
       for (unsigned round = 0;
            round != sidle::default_threshold_adjust_times; ++round) {
         thresholds_.adjust_hotness_watermark(false, false);
         histogram_->adjust_threshold();
         if (!RunForcedDemotionRound())
           break;
-        forced_demotion_rounds_.store(
-            sidle::default_threshold_adjust_times - round - 1,
+        dsidle_replica_worker_detail::Store(
+            forced_demotion_rounds_,
+            static_cast<unsigned>(sidle::default_threshold_adjust_times -
+                                  round - 1),
             std::memory_order_relaxed);
         status = MemoryStatus();
         if (status != sidle::mem_usage_status::tight)
@@ -389,9 +432,11 @@ class replica_workers {
   bool WaitForInterval(std::chrono::milliseconds interval) {
     std::unique_lock<std::mutex> lock(worker_mutex_);
     worker_wakeup_.wait_for(lock, interval, [this] {
-      return !running_.load(std::memory_order_relaxed);
+      return !dsidle_replica_worker_detail::Load(
+          running_, std::memory_order_relaxed);
     });
-    return running_.load(std::memory_order_relaxed);
+    return dsidle_replica_worker_detail::Load(
+        running_, std::memory_order_relaxed);
   }
   void ExecuteTrackedDemotion(threadinfo& ti) {
     ExecuteOnce(sidle::task_type::demotion, ti);
@@ -406,20 +451,23 @@ class replica_workers {
     auto* ti = threadinfo::make(
         threadinfo::TI_MIGRATION, background_thread_base_);
     bool first = true;
-    while (running_.load(std::memory_order_relaxed)) {
+    while (dsidle_replica_worker_detail::Load(
+        running_, std::memory_order_relaxed)) {
       std::uint64_t adjustment_round = 0;
       bool forced_demotion = false;
       {
         std::unique_lock<std::mutex> lock(worker_mutex_);
         if (!first) {
           worker_wakeup_.wait_for(lock, basic_interval_ * 5, [this] {
-            return !running_.load(std::memory_order_relaxed) ||
+            return !dsidle_replica_worker_detail::Load(
+                       running_, std::memory_order_relaxed) ||
                    (adjustment_active_ &&
                     requested_adjustment_round_ >
                         triggered_adjustment_round_);
           });
         }
-        if (!running_.load(std::memory_order_relaxed))
+        if (!dsidle_replica_worker_detail::Load(
+                running_, std::memory_order_relaxed))
           break;
         if (adjustment_active_) {
           if (requested_adjustment_round_ <= triggered_adjustment_round_) {
@@ -447,13 +495,15 @@ class replica_workers {
     const auto slot = background_thread_base_ +
         (type == sidle::task_type::promotion ? 1 : 2);
     auto* ti = threadinfo::make(threadinfo::TI_MIGRATION, slot);
-    while (running_.load(std::memory_order_relaxed)) {
+    while (dsidle_replica_worker_detail::Load(
+        running_, std::memory_order_relaxed)) {
       if (queue_.length(type) > sidle::queue_waiting_threshold) {
         bool execute_now = true;
         if (type == sidle::task_type::demotion) {
           std::lock_guard<std::mutex> lock(worker_mutex_);
           execute_now =
-              running_.load(std::memory_order_relaxed) &&
+              dsidle_replica_worker_detail::Load(
+                  running_, std::memory_order_relaxed) &&
               !adjustment_active_;
           if (execute_now)
             demotion_active_ = true;
@@ -470,13 +520,15 @@ class replica_workers {
       if (type == sidle::task_type::demotion) {
         std::unique_lock<std::mutex> lock(worker_mutex_);
         worker_wakeup_.wait_for(lock, basic_interval_, [this] {
-          return !running_.load(std::memory_order_relaxed) ||
+          return !dsidle_replica_worker_detail::Load(
+                     running_, std::memory_order_relaxed) ||
                  triggered_adjustment_round_ >
                      completed_adjustment_round_;
         });
         adjustment_round = triggered_adjustment_round_;
         execute_demotion =
-            running_.load(std::memory_order_relaxed) &&
+            dsidle_replica_worker_detail::Load(
+                running_, std::memory_order_relaxed) &&
             (!adjustment_active_ ||
              adjustment_round > completed_adjustment_round_);
         if (execute_demotion)
@@ -484,7 +536,8 @@ class replica_workers {
       } else if (!WaitForInterval(basic_interval_)) {
         break;
       }
-      if (!running_.load(std::memory_order_relaxed)) {
+      if (!dsidle_replica_worker_detail::Load(
+              running_, std::memory_order_relaxed)) {
         if (type == sidle::task_type::demotion && execute_demotion) {
           {
             std::lock_guard<std::mutex> lock(worker_mutex_);

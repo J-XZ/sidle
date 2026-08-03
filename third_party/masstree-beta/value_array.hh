@@ -17,6 +17,7 @@
 #define VALUE_ARRAY_HH
 #include "compiler.hh"
 #include "json.hh"
+#include "dsidle_value_access.hh"
 
 class value_array {
   public:
@@ -48,7 +49,7 @@ class value_array {
 
     void print(FILE* f, const char* prefix, int indent, Str key,
 	       kvtimestamp_t initial_ts, const char* suffix = "") {
-	kvtimestamp_t adj_ts = timestamp_sub(ts_, initial_ts);
+	kvtimestamp_t adj_ts = timestamp_sub(timestamp(), initial_ts);
 	fprintf(f, "%s%*s%.*s = ### @" PRIKVTSPARTS "%s\n", prefix, indent, "",
 		key.len, key.s, KVTS_HIGHPART(adj_ts), KVTS_LOWPART(adj_ts), suffix);
     }
@@ -72,18 +73,23 @@ inline value_array::value_array()
 }
 
 inline kvtimestamp_t value_array::timestamp() const {
-    return ts_;
+    return dsidle_masstree::LoadSwcc(&ts_);
 }
 
 inline int value_array::ncol() const {
-    return ncol_;
+    return dsidle_masstree::LoadSwcc(&ncol_);
 }
 
 inline Str value_array::col(int i) const {
-    if (unsigned(i) < unsigned(ncol_) && cols_[i])
-        return Str(cols_[i]->s, cols_[i]->len);
-    else
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    if (unsigned(i) >= unsigned(ncol))
         return Str();
+    auto* col = dsidle_masstree::LoadSwcc(&cols_[i]);
+    if (!col)
+        return Str();
+    const auto len = dsidle_masstree::LoadSwcc(&col->len);
+    dsidle_masstree::ReadSwcc(col->s, len);
+    return Str(col->s, len);
 }
 
 inline size_t value_array::shallow_size(int ncol) {
@@ -91,15 +97,16 @@ inline size_t value_array::shallow_size(int ncol) {
 }
 
 inline size_t value_array::shallow_size() const {
-    return shallow_size(ncol_);
+    return shallow_size(dsidle_masstree::LoadSwcc(&ncol_));
 }
 
 inline lcdf::inline_string* value_array::make_column(Str str, threadinfo& ti) {
     using lcdf::inline_string;
     if (str) {
         inline_string* col = (inline_string*) ti.allocate(inline_string::size(str.length()), memtag_value);
-        col->len = str.length();
+        dsidle_masstree::StoreSwcc(&col->len, static_cast<int>(str.length()));
         memcpy(col->s, str.data(), str.length());
+        dsidle_masstree::WriteSwcc(col->s, str.length());
         return col;
     } else
         return 0;
@@ -125,9 +132,9 @@ inline value_array* value_array::create(const Json* first, const Json* last,
 
 inline value_array* value_array::create1(Str value, kvtimestamp_t ts, threadinfo& ti) {
     value_array* row = (value_array*) ti.allocate(shallow_size(1), memtag_value);
-    row->ts_ = ts;
-    row->ncol_ = 1;
-    row->cols_[0] = make_column(value, ti);
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->ncol_, static_cast<short>(1));
+    dsidle_masstree::StoreSwcc(&row->cols_[0], make_column(value, ti));
     return row;
 }
 
@@ -141,15 +148,16 @@ value_array* value_array::checkpoint_read(PARSER& par, kvtimestamp_t ts,
     for (unsigned i = 0; i != ncol; i++) {
         par >> col;
         if (col)
-            row->cols_[i] = make_column(col, ti);
+            dsidle_masstree::StoreSwcc(&row->cols_[i], make_column(col, ti));
     }
     return row;
 }
 
 template <typename UNPARSER>
 void value_array::checkpoint_write(UNPARSER& unpar) const {
-    unpar.write_array_header(ncol_);
-    for (short i = 0; i != ncol_; i++)
+    const auto ncol = dsidle_masstree::LoadSwcc(&ncol_);
+    unpar.write_array_header(ncol);
+    for (short i = 0; i != ncol; i++)
         unpar << col(i);
 }
 

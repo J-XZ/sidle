@@ -26,6 +26,9 @@ if(DSIDLE_BUILD_LEGACY_SIDLE_BENCHMARKS)
     "Use dsidle_e2e_trace_runner or dsidle_e2e_suite_runner.")
 endif()
 
+option(DSIDLE_DISABLE_HARDWARE_SIMULATION
+  "Compile out all hardware-simulation slow paths for overhead/assembly checks" OFF)
+
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   message(FATAL_ERROR "D-SIDLE requires Clang for the mandated -flto=full acceptance build")
 endif()
@@ -46,6 +49,9 @@ add_library(dsidle STATIC dsidle/config.cc dsidle/shared_pool.cc dsidle/shard_al
 target_include_directories(dsidle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(
   dsidle PUBLIC DSIDLE_CMAKE_BUILD_TYPE="$<CONFIG>")
+if(DSIDLE_DISABLE_HARDWARE_SIMULATION)
+  target_compile_definitions(dsidle PUBLIC DSIDLE_DISABLE_HARDWARE_SIMULATION=1)
+endif()
 target_compile_options(dsidle PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dsidle PUBLIC atomic)
 
@@ -53,6 +59,7 @@ target_link_libraries(dsidle PUBLIC atomic)
 # is deliberately excluded; allocation conversion proceeds in the original
 # Masstree files rather than through a compatibility backend.
 add_library(dsidle_masstree STATIC
+  dsidle/masstree_runtime.cc
   third_party/masstree-beta/compiler.cc
   third_party/masstree-beta/json.cc
   third_party/masstree-beta/kvthread.cc
@@ -86,6 +93,15 @@ target_compile_options(dsidle_e2e_trace_runner PRIVATE -include ${CMAKE_CURRENT_
 add_executable(dsidle_e2e_suite_runner dsidle/e2e_suite_runner.cc)
 target_link_libraries(dsidle_e2e_suite_runner PRIVATE dsidle_masstree)
 target_compile_options(dsidle_e2e_suite_runner PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta/config.h)
+
+add_executable(dsidle_disabled_overhead_benchmark
+  tests/disabled_overhead_benchmark.cc)
+target_link_libraries(dsidle_disabled_overhead_benchmark PRIVATE dsidle)
+target_compile_options(dsidle_disabled_overhead_benchmark PRIVATE -UNDEBUG)
+add_test(NAME dsidle_disabled_overhead_benchmark
+  COMMAND dsidle_disabled_overhead_benchmark)
+set_tests_properties(dsidle_disabled_overhead_benchmark PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_smoke
   COMMAND /bin/sh -c
     "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase smoke --node 0 --bootstrap"

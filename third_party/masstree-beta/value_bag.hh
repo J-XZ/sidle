@@ -17,6 +17,7 @@
 #define VALUE_BAG_HH
 #include "kvthread.hh"
 #include "json.hh"
+#include "dsidle_value_access.hh"
 
 template <typename O>
 class value_bag {
@@ -41,7 +42,9 @@ class value_bag {
     inline value_bag();
 
     inline kvtimestamp_t timestamp() const;
-    inline size_t size() const;
+    // observe=false is used only by the replica sizing pass. The subsequent
+    // single source memcpy accounts for the complete canonical row once.
+    inline size_t size(bool observe = true) const;
     inline int ncol() const;
     inline O column_length(int i) const;
     inline Str col(int i) const;
@@ -91,35 +94,46 @@ inline value_bag<O>::value_bag()
 
 template <typename O>
 inline kvtimestamp_t value_bag<O>::timestamp() const {
-    return ts_;
+    return dsidle_masstree::LoadSwcc(&ts_);
 }
 
 template <typename O>
-inline size_t value_bag<O>::size() const {
-    return sizeof(kvtimestamp_t) + d_.pos_[d_.ncol_];
+inline size_t value_bag<O>::size(bool observe) const {
+    const O ncol = observe ? dsidle_masstree::LoadSwcc(&d_.ncol_) : d_.ncol_;
+    const O bytes = observe ? dsidle_masstree::LoadSwcc(&d_.pos_[ncol])
+                            : d_.pos_[ncol];
+    return sizeof(kvtimestamp_t) + bytes;
 }
 
 template <typename O>
 inline int value_bag<O>::ncol() const {
-    return d_.ncol_;
+    return dsidle_masstree::LoadSwcc(&d_.ncol_);
 }
 
 template <typename O>
 inline O value_bag<O>::column_length(int i) const {
-    return d_.pos_[i + 1] - d_.pos_[i];
+    const O begin = dsidle_masstree::LoadSwcc(&d_.pos_[i]);
+    const O end = dsidle_masstree::LoadSwcc(&d_.pos_[i + 1]);
+    return end - begin;
 }
 
 template <typename O>
 inline lcdf::Str value_bag<O>::col(int i) const {
-    if (unsigned(i) < unsigned(d_.ncol_))
-        return Str(d_.s_ + d_.pos_[i], column_length(i));
-    else
+    const O ncol = dsidle_masstree::LoadSwcc(&d_.ncol_);
+    if (unsigned(i) >= unsigned(ncol))
         return Str();
+    const O begin = dsidle_masstree::LoadSwcc(&d_.pos_[i]);
+    const O end = dsidle_masstree::LoadSwcc(&d_.pos_[i + 1]);
+    dsidle_masstree::ReadSwcc(d_.s_ + begin, end - begin);
+    return Str(d_.s_ + begin, end - begin);
 }
 
 template <typename O>
 inline lcdf::Str value_bag<O>::row_string() const {
-    return Str(d_.s_, d_.pos_[d_.ncol_]);
+    const O ncol = dsidle_masstree::LoadSwcc(&d_.ncol_);
+    const O bytes = dsidle_masstree::LoadSwcc(&d_.pos_[ncol]);
+    dsidle_masstree::ReadSwcc(d_.s_, bytes);
+    return Str(d_.s_, bytes);
 }
 
 template <typename O> template <typename ALLOC>
@@ -139,57 +153,80 @@ template <typename O> template <typename ALLOC>
 value_bag<O>* value_bag<O>::update(const Json* first, const Json* last,
                                    kvtimestamp_t ts, ALLOC& ti) const
 {
-    size_t sz = size();
-    unsigned ncol = d_.ncol_;
+    const unsigned old_ncol = static_cast<unsigned>(
+        dsidle_masstree::LoadSwcc(&d_.ncol_));
+    const size_t old_size = sizeof(kvtimestamp_t) +
+        dsidle_masstree::LoadSwcc(&d_.pos_[old_ncol]);
+    size_t sz = old_size;
+    unsigned ncol = old_ncol;
     for (auto it = first; it != last; it += 2) {
         unsigned idx = it[0].as_u();
         sz += it[1].as_s().length();
-        if (idx < d_.ncol_)
+        if (idx < old_ncol)
             sz -= column_length(idx);
         else
             ncol = idx + 1;
     }
-    if (ncol > d_.ncol_)
-        sz += (ncol - d_.ncol_) * sizeof(offset_type);
+    if (ncol > old_ncol)
+        sz += (ncol - old_ncol) * sizeof(offset_type);
 
     value_bag<O>* row = (value_bag<O>*) ti.allocate(sz, memtag_value);
-    row->ts_ = ts;
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
 
     // Minor optimization: Replacing one small column without changing length
-    if (ncol == d_.ncol_ && sz == size() && first + 2 == last
+    if (ncol == old_ncol && sz == old_size && first + 2 == last
         && first[1].as_s().length() <= 16) {
         memcpy(row->d_.s_, d_.s_, sz - sizeof(kvtimestamp_t));
-        memcpy(row->d_.s_ + d_.pos_[first[0].as_u()],
+        dsidle_masstree::ReadSwcc(d_.s_, sz - sizeof(kvtimestamp_t));
+        dsidle_masstree::WriteSwcc(row->d_.s_, sz - sizeof(kvtimestamp_t));
+        const O begin = dsidle_masstree::LoadSwcc(
+            &d_.pos_[first[0].as_u()]);
+        memcpy(row->d_.s_ + begin,
                first[1].as_s().data(), first[1].as_s().length());
+        dsidle_masstree::WriteSwcc(row->d_.s_ + begin,
+                                   first[1].as_s().length());
         return row;
     }
 
     // Otherwise need to do more work
-    row->d_.ncol_ = ncol;
+    dsidle_masstree::StoreSwcc(&row->d_.ncol_, static_cast<O>(ncol));
     sz = sizeof(bagdata) + ncol * sizeof(offset_type);
     unsigned col = 0;
     while (1) {
         unsigned this_col = (first != last ? first[0].as_u() : ncol);
 
         // copy data from old row
-        if (col != this_col && col < d_.ncol_) {
-            unsigned end_col = std::min(this_col, unsigned(d_.ncol_));
-            ssize_t delta = sz - d_.pos_[col];
+        if (col != this_col && col < old_ncol) {
+            unsigned end_col = std::min(this_col, old_ncol);
+            const O old_begin = dsidle_masstree::LoadSwcc(&d_.pos_[col]);
+            ssize_t delta = sz - old_begin;
             if (delta == 0)
                 memcpy(row->d_.pos_ + col, d_.pos_ + col,
                        sizeof(offset_type) * (end_col - col));
-            else
-                for (unsigned i = col; i < end_col; ++i)
-                    row->d_.pos_[i] = d_.pos_[i] + delta;
-            size_t amt = d_.pos_[end_col] - d_.pos_[col];
-            memcpy(row->d_.s_ + sz, d_.s_ + d_.pos_[col], amt);
+            else {
+                for (unsigned i = col; i < end_col; ++i) {
+                    const O old_pos = dsidle_masstree::LoadSwcc(&d_.pos_[i]);
+                    dsidle_masstree::StoreSwcc(
+                        &row->d_.pos_[i], static_cast<O>(old_pos + delta));
+                }
+            }
+            if (delta == 0) {
+                const auto bytes = sizeof(offset_type) * (end_col - col);
+                dsidle_masstree::ReadSwcc(d_.pos_ + col, bytes);
+                dsidle_masstree::WriteSwcc(row->d_.pos_ + col, bytes);
+            }
+            const O old_end = dsidle_masstree::LoadSwcc(&d_.pos_[end_col]);
+            size_t amt = old_end - old_begin;
+            memcpy(row->d_.s_ + sz, d_.s_ + old_begin, amt);
+            dsidle_masstree::ReadSwcc(d_.s_ + old_begin, amt);
+            dsidle_masstree::WriteSwcc(row->d_.s_ + sz, amt);
             sz += amt;
             col = end_col;
         }
 
         // mark empty columns if we're extending
         while (col != this_col) {
-            row->d_.pos_[col] = sz;
+            dsidle_masstree::StoreSwcc(&row->d_.pos_[col], static_cast<O>(sz));
             ++col;
         }
 
@@ -197,14 +234,15 @@ value_bag<O>* value_bag<O>::update(const Json* first, const Json* last,
             break;
 
         // copy data from change
-        row->d_.pos_[col] = sz;
+        dsidle_masstree::StoreSwcc(&row->d_.pos_[col], static_cast<O>(sz));
         Str val = first[1].as_s();
         memcpy(row->d_.s_ + sz, val.data(), val.length());
+        dsidle_masstree::WriteSwcc(row->d_.s_ + sz, val.length());
         sz += val.length();
         first += 2;
         ++col;
     }
-    row->d_.pos_[ncol] = sz;
+    dsidle_masstree::StoreSwcc(&row->d_.pos_[ncol], static_cast<O>(sz));
     return row;
 }
 
@@ -226,11 +264,14 @@ template <typename O> template <typename ALLOC>
 inline value_bag<O>* value_bag<O>::create1(Str str, kvtimestamp_t ts,
                                            ALLOC& ti) {
     value_bag<O>* row = (value_bag<O>*) ti.allocate(sizeof(kvtimestamp_t) + sizeof(bagdata) + sizeof(O) + str.length(), memtag_value);
-    row->ts_ = ts;
-    row->d_.ncol_ = 1;
-    row->d_.pos_[0] = sizeof(bagdata) + sizeof(O);
-    row->d_.pos_[1] = sizeof(bagdata) + sizeof(O) + str.length();
-    memcpy(row->d_.s_ + row->d_.pos_[0], str.data(), str.length());
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->d_.ncol_, static_cast<O>(1));
+    const O begin = static_cast<O>(sizeof(bagdata) + sizeof(O));
+    const O end = static_cast<O>(begin + str.length());
+    dsidle_masstree::StoreSwcc(&row->d_.pos_[0], begin);
+    dsidle_masstree::StoreSwcc(&row->d_.pos_[1], end);
+    memcpy(row->d_.s_ + begin, str.data(), str.length());
+    dsidle_masstree::WriteSwcc(row->d_.s_ + begin, str.length());
     return row;
 }
 
@@ -251,14 +292,18 @@ inline value_bag<O>* value_bag<O>::checkpoint_read(PARSER& par,
     Str value;
     par >> value;
     value_bag<O>* row = (value_bag<O>*) ti.allocate(sizeof(kvtimestamp_t) + value.length(), memtag_value);
-    row->ts_ = ts;
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
     memcpy(row->d_.s_, value.data(), value.length());
+    dsidle_masstree::WriteSwcc(row->d_.s_, value.length());
     return row;
 }
 
 template <typename O> template <typename UNPARSER>
 inline void value_bag<O>::checkpoint_write(UNPARSER& unpar) const {
-    unpar << Str(d_.s_, d_.pos_[d_.ncol_]);
+    const O ncol = dsidle_masstree::LoadSwcc(&d_.ncol_);
+    const O bytes = dsidle_masstree::LoadSwcc(&d_.pos_[ncol]);
+    dsidle_masstree::ReadSwcc(d_.s_, bytes);
+    unpar << Str(d_.s_, bytes);
 }
 
 template <typename O>
@@ -266,15 +311,22 @@ void value_bag<O>::print(FILE *f, const char *prefix, int indent,
                          Str key, kvtimestamp_t initial_ts,
                          const char *suffix)
 {
-    kvtimestamp_t adj_ts = timestamp_sub(ts_, initial_ts);
-    if (d_.ncol_ == 1)
+    kvtimestamp_t adj_ts = timestamp_sub(timestamp(), initial_ts);
+    const O ncol = dsidle_masstree::LoadSwcc(&d_.ncol_);
+    if (ncol == 1) {
+        const O begin = dsidle_masstree::LoadSwcc(&d_.pos_[0]);
+        const O end = dsidle_masstree::LoadSwcc(&d_.pos_[1]);
+        dsidle_masstree::ReadSwcc(d_.s_ + begin, end - begin);
         fprintf(f, "%s%*s%.*s = %.*s @" PRIKVTSPARTS "%s\n", prefix, indent, "",
-                key.len, key.s, d_.pos_[1] - d_.pos_[0], d_.s_ + d_.pos_[0],
+                key.len, key.s, end - begin, d_.s_ + begin,
                 KVTS_HIGHPART(adj_ts), KVTS_LOWPART(adj_ts), suffix);
-    else {
+    } else {
         fprintf(f, "%s%*s%.*s = [", prefix, indent, "", key.len, key.s);
-        for (int col = 0; col < d_.ncol_; ++col) {
-            int pos = d_.pos_[col], len = std::min(40, d_.pos_[col + 1] - pos);
+        for (int col = 0; col < ncol; ++col) {
+            const O pos = dsidle_masstree::LoadSwcc(&d_.pos_[col]);
+            const O end = dsidle_masstree::LoadSwcc(&d_.pos_[col + 1]);
+            int len = std::min(40, static_cast<int>(end - pos));
+            dsidle_masstree::ReadSwcc(d_.s_ + pos, end - pos);
             fprintf(f, col ? "|%.*s" : "%.*s", len, d_.s_ + pos);
         }
         fprintf(f, "] @" PRIKVTSPARTS "%s\n",

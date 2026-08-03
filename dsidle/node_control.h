@@ -68,26 +68,25 @@ inline NodeAllocationState LoadNodeAllocationState(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     return NodeAllocationState::kFree;
-  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  return control->allocation_state.load(std::memory_order_acquire);
+  return latency_sim::CountedAtomicLoad(
+      control->allocation_state, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
 }
 
 inline std::uint64_t LoadNodeGeneration(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null generation NodeRef");
-  latency_sim::RecordHwccRead(&control->generation,
-                              sizeof(control->generation));
-  return control->generation;
+  return latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &control->generation);
 }
 
 inline std::uint64_t LoadCanonicalSwccOffset(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null canonical NodeRef");
-  latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
-                              sizeof(control->canonical_swcc_offset));
-  return control->canonical_swcc_offset;
+  return latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &control->canonical_swcc_offset);
 }
 
 // Compute an opaque canonical address after the caller has validated this
@@ -105,9 +104,9 @@ inline std::size_t LoadCanonicalNodeBytes(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null canonical NodeRef");
-  latency_sim::RecordHwccRead(&control->node_type,
-                              sizeof(control->node_type));
-  const auto bytes = control->node_type >> kNodeKindBits;
+  const auto bytes = latency_sim::CountedMemoryLoad(
+                         latency_sim::PoolKind::kHwcc, &control->node_type) >>
+                     kNodeKindBits;
   // Pools written before exact-size accounting stored only the kind.
   return bytes ? bytes : kCanonicalNodeEnvelopeBytes;
 }
@@ -117,33 +116,37 @@ inline bool TryLockLeafLink(NodeRef ref) {
   if (!control)
     throw std::runtime_error("null leaf link NodeRef");
   std::uint32_t expected = 0;
-  latency_sim::RecordHwccAtomicRmw(&control->leaf_link_lock);
-  return control->leaf_link_lock.compare_exchange_strong(
-      expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
+  return latency_sim::CountedCompareExchangeStrong(
+      control->leaf_link_lock, expected, std::uint32_t{1},
+      std::memory_order_acquire,
+      std::memory_order_relaxed, latency_sim::AtomicDomain::kHwcc);
 }
 
 inline void UnlockLeafLink(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null leaf link NodeRef");
-  latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
-  control->leaf_link_lock.store(0, std::memory_order_release);
+  latency_sim::CountedAtomicStore(control->leaf_link_lock, std::uint32_t{0},
+                                  std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
 }
 
 inline std::uint64_t LoadNodePhantomEpoch(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null phantom-epoch NodeRef");
-  latency_sim::RecordHwccAtomicLoad(&control->phantom_epoch);
-  return control->phantom_epoch.load(std::memory_order_acquire);
+  return latency_sim::CountedAtomicLoad(
+      control->phantom_epoch, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
 }
 
 inline void StoreNodePhantomEpoch(NodeRef ref, std::uint64_t epoch) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null phantom-epoch NodeRef");
-  latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
-  control->phantom_epoch.store(epoch, std::memory_order_release);
+  latency_sim::CountedAtomicStore(control->phantom_epoch, epoch,
+                                  std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
 }
 
 inline bool CompareExchangeNodePhantomEpoch(
@@ -153,26 +156,27 @@ inline bool CompareExchangeNodePhantomEpoch(
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null phantom-epoch NodeRef");
-  latency_sim::RecordHwccAtomicRmw(&control->phantom_epoch);
-  return control->phantom_epoch.compare_exchange_weak(
-      *expected, desired, std::memory_order_acq_rel,
-      std::memory_order_acquire);
+  return latency_sim::CountedCompareExchangeWeak(
+      control->phantom_epoch, *expected, desired, std::memory_order_acq_rel,
+      std::memory_order_acquire, latency_sim::AtomicDomain::kHwcc);
 }
 
 inline NodeRef LoadNodeParentRef(NodeRef ref) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null parent NodeRef");
-  latency_sim::RecordHwccAtomicLoad(&control->parent_ref);
-  return NodeRef(control->parent_ref.load(std::memory_order_acquire));
+  return NodeRef(latency_sim::CountedAtomicLoad(
+      control->parent_ref, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc));
 }
 
 inline void StoreNodeParentRef(NodeRef ref, NodeRef parent) {
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     throw std::runtime_error("null parent NodeRef");
-  latency_sim::RecordHwccAtomicStore(&control->parent_ref);
-  control->parent_ref.store(parent.value(), std::memory_order_release);
+  latency_sim::CountedAtomicStore(control->parent_ref, parent.value(),
+                                  std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
 }
 
 // Process-local policy queues carry a persistent control reference plus its
@@ -210,7 +214,9 @@ T* ResolveCanonicalNode(NodeRef ref) {
   // before reading the embedded control_ref_; nodeversion::stable() then
   // invalidates and charges the complete node envelope before traversal.
   InvalidateSwccRange(canonical, kSwccCacheLineBytes);
-  latency_sim::RecordSwccRead(canonical, kSwccCacheLineBytes);
+  latency_sim::GlobalLatencySimulator().RecordRange(
+      latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead, canonical,
+      kSwccCacheLineBytes);
   return canonical;
 }
 
@@ -255,24 +261,24 @@ inline bool TryLoadStableNodeIdentity(NodeRef ref, StableNodeIdentity* identity)
   auto* control = ref.get(SharedPoolBase());
   if (!control)
     return false;
-  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  if (control->allocation_state.load(std::memory_order_acquire) !=
+  if (latency_sim::CountedAtomicLoad(
+          control->allocation_state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc) !=
       NodeAllocationState::kPublished)
     return false;
-  latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
-  const auto first =
-      control->version_and_state.load(std::memory_order_acquire);
+  const auto first = latency_sim::CountedAtomicLoad(
+      control->version_and_state, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
   if (first & MasstreeNodeVersionBits::dirty_mask)
     return false;
-  latency_sim::RecordHwccRead(&control->generation,
-                              sizeof(control->generation));
-  const auto generation = control->generation;
-  latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
-  const auto second =
-      control->version_and_state.load(std::memory_order_acquire);
-  latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  const auto state =
-      control->allocation_state.load(std::memory_order_acquire);
+  const auto generation = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &control->generation);
+  const auto second = latency_sim::CountedAtomicLoad(
+      control->version_and_state, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
+  const auto state = latency_sim::CountedAtomicLoad(
+      control->allocation_state, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
   if (first != second ||
       (second & MasstreeNodeVersionBits::dirty_mask) ||
       state != NodeAllocationState::kPublished)
@@ -290,41 +296,50 @@ class NodeVersionAccessor {
 
   StableView stable() const {
     NodeControl* control = Control(true);
-    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
-    std::uint64_t version = control->version_and_state.load(std::memory_order_acquire);
+    std::uint64_t version = latency_sim::CountedAtomicLoad(
+        control->version_and_state, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kHwcc);
     while (version & MasstreeNodeVersionBits::dirty_mask) {
-      latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
-      version = control->version_and_state.load(std::memory_order_acquire);
+      version = latency_sim::CountedAtomicLoad(
+          control->version_and_state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc);
     }
-    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
-                                sizeof(control->canonical_swcc_offset) +
-                                    sizeof(control->generation));
+    const auto canonical_offset = latency_sim::CountedMemoryLoad(
+        latency_sim::PoolKind::kHwcc, &control->canonical_swcc_offset);
+    const auto generation = latency_sim::CountedMemoryLoad(
+        latency_sim::PoolKind::kHwcc, &control->generation);
     auto* canonical =
-        static_cast<std::byte*>(pool_base_) + control->canonical_swcc_offset;
+        static_cast<std::byte*>(pool_base_) + canonical_offset;
     const auto canonical_bytes = LoadCanonicalNodeBytes(ref_);
     // Match nodeversion::invalidate_canonical's exact-allocation envelope.
     // This accessor is used by control-plane paths that may inspect arbitrary
     // canonical fields after the stable HWCC snapshot.
     InvalidateSwccRange(canonical, canonical_bytes);
-    latency_sim::RecordSwccRead(canonical, canonical_bytes);
-    return {version, control->generation, control->canonical_swcc_offset};
+    latency_sim::GlobalLatencySimulator().RecordRange(
+        latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
+        canonical, canonical_bytes);
+    return {version, generation, canonical_offset};
   }
 
   bool try_lock(std::uint64_t* locked_version = nullptr) const {
     NodeControl* control = Control(false);
-    latency_sim::RecordHwccAtomicLoad(&control->version_and_state);
-    auto expected = control->version_and_state.load(std::memory_order_acquire);
+    auto expected = latency_sim::CountedAtomicLoad(
+        control->version_and_state, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kHwcc);
     while (!(expected & (MasstreeNodeVersionBits::lock_bit | MasstreeNodeVersionBits::dirty_mask))) {
-      latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
-      if (control->version_and_state.compare_exchange_weak(expected, expected | MasstreeNodeVersionBits::lock_bit,
-                                                            std::memory_order_acq_rel, std::memory_order_acquire)) {
+      if (latency_sim::CountedCompareExchangeWeak(
+              control->version_and_state, expected,
+              expected | MasstreeNodeVersionBits::lock_bit,
+              std::memory_order_acq_rel, std::memory_order_acquire,
+              latency_sim::AtomicDomain::kHwcc)) {
         const auto canonical_offset = LoadCanonicalSwccOffset(ref_);
         const auto canonical_bytes = LoadCanonicalNodeBytes(ref_);
         InvalidateSwccRange(
             static_cast<std::byte*>(pool_base_) + canonical_offset,
             canonical_bytes);
-        latency_sim::RecordSwccRead(
-            static_cast<std::byte*>(pool_base_) + canonical_offset,
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
+            static_cast<const std::byte*>(pool_base_) + canonical_offset,
             canonical_bytes);
         if (locked_version) *locked_version = expected | MasstreeNodeVersionBits::lock_bit;
         return true;
@@ -335,15 +350,15 @@ class NodeVersionAccessor {
 
   void mark_insert() const {
     auto* control = Control();
-    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
-    control->version_and_state.fetch_or(MasstreeNodeVersionBits::inserting_bit,
-                                        std::memory_order_acq_rel);
+    latency_sim::CountedAtomicFetchOr(
+        control->version_and_state, MasstreeNodeVersionBits::inserting_bit,
+        std::memory_order_acq_rel, latency_sim::AtomicDomain::kHwcc);
   }
   void mark_split() const {
     auto* control = Control();
-    latency_sim::RecordHwccAtomicRmw(&control->version_and_state);
-    control->version_and_state.fetch_or(MasstreeNodeVersionBits::splitting_bit,
-                                        std::memory_order_acq_rel);
+    latency_sim::CountedAtomicFetchOr(
+        control->version_and_state, MasstreeNodeVersionBits::splitting_bit,
+        std::memory_order_acq_rel, latency_sim::AtomicDomain::kHwcc);
   }
   void unlock_release(std::uint64_t locked_version) const {
     if (!(locked_version & MasstreeNodeVersionBits::lock_bit)) throw std::runtime_error("NodeControl unlock without lock");
@@ -351,16 +366,18 @@ class NodeVersionAccessor {
         ? (locked_version + MasstreeNodeVersionBits::vsplit_lowbit) & MasstreeNodeVersionBits::split_unlock_mask
         : (locked_version + ((locked_version & MasstreeNodeVersionBits::inserting_bit) << 2)) & MasstreeNodeVersionBits::unlock_mask;
     auto* control = Control();
-    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
-    control->version_and_state.store(next, std::memory_order_release);
+    latency_sim::CountedAtomicStore(control->version_and_state, next,
+                                    std::memory_order_release,
+                                    latency_sim::AtomicDomain::kHwcc);
   }
 
  private:
   NodeControl* Control(bool allow_retiring = false) const {
     auto* control = ref_.get(pool_base_);
     if (!control) throw std::runtime_error("null NodeRef");
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-    const auto state = control->allocation_state.load(std::memory_order_acquire);
+    const auto state = latency_sim::CountedAtomicLoad(
+        control->allocation_state, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kHwcc);
     if (state != NodeAllocationState::kPublished &&
         !(allow_retiring && state == NodeAllocationState::kRetiring))
       throw std::runtime_error("NodeRef does not name a lockable canonical node");
@@ -392,44 +409,51 @@ class RootControlAccessor {
 
   RootView stable() const {
     while (true) {
-      latency_sim::RecordHwccAtomicLoad(&root_->version);
-      const auto first = root_->version.load(std::memory_order_acquire);
+      const auto first = latency_sim::CountedAtomicLoad(
+          root_->version, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc);
       if (first & 1U)
         continue;
       const NodeRef ref(root_->root_ref);
       const auto generation = root_->root_generation;
-      latency_sim::RecordHwccRead(&root_->root_ref,
-                                  sizeof(root_->root_ref) +
-                                      sizeof(root_->root_generation));
-      latency_sim::RecordHwccAtomicLoad(&root_->version);
-      const auto second = root_->version.load(std::memory_order_acquire);
+      const auto observed_ref = latency_sim::CountedMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &root_->root_ref);
+      const auto observed_generation = latency_sim::CountedMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &root_->root_generation);
+      const auto second = latency_sim::CountedAtomicLoad(
+          root_->version, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc);
+      (void)observed_ref;
+      (void)observed_generation;
       if (first == second) return {ref, generation, second};
     }
   }
 
   void publish(NodeRef ref, std::uint64_t generation) const {
     if (!ref) throw std::runtime_error("cannot publish null root NodeRef");
-    latency_sim::RecordHwccAtomicLoad(&root_->version);
-    auto version = root_->version.load(std::memory_order_acquire);
+    auto version = latency_sim::CountedAtomicLoad(
+        root_->version, std::memory_order_acquire,
+        latency_sim::AtomicDomain::kHwcc);
     while (true) {
       if (version & 1U) {
-        latency_sim::RecordHwccAtomicLoad(&root_->version);
-        version = root_->version.load(std::memory_order_acquire);
+        version = latency_sim::CountedAtomicLoad(
+            root_->version, std::memory_order_acquire,
+            latency_sim::AtomicDomain::kHwcc);
         continue;
       }
-      latency_sim::RecordHwccAtomicRmw(&root_->version);
-      if (root_->version.compare_exchange_weak(
-              version, version + 1, std::memory_order_acq_rel,
-              std::memory_order_acquire))
+      if (latency_sim::CountedCompareExchangeWeak(
+              root_->version, version, version + 1,
+              std::memory_order_acq_rel, std::memory_order_acquire,
+              latency_sim::AtomicDomain::kHwcc))
         break;
     }
-    root_->root_ref = ref.value();
-    root_->root_generation = generation;
-    latency_sim::RecordHwccWrite(&root_->root_ref,
-                                 sizeof(root_->root_ref) +
-                                     sizeof(root_->root_generation));
-    latency_sim::RecordHwccAtomicStore(&root_->version);
-    root_->version.store(version + 2, std::memory_order_release);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &root_->root_ref, ref.value());
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &root_->root_generation, generation);
+    latency_sim::CountedAtomicStore(root_->version, version + 2,
+                                    std::memory_order_release,
+                                    latency_sim::AtomicDomain::kHwcc);
   }
 
   bool compare_publish(const RootView& expected, NodeRef ref,
@@ -439,20 +463,20 @@ class RootControlAccessor {
     auto version = expected.version;
     if (version & 1U)
       throw std::runtime_error("cannot compare against unstable root");
-    latency_sim::RecordHwccAtomicRmw(&root_->version);
-    if (!root_->version.compare_exchange_strong(
-            version, version + 1, std::memory_order_acq_rel,
-            std::memory_order_acquire))
+    if (!latency_sim::CountedCompareExchangeStrong(
+            root_->version, version, version + 1,
+            std::memory_order_acq_rel, std::memory_order_acquire,
+            latency_sim::AtomicDomain::kHwcc))
       return false;
     // The successful seqlock transition proves that the fields still belong
     // to `expected`; a newer root publisher would have changed version.
-    root_->root_ref = ref.value();
-    root_->root_generation = generation;
-    latency_sim::RecordHwccWrite(&root_->root_ref,
-                                 sizeof(root_->root_ref) +
-                                     sizeof(root_->root_generation));
-    latency_sim::RecordHwccAtomicStore(&root_->version);
-    root_->version.store(version + 2, std::memory_order_release);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &root_->root_ref, ref.value());
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &root_->root_generation, generation);
+    latency_sim::CountedAtomicStore(root_->version, version + 2,
+                                    std::memory_order_release,
+                                    latency_sim::AtomicDomain::kHwcc);
     return true;
   }
 

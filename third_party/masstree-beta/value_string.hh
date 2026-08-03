@@ -17,6 +17,7 @@
 #define VALUE_STRING_HH
 #include "compiler.hh"
 #include "json.hh"
+#include "dsidle_value_access.hh"
 
 class value_string {
   public:
@@ -52,9 +53,11 @@ class value_string {
 
     void print(FILE* f, const char* prefix, int indent, Str key,
                kvtimestamp_t initial_ts, const char* suffix = "") {
-        kvtimestamp_t adj_ts = timestamp_sub(ts_, initial_ts);
+        kvtimestamp_t adj_ts = timestamp_sub(timestamp(), initial_ts);
+        const auto vallen = dsidle_masstree::LoadSwcc(&vallen_);
+        dsidle_masstree::ReadSwcc(s_, vallen);
         fprintf(f, "%s%*s%.*s = %.*s @" PRIKVTSPARTS "%s\n", prefix, indent, "",
-                key.len, key.s, std::min(40U, vallen_), s_,
+                key.len, key.s, std::min(40U, vallen), s_,
                 KVTS_HIGHPART(adj_ts), KVTS_LOWPART(adj_ts), suffix);
     }
 
@@ -89,11 +92,11 @@ inline value_string::value_string()
 }
 
 inline kvtimestamp_t value_string::timestamp() const {
-    return ts_;
+    return dsidle_masstree::LoadSwcc(&ts_);
 }
 
 inline size_t value_string::size() const {
-    return sizeof(value_string) + vallen_;
+    return sizeof(value_string) + dsidle_masstree::LoadSwcc(&vallen_);
 }
 
 inline int value_string::ncol() const {
@@ -105,11 +108,15 @@ inline unsigned value_string::index_last_offset(index_type idx) {
 }
 
 inline lcdf::Str value_string::col(index_type idx) const {
-    if (idx == 0)
-        return Str(s_, vallen_);
-    else {
-        unsigned off = std::min(vallen_, index_offset(idx));
-        return Str(s_ + off, std::min(vallen_ - off, index_length(idx)));
+    const auto vallen = dsidle_masstree::LoadSwcc(&vallen_);
+    if (idx == 0) {
+        dsidle_masstree::ReadSwcc(s_, vallen);
+        return Str(s_, vallen);
+    } else {
+        unsigned off = std::min(vallen, index_offset(idx));
+        const auto length = std::min(vallen - off, index_length(idx));
+        dsidle_masstree::ReadSwcc(s_ + off, length);
+        return Str(s_ + off, length);
     }
 }
 
@@ -127,13 +134,14 @@ inline size_t value_string::shallow_size(int vallen) {
 }
 
 inline size_t value_string::shallow_size() const {
-    return shallow_size(vallen_);
+    return shallow_size(dsidle_masstree::LoadSwcc(&vallen_));
 }
 
 template <typename ALLOC>
 value_string* value_string::update(const Json* first, const Json* last,
                                    kvtimestamp_t ts, ALLOC& ti) const {
-    unsigned vallen = 0, cut = vallen_;
+    const auto old_vallen = dsidle_masstree::LoadSwcc(&vallen_);
+    unsigned vallen = 0, cut = old_vallen;
     for (auto it = first; it != last; it += 2) {
         unsigned idx = it[0].as_u(), length = it[1].as_s().length();
         if (idx == 0)
@@ -142,12 +150,16 @@ value_string* value_string::update(const Json* first, const Json* last,
     }
     vallen = std::max(vallen, cut);
     value_string* row = (value_string*) ti.allocate(shallow_size(vallen), memtag_value);
-    row->ts_ = ts;
-    row->vallen_ = vallen;
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->vallen_, vallen);
     memcpy(row->s_, s_, cut);
+    dsidle_masstree::ReadSwcc(s_, cut);
+    dsidle_masstree::WriteSwcc(row->s_, cut);
     for (; first != last; first += 2) {
         Str val = first[1].as_s();
         memcpy(row->s_ + index_offset(first[0].as_u()), val.data(), val.length());
+        dsidle_masstree::WriteSwcc(row->s_ + index_offset(first[0].as_u()),
+                                   val.length());
     }
     return row;
 }
@@ -162,9 +174,10 @@ inline value_string* value_string::create1(Str value,
                                            kvtimestamp_t ts,
                                            threadinfo& ti) {
     value_string* row = (value_string*) ti.allocate(shallow_size(value.length()), memtag_value);
-    row->ts_ = ts;
-    row->vallen_ = value.length();
+    dsidle_masstree::StoreSwcc(&row->ts_, ts);
+    dsidle_masstree::StoreSwcc(&row->vallen_, static_cast<unsigned>(value.length()));
     memcpy(row->s_, value.data(), value.length());
+    dsidle_masstree::WriteSwcc(row->s_, value.length());
     return row;
 }
 
@@ -187,7 +200,9 @@ inline value_string* value_string::checkpoint_read(PARSER& par,
 
 template <typename UNPARSER>
 inline void value_string::checkpoint_write(UNPARSER& unpar) const {
-    unpar << Str(s_, vallen_);
+    const auto vallen = dsidle_masstree::LoadSwcc(&vallen_);
+    dsidle_masstree::ReadSwcc(s_, vallen);
+    unpar << Str(s_, vallen);
 }
 
 #endif

@@ -87,7 +87,13 @@ def validate_common_config(config: dict[str, Any]) -> None:
     require_equal(policy["verbose"], False, "dsidle.verbose")
     require_equal(policy["extra_check"], False, "dsidle.extra_check")
     latency = policy["latency_inject"]
-    require_equal(latency["enabled"], False, "dsidle.latency_inject.enabled")
+    for section in ("fixed_latency", "hwcc_access_count", "atomic_count",
+                    "remote_cache_invalidation"):
+        require_equal(
+            latency[section]["enabled"],
+            False,
+            f"dsidle.latency_inject.{section}.enabled",
+        )
 
 
 def validate_recorded_file(
@@ -192,12 +198,16 @@ def validate_ycsb(metadata_path: Path, metadata: dict[str, Any]) -> dict[str, st
     validate_common_config(config)
     require_equal(config["dsidle"]["fixed_key_size"], 32, "dsidle.fixed_key_size")
     require_equal(config["dsidle"]["fixed_value_size"], 32, "dsidle.fixed_value_size")
-    for field in ("foreground_enabled", "merge_enabled", "stats_enabled"):
-        require_equal(
-            config["dsidle"]["latency_inject"][field],
-            False,
-            f"dsidle.latency_inject.{field}",
-        )
+    require_equal(
+        config["dsidle"]["latency_inject"]["fixed_latency"]["foreground_enabled"],
+        False,
+        "dsidle.latency_inject.fixed_latency.foreground_enabled",
+    )
+    require_equal(
+        config["dsidle"]["latency_inject"]["fixed_latency"]["background_enabled"],
+        False,
+        "dsidle.latency_inject.fixed_latency.background_enabled",
+    )
 
     manifest_path, manifest_sha = validate_recorded_file(
         metadata_path, metadata, "trace_manifest", "trace_manifest_sha256"

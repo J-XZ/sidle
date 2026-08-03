@@ -243,7 +243,9 @@ class node_base : public make_nodeversion<P>::type {
         if (!this->control_ref())
             return;
         const size_t bytes = canonical_allocation_size();
-        latency_sim::RecordSwccWrite(this, bytes);
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite,
+            this, bytes);
         dsidle::FlushSwccRange(this, bytes);
     }
     inline void make_layer_root() {
@@ -346,7 +348,9 @@ class internode : public node_base<P> {
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
         }
-        latency_sim::RecordSwccWrite(n, sizeof(*n));
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite,
+            n, sizeof(*n));
         dsidle::FlushSwccRange(n, sizeof(*n));
         controls.Publish(ref, 0);
         allocation.commit();
@@ -474,9 +478,14 @@ class leafvalue {
         return !raw_;
     }
 
-    value_type value() const {
-        auto* value = dsidle::SwccOffset<value_element_type>(raw_).get(dsidle::SharedPoolBase());
-        if (value) {
+    value_type value(bool observe = true) const {
+        // The enclosing nodeversion stable/lock envelope already accounts for
+        // this leafvalue slot.  A second typed observation here would charge
+        // the same canonical node line twice; only the value row itself is
+        // observed by value_bag's executed access helpers below.
+        auto* value = dsidle::SwccOffset<value_element_type>(raw_).get(
+            dsidle::SharedPoolBase());
+        if (value && observe) {
             dsidle::InvalidateSwccRange(value, dsidle::kSwccCacheLineBytes);
             const auto metadata_bytes =
                 sizeof(kvtimestamp_t) +
@@ -496,17 +505,19 @@ class leafvalue {
                     reinterpret_cast<const std::byte*>(value) + visible_bytes,
                     bytes - visible_bytes);
             }
-            latency_sim::RecordSwccRead(value, bytes);
         }
         return value;
     }
     void set_value(value_type value) {
         if (value) {
-            latency_sim::RecordSwccWrite(value, value->size());
             dsidle::FlushSwccRange(value, value->size());
         }
-        raw_ = value ? dsidle::SwccOffset<value_element_type>(
-            reinterpret_cast<std::byte*>(value) - static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
+        const auto raw = value ? dsidle::SwccOffset<value_element_type>(
+            reinterpret_cast<std::byte*>(value) -
+            static_cast<std::byte*>(dsidle::SharedPoolBase())).value() : 0;
+        // raw_ is part of the canonical leaf body and is covered exactly once
+        // by nodeversion's release envelope.
+        raw_ = raw;
     }
 
     node_base<P>* layer() const {
@@ -624,7 +635,9 @@ class leaf : public node_base<P> {
         if (P::debug_level > 0) {
             n->created_at_[0] = ti.operation_timestamp();
         }
-        latency_sim::RecordSwccWrite(n, sz);
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite, n,
+            sz);
         dsidle::FlushSwccRange(n, sz);
         controls.Publish(ref, dsidle::MasstreeNodeVersionBits::isleaf_bit);
         allocation.commit();
@@ -862,13 +875,13 @@ class leaf : public node_base<P> {
 
     leaf<P>* safe_next() const {
         dsidle::InvalidateSwccRange(&next_, sizeof(next_));
-        latency_sim::RecordSwccRead(&next_, sizeof(next_));
-        return next_;
+        return latency_sim::CountedMemoryLoad(latency_sim::PoolKind::kSwcc,
+                                              &next_);
     }
     leaf<P>* safe_prev() const {
         dsidle::InvalidateSwccRange(&prev_, sizeof(prev_));
-        latency_sim::RecordSwccRead(&prev_, sizeof(prev_));
-        return prev_;
+        return latency_sim::CountedMemoryLoad(latency_sim::PoolKind::kSwcc,
+                                              &prev_);
     }
 
     void deallocate(threadinfo& ti) {
@@ -901,15 +914,19 @@ class leaf : public node_base<P> {
             return nullptr;
         const size_t metadata_bytes = external_ksuf_type::overhead(width);
         dsidle::InvalidateSwccRange(external, metadata_bytes);
-        latency_sim::RecordSwccRead(external, metadata_bytes);
+        latency_sim::GlobalLatencySimulator().RecordRange(
+            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
+            external, metadata_bytes);
         return external;
     }
     static Str readable_external_ksuf_value(external_ksuf_type* external,
-                                            int p) {
+                                            int p, bool observe = true) {
         const Str suffix = external->get(p);
-        if (suffix.len) {
+        if (observe && suffix.len) {
             dsidle::InvalidateSwccRange(suffix.s, suffix.len);
-            latency_sim::RecordSwccRead(suffix.s, suffix.len);
+            latency_sim::GlobalLatencySimulator().RecordRange(
+                latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
+                suffix.s, suffix.len);
         }
         return suffix;
     }
@@ -1231,7 +1248,9 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     }
     bool ok = nksuf->assign(p, s);
     assert(ok); (void) ok;
-    latency_sim::RecordSwccWrite(nksuf, sz);
+    latency_sim::GlobalLatencySimulator().RecordRange(
+        latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite, nksuf,
+        sz);
     dsidle::FlushSwccRange(nksuf, sz);
     fence();
 

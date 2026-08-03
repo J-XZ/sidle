@@ -99,14 +99,19 @@ checks = {
     'shared_memory.swcc.size_mb': (shared['swcc']['size_mb'], 31744),
     'dsidle.verbose': (cfg['dsidle']['verbose'], False),
     'dsidle.extra_check': (cfg['dsidle']['extra_check'], False),
-    'dsidle.latency_inject.enabled': (
-        cfg['dsidle']['latency_inject']['enabled'], False),
 }
 for field, (actual, expected) in checks.items():
     if actual != expected:
         raise SystemExit(
             f'formal VM E2E contract mismatch for {field}: '
             f'expected {expected!r}, got {actual!r}')
+latency = cfg['dsidle']['latency_inject']
+for section in ('fixed_latency', 'hwcc_access_count', 'atomic_count',
+                'remote_cache_invalidation'):
+    if latency[section]['enabled']:
+        raise SystemExit(
+            f'formal VM E2E contract mismatch for '
+            f'dsidle.latency_inject.{section}.enabled: expected False')
 PY
 fi
 [[ -n "$out_dir" ]] || out_dir="$repo_root/exp_data/vm_e2e${suite}_$(date -u +%Y%m%dT%H%M%SZ)"

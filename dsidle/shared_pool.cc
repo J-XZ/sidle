@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <fcntl.h>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,7 @@ namespace dsidle {
 namespace {
 constexpr std::uint64_t kCacheLine = 64;
 constexpr std::uint64_t kDiagnosticBytes = 4096;
+constexpr std::uint64_t kDiagnosticControlBytes = 256;
 constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
@@ -41,6 +43,8 @@ void* SharedPoolBase() {
   return shared_pool_base;
 }
 
+void* SharedPoolBaseOrNull() noexcept { return shared_pool_base; }
+
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard) {
   if (!shard_count || local_shard >= shard_count || pool.static_layout()->shard_count != shard_count)
@@ -53,6 +57,10 @@ SharedPool& CurrentSharedPool() {
   if (!swcc_allocator_context.pool)
     throw std::runtime_error("D-SIDLE shared pool is not configured in this thread");
   return *swcc_allocator_context.pool;
+}
+
+SharedPool* CurrentSharedPoolOrNull() noexcept {
+  return swcc_allocator_context.pool;
 }
 
 std::uint32_t CurrentSwccShard() {
@@ -102,7 +110,9 @@ void SharedPool::ValidateHeader(const PoolHeader& header, std::uint64_t expected
   if (header.magic != kPoolMagic || header.abi_version != kPoolAbiVersion ||
       (expected_bytes && header.total_bytes != expected_bytes))
     throw std::runtime_error("incompatible D-SIDLE shared pool");
-  if (header.state.load(std::memory_order_acquire) !=
+  if (latency_sim::CountedAtomicLoad(
+          header.state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc) !=
       static_cast<std::uint64_t>(PoolState::kReady))
     throw std::runtime_error("D-SIDLE shared pool is not READY");
 }
@@ -140,9 +150,11 @@ SharedPool SharedPool::InitializeExisting(const std::string& path, const PoolLay
   header->swcc_bytes = layout.swcc_bytes;
   new (static_cast<std::byte*>(base) + sizeof(PoolHeader)) RootControl{};
   new (static_cast<std::byte*>(base) + sizeof(PoolHeader) + sizeof(RootControl)) PoolStaticLayout{};
-  std::atomic_thread_fence(std::memory_order_release);
-  header->state.store(static_cast<std::uint64_t>(PoolState::kInitializing),
-                      std::memory_order_release);
+  latency_sim::CountedAtomicFence(std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
+  latency_sim::CountedAtomicStore(
+      header->state, static_cast<std::uint64_t>(PoolState::kInitializing),
+      std::memory_order_release, latency_sim::AtomicDomain::kHwcc);
   if (msync(base, sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout), MS_SYNC) != 0) {
     munmap(base, layout.total_bytes); close(fd); Fail("sync", path);
   }
@@ -221,7 +233,9 @@ void SharedPool::Close() {
 }
 
 void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options) {
-  if (pool.header()->state.load(std::memory_order_acquire) !=
+  if (latency_sim::CountedAtomicLoad(
+          pool.header()->state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc) !=
       static_cast<std::uint64_t>(PoolState::kInitializing))
     throw std::runtime_error(
         "D-SIDLE pool metadata requires INITIALIZING state");
@@ -232,14 +246,54 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     throw std::runtime_error("D-SIDLE shared pool metadata is already initialized");
 
   const auto nodes_offset = AlignUp(sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout), kCacheLine);
+  if (options.node_control_capacity >
+      std::numeric_limits<std::uint64_t>::max() / sizeof(NodeControl))
+    throw std::runtime_error("D-SIDLE node-control metadata size overflow");
   const auto nodes_bytes = options.node_control_capacity * sizeof(NodeControl);
   const auto shards_offset = nodes_offset + nodes_bytes;
+  if (static_cast<std::uint64_t>(options.vm_count) >
+      std::numeric_limits<std::uint64_t>::max() /
+          (kSwccSizeClassCount * kCacheLine))
+    throw std::runtime_error("D-SIDLE shard metadata size overflow");
   const auto shard_bytes = static_cast<std::uint64_t>(options.vm_count) * kSwccSizeClassCount * kCacheLine;
   const auto epochs_offset = shards_offset + shard_bytes;
+  if (static_cast<std::uint64_t>(options.vm_count) >
+      std::numeric_limits<std::uint64_t>::max() / options.max_threads_per_vm ||
+      static_cast<std::uint64_t>(options.vm_count) * options.max_threads_per_vm >
+          std::numeric_limits<std::uint64_t>::max() / sizeof(EpochSlot))
+    throw std::runtime_error("D-SIDLE epoch metadata size overflow");
   const auto epoch_count = static_cast<std::uint64_t>(options.vm_count) * options.max_threads_per_vm;
   const auto epochs_bytes = epoch_count * sizeof(EpochSlot);
   const auto diagnostic_offset = epochs_offset + epochs_bytes;
-  const auto used = diagnostic_offset + kDiagnosticBytes;
+  if (options.remote_instrumentation_enabled !=
+          (options.remote_event_log_capacity != 0) ||
+      options.remote_shared_sequencer_offset % alignof(std::uint64_t) != 0 ||
+      options.remote_shared_sequencer_offset + sizeof(std::uint64_t) >
+          kDiagnosticBytes)
+    throw std::runtime_error("invalid D-SIDLE remote instrumentation options");
+  const auto event_log_offset =
+      options.remote_instrumentation_enabled
+          ? AlignUp(diagnostic_offset + kDiagnosticBytes, kRemoteRecordBytes)
+          : 0;
+  if (options.remote_instrumentation_enabled &&
+      options.remote_event_log_capacity >
+          std::numeric_limits<std::uint64_t>::max() / kRemoteRecordBytes)
+    throw std::runtime_error("D-SIDLE remote event log size overflow");
+  const auto event_log_bytes =
+      options.remote_instrumentation_enabled
+          ? options.remote_event_log_capacity * kRemoteRecordBytes
+          : 0;
+  const auto diagnostic_end = diagnostic_offset + kDiagnosticBytes;
+  if (diagnostic_end < diagnostic_offset ||
+      diagnostic_end > pool.header()->hwcc_bytes ||
+      (options.remote_instrumentation_enabled &&
+       (event_log_offset < diagnostic_end ||
+        event_log_offset > pool.header()->hwcc_bytes ||
+        event_log_bytes > pool.header()->hwcc_bytes - event_log_offset)))
+    throw std::runtime_error("HWCC capacity exhausted by remote event log");
+  const auto used = options.remote_instrumentation_enabled
+                        ? event_log_offset + event_log_bytes
+                        : diagnostic_end;
   if (used > pool.header()->hwcc_bytes)
     throw std::runtime_error("HWCC capacity exhausted by D-SIDLE static metadata");
 
@@ -250,8 +304,26 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
   for (std::uint64_t index = 0; index < epoch_count; ++index)
     new (base + epochs_offset + index * sizeof(EpochSlot)) EpochSlot{};
   std::memset(base + diagnostic_offset, 0, kDiagnosticBytes);
-  new (base + diagnostic_offset) SharedEpochClock{};
-  auto* phase_barrier = new (base + diagnostic_offset + sizeof(SharedEpochClock)) SharedPhaseBarrier{};
+  auto* remote_header = new (base + diagnostic_offset)
+      RemoteInstrumentationHeader{};
+  remote_header->magic = options.remote_instrumentation_enabled
+                             ? kRemoteInstrumentationMagic
+                             : 0;
+  remote_header->sequence_offset = options.remote_shared_sequencer_offset;
+  remote_header->event_log_offset = event_log_offset;
+  remote_header->event_log_capacity = options.remote_event_log_capacity;
+  remote_header->record_bytes = kRemoteRecordBytes;
+  remote_header->hwcc_pool_id = kDsidleHwccPoolId;
+  if (options.remote_instrumentation_enabled) {
+    new (base + diagnostic_offset + options.remote_shared_sequencer_offset)
+        std::atomic<std::uint64_t>{0};
+    std::memset(base + event_log_offset, 0,
+                static_cast<std::size_t>(event_log_bytes));
+  }
+  new (base + diagnostic_offset + kDiagnosticControlBytes) SharedEpochClock{};
+  auto* phase_barrier = new (base + diagnostic_offset +
+                             kDiagnosticControlBytes + sizeof(SharedEpochClock))
+      SharedPhaseBarrier{};
   phase_barrier->participants = options.vm_count;
   layout->node_control_offset = nodes_offset;
   layout->node_control_capacity = options.node_control_capacity;
@@ -259,22 +331,25 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
     auto* control = reinterpret_cast<NodeControl*>(base + nodes_offset + index * sizeof(NodeControl));
     control->canonical_swcc_offset = index + 1 == options.node_control_capacity ? 0 : nodes_offset + (index + 1) * sizeof(NodeControl);
   }
-  layout->node_free_head.store(
-      TaggedFreeListHead::Encode(nodes_offset, 0),
-      std::memory_order_relaxed);
+  latency_sim::CountedAtomicStore(
+      layout->node_free_head, TaggedFreeListHead::Encode(nodes_offset, 0),
+      std::memory_order_relaxed, latency_sim::AtomicDomain::kHwcc);
   layout->shard_controls_offset = shards_offset;
   layout->shard_count = options.vm_count;
   layout->epoch_slots_offset = epochs_offset;
   layout->epoch_slot_count = epoch_count;
   layout->diagnostic_offset = diagnostic_offset;
-  std::atomic_thread_fence(std::memory_order_release);
+  latency_sim::CountedAtomicFence(std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
   if (msync(base, static_cast<std::size_t>(used), MS_SYNC) != 0)
     Fail("sync initialized metadata", "shared pool");
 }
 
 void FinalizePoolInitialization(SharedPool& pool) {
   auto* header = pool.header();
-  if (header->state.load(std::memory_order_acquire) !=
+  if (latency_sim::CountedAtomicLoad(
+          header->state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc) !=
       static_cast<std::uint64_t>(PoolState::kInitializing))
     throw std::runtime_error(
         "D-SIDLE pool finalization requires INITIALIZING state");
@@ -292,8 +367,12 @@ void FinalizePoolInitialization(SharedPool& pool) {
       const auto* control = reinterpret_cast<const ShardControl*>(
           base + layout->shard_controls_offset +
           (shard * kSwccSizeClassCount + index) * sizeof(ShardControl));
-      const auto bump = control->bump.load(std::memory_order_acquire);
-      if (!bump || bump >= control->limit)
+      const auto bump = latency_sim::CountedAtomicLoad(
+          control->bump, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc);
+      const auto limit = latency_sim::CountedMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &control->limit);
+      if (!bump || bump >= limit)
         throw std::runtime_error(
             "D-SIDLE SWCC allocator classes are incomplete at finalization");
     }
@@ -305,9 +384,11 @@ void FinalizePoolInitialization(SharedPool& pool) {
   if (msync(pool.base(), static_cast<std::size_t>(header->hwcc_bytes),
             MS_SYNC) != 0)
     Fail("sync finalized metadata", "shared pool");
-  std::atomic_thread_fence(std::memory_order_release);
-  header->state.store(static_cast<std::uint64_t>(PoolState::kReady),
-                      std::memory_order_release);
+  latency_sim::CountedAtomicFence(std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
+  latency_sim::CountedAtomicStore(
+      header->state, static_cast<std::uint64_t>(PoolState::kReady),
+      std::memory_order_release, latency_sim::AtomicDomain::kHwcc);
   if (msync(pool.base(), sizeof(PoolHeader), MS_SYNC) != 0)
     Fail("sync ready state", "shared pool");
 }
@@ -320,42 +401,48 @@ NodeRef NodeControlSlab::Reserve(std::uint64_t canonical_swcc_offset,
       node_type >= (std::uint32_t{1} << kNodeKindBits))
     throw std::runtime_error("invalid canonical node metadata");
   auto* metadata = pool_.static_layout();
-  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
-  auto head = metadata->node_free_head.load(std::memory_order_acquire);
+  auto head = latency_sim::CountedAtomicLoad(
+      metadata->node_free_head, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
   while (const auto offset = TaggedFreeListHead::Offset(head)) {
     auto* control = reinterpret_cast<NodeControl*>(
         static_cast<std::byte*>(pool_.base()) + offset);
-    latency_sim::RecordHwccRead(&control->canonical_swcc_offset,
-                                sizeof(control->canonical_swcc_offset));
-    const auto next = control->canonical_swcc_offset;
-    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
-    if (!metadata->node_free_head.compare_exchange_weak(
-            head, TaggedFreeListHead::Advance(head, next),
-            std::memory_order_acq_rel, std::memory_order_acquire))
+    const auto next = latency_sim::CountedMemoryLoad(
+        latency_sim::PoolKind::kHwcc, &control->canonical_swcc_offset);
+    if (!latency_sim::CountedCompareExchangeWeak(
+            metadata->node_free_head, head,
+            TaggedFreeListHead::Advance(head, next),
+            std::memory_order_acq_rel, std::memory_order_acquire,
+            latency_sim::AtomicDomain::kHwcc))
       continue;
-    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
-    control->allocation_state.store(NodeAllocationState::kAllocating, std::memory_order_relaxed);
-    latency_sim::RecordHwccRead(&control->generation,
-                                sizeof(control->generation));
-    control->canonical_swcc_offset = canonical_swcc_offset;
-    ++control->generation;
-    control->retire_epoch = 0;
-    control->node_type =
+    latency_sim::CountedAtomicStore(
+        control->allocation_state, NodeAllocationState::kAllocating,
+        std::memory_order_relaxed, latency_sim::AtomicDomain::kHwcc);
+    const auto generation = latency_sim::CountedMemoryLoad(
+        latency_sim::PoolKind::kHwcc, &control->generation);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->canonical_swcc_offset,
+                                    canonical_swcc_offset);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->generation, generation + 1);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->retire_epoch, std::uint64_t{0});
+    latency_sim::CountedMemoryStore(
+        latency_sim::PoolKind::kHwcc, &control->node_type,
         (static_cast<std::uint32_t>(canonical_bytes) << kNodeKindBits) |
-        node_type;
-    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
-                                 sizeof(control->canonical_swcc_offset) +
-                                     sizeof(control->generation) +
-                                     sizeof(control->retire_epoch) +
-                                     sizeof(control->node_type));
-    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
-    control->leaf_link_lock.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
-    control->phantom_epoch.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
-    control->parent_ref.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
-    control->version_and_state.store(0, std::memory_order_relaxed);
+            node_type);
+    latency_sim::CountedAtomicStore(
+        control->leaf_link_lock, 0U, std::memory_order_relaxed,
+        latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->phantom_epoch, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->parent_ref, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->version_and_state, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
     if (auto* directory = CurrentReplicaDirectoryOrNull())
       std::free(directory->ResetForReuse(NodeRef(offset)));
     return NodeRef(offset);
@@ -367,72 +454,84 @@ void NodeControlSlab::Cancel(NodeRef ref) {
   if (!ref) throw std::runtime_error("cannot cancel null NodeControl");
   auto* metadata = pool_.static_layout();
   auto* control = ref.get(pool_.base());
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
   if (!control ||
-      control->allocation_state.load(std::memory_order_acquire) !=
+      latency_sim::CountedAtomicLoad(
+          control->allocation_state, std::memory_order_acquire,
+          latency_sim::AtomicDomain::kHwcc) !=
           NodeAllocationState::kAllocating)
     throw std::runtime_error(
         "NodeControl must be ALLOCATING before cancellation");
-  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
-  auto head = metadata->node_free_head.load(std::memory_order_acquire);
+  auto head = latency_sim::CountedAtomicLoad(
+      metadata->node_free_head, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
   do {
-    control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
-    control->node_type = 0;
-    control->retire_epoch = 0;
-    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
-                                 sizeof(control->canonical_swcc_offset));
-    latency_sim::RecordHwccWrite(&control->retire_epoch,
-                                 sizeof(control->retire_epoch) +
-                                     sizeof(control->node_type));
-    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
-    control->leaf_link_lock.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
-    control->phantom_epoch.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
-    control->parent_ref.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->version_and_state);
-    control->version_and_state.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
-    control->allocation_state.store(NodeAllocationState::kFree,
-                                    std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_release);
-    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
-  } while (!metadata->node_free_head.compare_exchange_weak(
-      head, TaggedFreeListHead::Advance(head, ref.value()),
-      std::memory_order_release,
-      std::memory_order_acquire));
+    latency_sim::CountedMemoryStore(
+        latency_sim::PoolKind::kHwcc, &control->canonical_swcc_offset,
+        TaggedFreeListHead::Offset(head));
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->node_type, 0U);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->retire_epoch, std::uint64_t{0});
+    latency_sim::CountedAtomicStore(control->leaf_link_lock, 0U,
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->phantom_epoch, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->parent_ref, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->version_and_state, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->allocation_state,
+                                    NodeAllocationState::kFree,
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicFence(std::memory_order_release,
+                                    latency_sim::AtomicDomain::kHwcc);
+  } while (!latency_sim::CountedCompareExchangeWeak(
+      metadata->node_free_head, head,
+      TaggedFreeListHead::Advance(head, ref.value()),
+      std::memory_order_release, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc));
 }
 
 void NodeControlSlab::Publish(NodeRef ref, std::uint64_t initial_version) {
   if (!ref) throw std::runtime_error("cannot publish null NodeControl");
   auto* control = ref.get(pool_.base());
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kAllocating)
+  if (!control || latency_sim::CountedAtomicLoad(
+                       control->allocation_state, std::memory_order_acquire,
+                       latency_sim::AtomicDomain::kHwcc) !=
+                       NodeAllocationState::kAllocating)
     throw std::runtime_error("NodeControl must be ALLOCATING before publish");
   // The caller has initialized and flushed the canonical SWCC object before
   // this release store makes its control line readable by other VMs.
-  std::atomic_thread_fence(std::memory_order_release);
-  latency_sim::RecordHwccAtomicStore(&control->version_and_state);
-  control->version_and_state.store(initial_version, std::memory_order_release);
-  latency_sim::RecordHwccAtomicStore(&control->allocation_state);
-  control->allocation_state.store(NodeAllocationState::kPublished, std::memory_order_release);
+  latency_sim::CountedAtomicFence(std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
+  latency_sim::CountedAtomicStore(control->version_and_state, initial_version,
+                                  std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
+  latency_sim::CountedAtomicStore(
+      control->allocation_state, NodeAllocationState::kPublished,
+      std::memory_order_release, latency_sim::AtomicDomain::kHwcc);
 }
 
 void NodeControlSlab::Retire(NodeRef ref, std::uint64_t retire_epoch) {
   if (!ref) throw std::runtime_error("cannot retire null NodeControl");
   auto* control = ref.get(pool_.base());
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kPublished)
+  if (!control || latency_sim::CountedAtomicLoad(
+                       control->allocation_state, std::memory_order_acquire,
+                       latency_sim::AtomicDomain::kHwcc) !=
+                       NodeAllocationState::kPublished)
     throw std::runtime_error("NodeControl must be PUBLISHED before retire");
-  control->retire_epoch = retire_epoch;
-  latency_sim::RecordHwccWrite(&control->retire_epoch,
-                               sizeof(control->retire_epoch));
-  latency_sim::RecordHwccAtomicStore(&control->allocation_state);
-  control->allocation_state.store(NodeAllocationState::kRetiring, std::memory_order_release);
-  std::atomic_thread_fence(std::memory_order_release);
+  latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                  &control->retire_epoch, retire_epoch);
+  latency_sim::CountedAtomicStore(
+      control->allocation_state, NodeAllocationState::kRetiring,
+      std::memory_order_release, latency_sim::AtomicDomain::kHwcc);
+  latency_sim::CountedAtomicFence(std::memory_order_release,
+                                  latency_sim::AtomicDomain::kHwcc);
   if (auto* directory = CurrentReplicaDirectoryOrNull())
     std::free(directory->Invalidate(ref));
 }
@@ -441,76 +540,138 @@ void NodeControlSlab::Release(NodeRef ref) {
   if (!ref) throw std::runtime_error("cannot release null NodeControl");
   auto* metadata = pool_.static_layout();
   auto* control = ref.get(pool_.base());
-  if (control)
-    latency_sim::RecordHwccAtomicLoad(&control->allocation_state);
-  if (!control || control->allocation_state.load(std::memory_order_acquire) != NodeAllocationState::kRetiring)
+  if (!control || latency_sim::CountedAtomicLoad(
+                       control->allocation_state, std::memory_order_acquire,
+                       latency_sim::AtomicDomain::kHwcc) !=
+                       NodeAllocationState::kRetiring)
     throw std::runtime_error("NodeControl must be RETIRING before release");
-  latency_sim::RecordHwccAtomicLoad(&metadata->node_free_head);
-  auto head = metadata->node_free_head.load(std::memory_order_acquire);
+  auto head = latency_sim::CountedAtomicLoad(
+      metadata->node_free_head, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc);
   do {
-    control->canonical_swcc_offset = TaggedFreeListHead::Offset(head);
-    control->node_type = 0;
-    control->retire_epoch = 0;
-    latency_sim::RecordHwccWrite(&control->canonical_swcc_offset,
-                                 sizeof(control->canonical_swcc_offset));
-    latency_sim::RecordHwccWrite(&control->retire_epoch,
-                                 sizeof(control->retire_epoch) +
-                                     sizeof(control->node_type));
-    latency_sim::RecordHwccAtomicStore(&control->leaf_link_lock);
-    control->leaf_link_lock.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->phantom_epoch);
-    control->phantom_epoch.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->parent_ref);
-    control->parent_ref.store(0, std::memory_order_relaxed);
-    latency_sim::RecordHwccAtomicStore(&control->allocation_state);
-    control->allocation_state.store(NodeAllocationState::kFree, std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_release);
-    latency_sim::RecordHwccAtomicRmw(&metadata->node_free_head);
-  } while (!metadata->node_free_head.compare_exchange_weak(
-      head, TaggedFreeListHead::Advance(head, ref.value()),
-      std::memory_order_release, std::memory_order_acquire));
+    latency_sim::CountedMemoryStore(
+        latency_sim::PoolKind::kHwcc, &control->canonical_swcc_offset,
+        TaggedFreeListHead::Offset(head));
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->node_type, 0U);
+    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kHwcc,
+                                    &control->retire_epoch, std::uint64_t{0});
+    latency_sim::CountedAtomicStore(control->leaf_link_lock, 0U,
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->phantom_epoch, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->parent_ref, std::uint64_t{0},
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicStore(control->allocation_state,
+                                    NodeAllocationState::kFree,
+                                    std::memory_order_relaxed,
+                                    latency_sim::AtomicDomain::kHwcc);
+    latency_sim::CountedAtomicFence(std::memory_order_release,
+                                    latency_sim::AtomicDomain::kHwcc);
+  } while (!latency_sim::CountedCompareExchangeWeak(
+      metadata->node_free_head, head,
+      TaggedFreeListHead::Advance(head, ref.value()),
+      std::memory_order_release, std::memory_order_acquire,
+      latency_sim::AtomicDomain::kHwcc));
 }
 
 SharedEpochTable SharedEpochSlots(SharedPool& pool) {
   const auto* layout = pool.static_layout();
-  latency_sim::RecordHwccRead(
-      &layout->shard_count,
-      sizeof(layout->shard_count) + sizeof(layout->epoch_slots_offset) +
-          sizeof(layout->epoch_slot_count));
-  if (!layout->epoch_slots_offset || !layout->shard_count || !layout->epoch_slot_count ||
-      layout->epoch_slot_count % layout->shard_count)
+  const auto shard_count = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &layout->shard_count);
+  const auto epoch_slots_offset = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &layout->epoch_slots_offset);
+  const auto epoch_slot_count = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &layout->epoch_slot_count);
+  if (!epoch_slots_offset || !shard_count || !epoch_slot_count ||
+      epoch_slot_count % shard_count)
     throw std::runtime_error("D-SIDLE epoch slots are not initialized");
-  return SharedEpochTable(pool.base(), layout->epoch_slots_offset,
-                          static_cast<std::uint32_t>(layout->shard_count),
-                          static_cast<std::uint32_t>(layout->epoch_slot_count / layout->shard_count));
+  return SharedEpochTable(pool.base(), epoch_slots_offset,
+                          static_cast<std::uint32_t>(shard_count),
+                          static_cast<std::uint32_t>(epoch_slot_count / shard_count));
 }
 
 SharedEpochClockView SharedEpochState(SharedPool& pool) {
   const auto* layout = pool.static_layout();
-  latency_sim::RecordHwccRead(&layout->diagnostic_offset,
-                              sizeof(layout->diagnostic_offset));
-  if (!layout->diagnostic_offset)
+  const auto diagnostic_offset = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &layout->diagnostic_offset);
+  if (!diagnostic_offset)
     throw std::runtime_error("D-SIDLE epoch clock is not initialized");
   return SharedEpochClockView(reinterpret_cast<SharedEpochClock*>(
-      static_cast<std::byte*>(pool.base()) + layout->diagnostic_offset));
+      static_cast<std::byte*>(pool.base()) + diagnostic_offset +
+      kDiagnosticControlBytes));
 }
 
 SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool) {
-  latency_sim::RecordHwccRead(
-      &pool.static_layout()->diagnostic_offset,
-      sizeof(pool.static_layout()->diagnostic_offset));
+  const auto diagnostic_offset = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc,
+      &pool.static_layout()->diagnostic_offset);
   return SharedPhaseBarrierView(reinterpret_cast<SharedPhaseBarrier*>(
-      static_cast<std::byte*>(pool.base()) + pool.static_layout()->diagnostic_offset + sizeof(SharedEpochClock)));
+      static_cast<std::byte*>(pool.base()) + diagnostic_offset +
+      kDiagnosticControlBytes + sizeof(SharedEpochClock)));
+}
+
+void ConfigureLatencySimulatorForPool(SharedPool& pool,
+                                      const latency_sim::Config& config,
+                                      std::uint32_t node_id) {
+  auto& simulator = latency_sim::GlobalLatencySimulator();
+  simulator.Configure(config);
+  if (!config.remote_cache_invalidation.enabled)
+    return;
+  if (node_id >= config.remote_cache_invalidation.node_count)
+    throw std::runtime_error("D-SIDLE node id is outside remote topology");
+  const auto diagnostic_offset = latency_sim::CountedMemoryLoad(
+      latency_sim::PoolKind::kHwcc,
+      &pool.static_layout()->diagnostic_offset);
+  const auto* header = reinterpret_cast<const RemoteInstrumentationHeader*>(
+      static_cast<const std::byte*>(pool.base()) + diagnostic_offset);
+  if (header->magic != kRemoteInstrumentationMagic ||
+      header->record_bytes != kRemoteRecordBytes ||
+      header->event_log_capacity !=
+          config.remote_cache_invalidation.event_log_capacity ||
+      header->sequence_offset !=
+          config.remote_cache_invalidation.shared_sequencer_offset ||
+      !header->event_log_offset)
+    throw std::runtime_error(
+        "D-SIDLE shared remote instrumentation layout differs from config");
+  const auto sequence = static_cast<std::byte*>(pool.base()) +
+                        diagnostic_offset + header->sequence_offset;
+  const auto event_log = static_cast<std::byte*>(pool.base()) +
+                         header->event_log_offset;
+  simulator.SetNodeId(node_id);
+  simulator.RegisterMemoryRange(pool.hwcc_base(), pool.header()->hwcc_bytes,
+                                latency_sim::MemoryDomain::kHwcc,
+                                kDsidleHwccPoolId, 0);
+  simulator.RegisterMemoryRange(pool.swcc_base(), pool.header()->swcc_bytes,
+                                latency_sim::MemoryDomain::kSwcc,
+                                kDsidleSwccPoolId, 0);
+  simulator.AttachSharedRemoteLog(sequence, event_log,
+                                   header->event_log_capacity);
 }
 
 std::string DescribeHwccBudget(const SharedPool& pool) {
   const auto* layout = pool.static_layout();
-  const auto total = layout->diagnostic_offset ? layout->diagnostic_offset + kDiagnosticBytes : 0;
+  const auto* remote_header = layout->diagnostic_offset
+                                  ? reinterpret_cast<const RemoteInstrumentationHeader*>(
+                                        static_cast<const std::byte*>(pool.base()) +
+                                        layout->diagnostic_offset)
+                                  : nullptr;
+  const auto remote_bytes = remote_header && remote_header->event_log_offset
+                                ? remote_header->event_log_capacity * kRemoteRecordBytes
+                                : 0;
+  const auto total = layout->diagnostic_offset
+                         ? layout->diagnostic_offset + kDiagnosticBytes + remote_bytes
+                         : 0;
   return "HWCC budget: header/root/static=" + std::to_string(sizeof(PoolHeader) + sizeof(RootControl) + sizeof(PoolStaticLayout)) +
       " node_controls=" + std::to_string(layout->node_control_capacity * sizeof(NodeControl)) +
       " shard_classes=" + std::to_string(layout->shard_count * kSwccSizeClassCount * kCacheLine) +
       " epoch_slots=" + std::to_string(layout->epoch_slot_count * sizeof(EpochSlot)) +
-      " diagnostics=" + std::to_string(kDiagnosticBytes) + " total=" + std::to_string(total) +
+      " diagnostics=" + std::to_string(kDiagnosticBytes) +
+      " remote_event_log=" + std::to_string(remote_bytes) +
+      " total=" + std::to_string(total) +
       " capacity=" + std::to_string(pool.header()->hwcc_bytes);
 }
 
