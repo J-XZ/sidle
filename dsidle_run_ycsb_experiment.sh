@@ -94,9 +94,11 @@ if ((formal_acceptance)); then
     echo "formal YCSB acceptance requires a clean tracked worktree" >&2
     exit 2
   }
-  python3 - "$base_config" <<'PY'
-import json,re,sys
-cfg=json.loads(re.sub(r'//[^\n]*', '', open(sys.argv[1]).read()))
+  python3 - "$script_dir/scripts" "$base_config" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+cfg=load_jsonc(sys.argv[2])
 if cfg['vm']['core_count_per_vm'] != 8:
     raise SystemExit('formal YCSB acceptance requires 8 vCPUs per VM')
 if cfg['dsidle']['verbose'] or cfg['dsidle']['extra_check']:
@@ -111,12 +113,14 @@ if [[ -e "$out_dir/acceptance.meta" || -e "$out_dir/run_complete.meta" ]]; then
 fi
 mkdir -p "$out_dir"/{configs,traces,logs,round_logs}
 experiment_config="$out_dir/configs/experiment_config_ycsb_4vm.jsonc"
-python3 - "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" \
+python3 - "$script_dir/scripts" "$base_config" "$experiment_config" "$shared_numa" "$shared_size_mb" \
   "$no_latency" "$vm_count" "$threads_per_node" "$replica_budget_mb" <<'PY'
-import json, re, sys
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
 
-source, output, numa_csv, size_mb, no_latency, vm_count, workers, replica_budget = sys.argv[1:]
-config = json.loads(re.sub(r'//[^\n]*', '', open(source).read()))
+source, output, numa_csv, size_mb, no_latency, vm_count, workers, replica_budget = sys.argv[2:]
+config = load_jsonc(source)
 config['vm']['count'] = int(vm_count)
 config['e2e']['foreground_worker_count_per_vm'] = int(workers)
 config['dsidle']['fixed_key_size'] = 32

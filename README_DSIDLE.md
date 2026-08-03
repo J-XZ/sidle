@@ -4,6 +4,13 @@ D-SIDLE 将 Masstree 改造为单一共享命名空间的多 VM 共享内存 KV�
 value 位于 SWCC，跨 VM 控制项位于 HWCC；每台 VM 可以有受预算约束的本地副本。
 实验环境是 QEMU ivshmem 映射同一块宿主 NUMA DRAM 的模拟，不是实际 CXL 硬件。
 
+当前硬件模拟实现见 [硬件模拟当前实现.md](硬件模拟当前实现.md)。四个模块
+`fixed_latency`、`hwcc_access_count`、`atomic_count`、
+`remote_cache_invalidation` 在 `dsidle.latency_inject` 下独立配置；当前固定延迟
+不包含 cache-hit/cache-miss 或命中率模型，普通 SWCC 写也不会被模拟器自动传播为
+其它 VM 的 coherence。尾延迟性能实验必须使用四模块全关闭配置；硬件 smoke 可
+单独启用模块，但固定延迟保持为 0。
+
 ## 从空白宿主机启动四台 VM
 
 以下命令均在本仓根目录执行。镜像仅构建一次。VM init 与 cxlkv 对齐：共享内存
@@ -81,9 +88,11 @@ YCSB 的 load 也是并发写入：4 VM、每 VM 4 worker 同时回放；没有�
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure --repeat until-fail:10
+ctest --test-dir build --output-on-failure
 ```
 
 吞吐只计入 replay，不包含 pool 初始化或相位屏障；默认预热轮次也不会写入汇总。YCSB 汇总使用每轮节点最大耗时
-和各轮均值；08/09 使用其各自的多轮字段。延迟注入仅在 RelWithDebInfo、关闭
-verbose 和额外检查时允许开启；正式 YCSB 使用 `--no-latency`。
+和各轮均值；08/09 使用其各自的多轮字段。硬件模拟启用仅在 RelWithDebInfo、关闭
+verbose 和额外检查时允许；配置 parser 会拒绝旧 cache-hit 字段。正式 YCSB 使用
+全关闭配置（`--no-latency`）。开发/最终功能验证默认交错五轮；只有脚本的
+`--formal-acceptance` 合同才使用其明确要求的十轮。

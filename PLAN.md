@@ -8,6 +8,13 @@ SIDLE/Masstree 源码；最终只要求改造后的分布式系统（D-SIDLE）�
 **本文档同时是施工 agent 的任务书：下文所有"必须/禁止"都是对你（施工
 agent）的直接指令。执行协议见紧随其后的「施工执行协议」。**
 
+> 当前实现说明以 [硬件模拟当前实现.md](硬件模拟当前实现.md) 和
+> [延迟插入审计报告.md](延迟插入审计报告.md) 为准。本文早期施工段落中出现的
+> `cache_model`、cache-hit/cache-miss、命中率、per-thread LRU 和 `Record*`
+> detached API 是历史设计记录，不是当前配置、代码或测试合同；当前运行时只有
+> `fixed_latency`、`hwcc_access_count`、`atomic_count`、
+> `remote_cache_invalidation` 四个独立 section。
+
 ## 施工执行协议（施工 agent 必读；按此循环推进）
 
 1. **推进单位 = 里程碑**（§八 M0→M8，顺序执行）。每个里程碑内：
@@ -511,7 +518,7 @@ trace/YCSB 同构）外：
 | `--shared-size-mb` | **32768**（沿用公平根配置；HWCC 1024，SWCC 31744） |
 | `--shared-numa`（2-NUMA 正式机） | `1`（VM∈0；与 cxlkv r6525 2-NUMA runbook 一致） |
 | 延迟 | **`--no-latency`**（正式主表；与 cxlkv 指南正式命令一致） |
-| 一键脚本副作用 | 与 cxlkv `run_ycsb_trace_experiment.sh` 相同：**无条件**把生成 policy 的 `cache_model` 置 `none`、`cache_hits_enabled=false`；`--no-latency` 仅关闭 `enabled`/`foreground_enabled`/`merge_enabled`/`stats_enabled`（无计费） |
+| 一键脚本副作用（当前） | 派生配置保留四个独立硬件模拟 section；`--no-latency` 关闭固定延迟，正式功能/尾延迟验证还要求四模块全关闭。旧 `cache_model`/`cache_hits_enabled` 仅在历史设计段落出现，当前 parser 明确拒绝 |
 | 多轮吞吐字段 | 由 `ops_sum` / `duration_sec_max`（或 `avg_ops_sum` / `avg_duration_sec`）推导 `ops_per_sec`；**不要**要求 YCSB 汇总产出 `ops_per_sec_from_avg_round_max`（该字段仅 e2e_08/09） |
 
 ### 套件定长与延迟参考（勿与正式 YCSB 混用）
@@ -1103,7 +1110,12 @@ ReplicaSlot {
   检测到 `RootControl.version` 变化（root split/layer root 替换）时刷新钉住
   槽指向新根，旧根 `NodeRef` 变为普通可淘汰节点。
 
-## 4.6 软件延迟模拟（照搬 cxlkv）
+## 4.6 软件延迟模拟（历史施工设计；当前实现见硬件模拟当前实现.md）
+
+> 本节保留早期施工约束以便追溯，不得当作当前配置或运行时说明。当前实现已
+> 删除固定 cache-hit/cache-miss 近似、detached `Record*` 记录 API 和旧字段，
+> 并增加 HWCC ordinary access、executed atomic、全局有序 remote event 三个
+> 独立模块；请以当前实现文档和审计报告为准。
 
 **决策：逐文件移植 `../cxlkv` 的 `src/utils/include/latency_simulator.h` 与
 `src/utils/src/latency_simulator.cc` 到 `dsidle/latency_simulator.{h,cc}`，

@@ -38,8 +38,10 @@ VM 回放编排。镜像只构建一次；二进制和 ivshmem 模块在宿主�
 - 本轮与 cxlkv 的默认验收合同使用 RelWithDebInfo、固定 32B key/value、
   4 worker/节点、100,000 record/operation、每 VM 8 vCPU。更大数据集属于另行
   声明的扩展实验，不能混入本轮 100k 结果。
-- 派生配置会将延迟缓存模型设为 `none` 且关闭 cache hit；`--no-latency` 还会
-  关闭所有延迟计费开关。
+- 派生配置使用四个独立硬件模拟 section；当前没有延迟缓存命中模型或
+  `cache_hits_enabled` 字段。`--no-latency` 关闭固定延迟，正式功能/尾延迟
+  验证还必须保持 HWCC 访问、原子和 remote 模块全关闭；硬件 smoke 单独启用
+  模块时固定延迟保持为 0。
 - 默认先执行 1 个不计入汇总的预热轮次，再执行 `--rounds` 指定的正式轮次；可用
   `--warmup-rounds 0` 仅用于开发冒烟，不能用于 §6.4 正式性能结果。
 - 每 VM 保留原 SIDLE 的 5 个后台角色（Trigger、Promotion、Demotion、Cooler、

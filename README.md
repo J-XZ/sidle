@@ -8,6 +8,13 @@
 > `dsidle_e2e_suite_runner`. The remaining upstream instructions are historical
 > and do not describe the current distributed experiment path.
 
+> Current D-SIDLE hardware simulation is documented in
+> [硬件模拟当前实现.md](硬件模拟当前实现.md) and
+> [延迟插入审计报告.md](延迟插入审计报告.md). It has four independent sections:
+> `fixed_latency`, `hwcc_access_count`, `atomic_count`, and
+> `remote_cache_invalidation`. The old cache-hit/cache-miss model is not a current
+> runtime feature; ordinary SWCC access does not imply hardware coherence.
+
 <!-- > This repository is fully anonymized.  -->
 This repository contains the implementation of SIDLE. The baselines can be found in the [sidle-baselines](https://github.com/sidle-project/sidle-baselines) repo.
 
