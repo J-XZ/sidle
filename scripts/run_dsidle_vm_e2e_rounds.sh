@@ -61,10 +61,11 @@ if ((formal_acceptance)) && [[ "$rounds" != 10 ]]; then
   exit 2
 fi
 
-mapfile -t topology < <(python3 - "$config" <<'PY'
-import json,re,sys
-text=re.sub(r'//[^\n]*', '', open(sys.argv[1]).read())
-cfg=json.loads(text)
+mapfile -t topology < <(python3 - "$repo_root/scripts" "$config" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+cfg=load_jsonc(sys.argv[2])
 print(cfg['vm']['count'])
 print(cfg['vm']['ssh_base_port'])
 print(cfg['shared_memory']['device_path'])
@@ -87,9 +88,11 @@ if ((formal_acceptance)); then
     echo "formal VM E2E acceptance requires a clean tracked worktree" >&2
     exit 2
   }
-  python3 - "$config" <<'PY'
-import json,re,sys
-cfg=json.loads(re.sub(r'//[^\n]*', '', open(sys.argv[1]).read()))
+  python3 - "$repo_root/scripts" "$config" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+cfg=load_jsonc(sys.argv[2])
 shared=cfg['shared_memory']
 checks = {
     'shared_memory.size_mb': (shared['size_mb'], 32768),
@@ -125,10 +128,12 @@ host_config="$out_dir/configs/e2e${suite}_host.jsonc"
 cp -- "$config" "$host_config"
 config="$host_config"
 guest_config="$out_dir/configs/e2e${suite}_guest.jsonc"
-python3 - "$config" "$guest_config" "$suite" <<'PY'
-import json,re,sys
-source,target,suite=sys.argv[1:]
-cfg=json.loads(re.sub(r'//[^\n]*', '', open(source).read()))
+python3 - "$repo_root/scripts" "$config" "$guest_config" "$suite" <<'PY'
+import json,sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+source,target,suite=sys.argv[2:]
+cfg=load_jsonc(source)
 cfg['shared_memory']['path']=cfg['shared_memory']['device_path']
 cfg['dsidle']['fixed_key_size']=8 if suite == '08' else 32
 cfg['dsidle']['fixed_value_size']=8 if suite == '08' else 1000

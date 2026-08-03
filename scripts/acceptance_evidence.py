@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from jsonc_utils import load_jsonc as parse_jsonc
+
 
 FORMAL_ROUNDS = 10
 FORMAL_WORKLOADS = ["a", "b", "c", "d", "e"]
@@ -50,8 +52,7 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def load_jsonc(path: Path) -> dict[str, Any]:
     try:
-        text = re.sub(r"//[^\n]*", "", path.read_text())
-        value = json.loads(text)
+        value = parse_jsonc(path)
     except (OSError, json.JSONDecodeError) as error:
         fail(f"cannot read JSONC config {path}: {error}")
     require(isinstance(value, dict), f"config must be an object: {path}")

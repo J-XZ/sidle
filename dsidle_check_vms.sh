@@ -13,14 +13,16 @@ while (($#)); do
   esac
 done
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
-python3 - "$config" "$dry_run" "$ssh_user" <<'PY'
+python3 - "$script_dir/scripts" "$config" "$dry_run" "$ssh_user" <<'PY'
 import json, os, re, subprocess, sys
 from pathlib import Path
 
-config, dry, ssh_user = sys.argv[1:]
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+
+config, dry, ssh_user = sys.argv[2:]
 dry = bool(int(dry))
-text = re.sub(r'//[^\n]*', '', Path(config).read_text())
-cfg = json.loads(text); vm, shared, cpu = cfg['vm'], cfg['shared_memory'], cfg['host_cpu']
+cfg = load_jsonc(config); vm, shared, cpu = cfg['vm'], cfg['shared_memory'], cfg['host_cpu']
 backing = Path(shared['path'])
 if backing.is_dir(): backing /= 'ivshmem_shared_mem'
 nodes = shared['numa_node'] if isinstance(shared['numa_node'], list) else [shared['numa_node']]

@@ -56,19 +56,23 @@ minimum_rounds=5
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 if [[ -n "$suite" && "$suite" == ycsb ]]; then
   [[ -f "$run_config" ]] || { echo "missing run config: $run_config" >&2; exit 2; }
-  python3 - "$load_config" "$run_config" <<'PY'
-import json,re,sys
+  python3 - "$repo_root/scripts" "$load_config" "$run_config" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+
 def layout(path):
-    cfg=json.loads(re.sub(r'//[^\n]*', '', open(path).read()))
+    cfg=load_jsonc(path)
     return (cfg['shared_memory']['path'], cfg['shared_memory']['size_mb'], cfg['vm']['count'], cfg['e2e']['foreground_worker_count_per_vm'])
-if layout(sys.argv[1]) != layout(sys.argv[2]): raise SystemExit('YCSB load/run configs must have identical pool topology')
+if layout(sys.argv[2]) != layout(sys.argv[3]): raise SystemExit('YCSB load/run configs must have identical pool topology')
 PY
 fi
 
-mapfile -t layout < <(python3 - "$config" <<'PY'
-import json,re,sys
-text=re.sub(r'//[^\n]*', '', open(sys.argv[1]).read())
-cfg=json.loads(text)
+mapfile -t layout < <(python3 - "$repo_root/scripts" "$config" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from jsonc_utils import load_jsonc
+cfg=load_jsonc(sys.argv[2])
 shared=cfg['shared_memory']
 print(shared['path'])
 print(int(shared['size_mb']) * 1024 * 1024)
