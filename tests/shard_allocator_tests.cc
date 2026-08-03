@@ -153,34 +153,6 @@ int main() {
   dsidle::FreeCurrentSwccToOwner(1, foreign, 129, 23);
   assert(size_classes.HarvestRemote(1, 129) == 1);
   assert(size_classes.Allocate(1, 129) == foreign);
-  latency_sim::Config latency;
-  latency.hwcc_access_count.enabled = true;
-  latency.hwcc_access_count.line_count_enabled = true;
-  latency.atomic_count.enabled = true;
-  latency.remote_cache_invalidation.enabled = true;
-  latency_sim::GlobalLatencySimulator().Configure(latency);
-  latency_sim::GlobalLatencySimulator().RegisterMemoryRange(
-      pool.hwcc_base(), pool.header()->hwcc_bytes,
-      latency_sim::MemoryDomain::kHwcc, dsidle::kDsidleHwccPoolId, 0);
-  latency_sim::GlobalLatencySimulator().RegisterMemoryRange(
-      pool.swcc_base(), pool.header()->swcc_bytes,
-      latency_sim::MemoryDomain::kSwcc, dsidle::kDsidleSwccPoolId, 0);
-  {
-    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-    const auto measured = alloc.Allocate(0);
-    alloc.Free(0, measured, 31);
-    assert(alloc.HarvestRemote(0) == 1);
-    const auto cross_node = alloc.Allocate(0);
-    dsidle::FreeCurrentSwccToOwner(1, cross_node, 1024, 32);
-    assert(alloc.HarvestRemote(1) == 1);
-    assert(alloc.Allocate(1) == cross_node);
-  }
-  const auto latency_stats =
-      latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-  assert(latency_stats.RawLineAccesses(latency_sim::PoolKind::kHwcc) > 0);
-  assert(latency_stats.RawLineAccesses(latency_sim::PoolKind::kSwcc) == 0);
-  assert(latency_stats.hwcc_atomic_ops > 0);
-  assert(latency_stats.remote_swcc_explicit_handoffs > 0);
-  latency_sim::GlobalLatencySimulator().Configure({});
+
   pool.Close(); unlink(path);
 }

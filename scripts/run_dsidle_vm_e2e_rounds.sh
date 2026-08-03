@@ -34,7 +34,7 @@ while (($#)); do
         --max-threads-per-vm) max_threads=$2;; --round-timeout) round_timeout=$2;;
       esac
       shift 2;;
-    # Compatibility: ivshmem driver is loaded by dsidle_init_vms.sh (cxlkv-aligned).
+    # The ivshmem driver is loaded by dsidle_init_vms.sh before this runner.
     --ivshmem-module) (($# >= 2)) || { usage; exit 2; }; shift 2;;
     --formal-acceptance) formal_acceptance=1; shift;;
     --execute) execute=1; shift;;
@@ -109,12 +109,10 @@ for field, (actual, expected) in checks.items():
             f'formal VM E2E contract mismatch for {field}: '
             f'expected {expected!r}, got {actual!r}')
 latency = cfg['dsidle']['latency_inject']
-for section in ('fixed_latency', 'hwcc_access_count', 'atomic_count',
-                'remote_cache_invalidation'):
-    if latency[section]['enabled']:
-        raise SystemExit(
-            f'formal VM E2E contract mismatch for '
-            f'dsidle.latency_inject.{section}.enabled: expected False')
+if latency['fixed_latency']['enabled']:
+    raise SystemExit(
+        'formal VM E2E contract mismatch for '
+        'dsidle.latency_inject.fixed_latency.enabled: expected False')
 PY
 fi
 [[ -n "$out_dir" ]] || out_dir="$repo_root/exp_data/vm_e2e${suite}_$(date -u +%Y%m%dT%H%M%SZ)"

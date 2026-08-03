@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""D-SIDLE VM init aligned with cxlkv init_scripts_env_3_init_vm.fish + rust init_vm.
+"""D-SIDLE VM init aligned with D-SIDLE init_scripts_env_3_init_vm.fish + rust init_vm.
 
-Ports the cxlkv flow into this tree (no runtime dependency on ../cxlkv):
+Prepares the D-SIDLE guest runtime from this repository's own inputs:
   host tuning → validate → kill old VMs → tmpfs mpol=bind on shared NUMA →
   ivshmem-plain file → dsidle_shared_pool --init-pool → bridge/tap →
   prepare root.img (network + SSH) → QEMU (dual NIC + ivshmem-plain) →
@@ -272,7 +272,7 @@ def kill_existing_vms(storage: Path, runner: Runner) -> None:
 
 
 def setup_shared_memory_tmpfs(shared_path: Path, size_mb: int, shared_nodes: Sequence[int], runner: Runner) -> None:
-    """cxlkv setup_shared_memory: mount tmpfs with mpol=bind on shared NUMA."""
+    """D-SIDLE setup_shared_memory: mount tmpfs with mpol=bind on shared NUMA."""
     if shared_path.is_file():
         raise SystemExit(f"shared memory path is a file, expected a directory: {shared_path}")
     if not runner.dry:
@@ -384,7 +384,7 @@ def prepare_vm_disk(
         runner.shell(
             f"cp --reflink=auto --sparse=always {shlex_quote(str(image))} {shlex_quote(str(disk))}"
         )
-    # Network + SSH injection via guestmount (cxlkv config_vm_files).
+    # Network + SSH injection via guestmount (D-SIDLE config_vm_files).
     hosts_template = (assets / "etc_hosts_template").read_text() if (assets / "etc_hosts_template").exists() else "@ADDR@\n"
     hosts_content = hosts_template.replace("@ADDR@", vm_ip(first_ip, index))
     net_bridge = (
@@ -436,7 +436,7 @@ def prepare_vm_disk(
                 f"printf '%s\\n' {shlex_quote(key)} | sudo tee -a {shlex_quote(str(auth))} >/dev/null"
             )
     finally:
-        # cxlkv config_vm_files: umount must succeed (do not swallow failures).
+        # D-SIDLE config_vm_files: umount must succeed (do not swallow failures).
         runner.shell(f"sync; sudo umount {shlex_quote(str(mnt))}")
 
 
@@ -449,7 +449,7 @@ def tcp_port_open(port: int, timeout_sec: float = 0.2) -> bool:
 
 
 def wait_for_ssh_ports_free(ports: Sequence[int], timeout_sec: float = 10.0) -> None:
-    """cxlkv wait_for_ssh_ports_free: refuse to start QEMU while hostfwd ports are busy."""
+    """D-SIDLE wait_for_ssh_ports_free: refuse to start QEMU while hostfwd ports are busy."""
     deadline = time.time() + timeout_sec
     while True:
         busy = [port for port in ports if tcp_port_open(port)]
@@ -465,7 +465,7 @@ def wait_for_ssh_ports_free(ports: Sequence[int], timeout_sec: float = 10.0) -> 
 
 
 def assert_shared_path_is_tmpfs(shared_path: Path) -> None:
-    """cxlkv check_env_arg / post-mount FSTYPE recheck."""
+    """D-SIDLE check_env_arg / post-mount FSTYPE recheck."""
     fstype = subprocess.check_output(
         ["findmnt", "-n", "-T", str(shared_path), "-o", "FSTYPE"], text=True
     ).strip()
@@ -491,7 +491,7 @@ def reclaimable_old_qemu_rss_mb(storage: Path) -> int:
 
 
 def require_host_mem_for_vms(storage: Path, count: int, mem_mb: int) -> None:
-    """cxlkv MemAvailable gate including reclaimable old QEMU RSS."""
+    """D-SIDLE MemAvailable gate including reclaimable old QEMU RSS."""
     required = count * mem_mb
     available_mb = int(
         next(
@@ -558,7 +558,7 @@ def wait_ssh(port: int, pidfile: Path, runner: Runner, timeout_sec: int = 180) -
 
 
 def prepare_kernel_module(repo_root: Path, ports: Sequence[int], runner: Runner) -> None:
-    """cxlkv prepare_kernel_module: rsync sources, guest make, modprobe."""
+    """D-SIDLE prepare_kernel_module: rsync sources, guest make, modprobe."""
     module_dir = repo_root / "third_party" / "ivshmem-kernel"
     if not (module_dir / "ivshmem_driver.c").exists():
         raise SystemExit(f"missing ivshmem kernel sources: {module_dir}")
@@ -687,7 +687,7 @@ def pin_pid_to_cpuset(label: str, pid: int, cpuset: str, runner: Runner) -> None
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="D-SIDLE VM init (cxlkv-aligned)")
+    parser = argparse.ArgumentParser(description="D-SIDLE VM init (D-SIDLE-aligned)")
     parser.add_argument("--config", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--pool-tool", required=True)
@@ -719,7 +719,7 @@ def main() -> int:
     config_path = Path(args.config).resolve()
     image = Path(args.image).resolve()
     pool_tool = Path(args.pool_tool).resolve()
-    assets = repo_root / "scripts" / "cxlkv_vm_assets"
+    assets = repo_root / "scripts" / "dsidle_vm_assets"
 
     cfg = load_jsonc(config_path)
     shared, vm, cpu = cfg["shared_memory"], cfg["vm"], cfg["host_cpu"]
@@ -732,7 +732,7 @@ def main() -> int:
     storage = Path(vm["storage_path"])
     shared_dir = Path(shared["path"])
     if shared_dir.is_file():
-        raise SystemExit("shared_memory.path must be a directory (cxlkv contract)")
+        raise SystemExit("shared_memory.path must be a directory (D-SIDLE contract)")
     backing = shared_dir / "ivshmem_shared_mem"
     device_path = str(shared["device_path"])
     ssh_base = int(vm["ssh_base_port"])
@@ -743,7 +743,7 @@ def main() -> int:
     ivshmem_cores = list(map(int, as_list(cpu["ivshmem_server_cores"])))
     vm_cores = list(map(int, as_list(cpu["vm_cores"])))
     print(
-        "[init_vm] host_cpu.ivshmem_server_cores is a cxlkv-compatible "
+        "[init_vm] host_cpu.ivshmem_server_cores is a D-SIDLE-compatible "
         f"ignored field for ivshmem-plain: {ivshmem_cores}"
     )
 
@@ -845,7 +845,7 @@ def main() -> int:
             if not disk.exists():
                 shutil.copyfile(image, disk)
 
-    # cxlkv config_vm_files: sync + settle after all guestmount injections.
+    # D-SIDLE config_vm_files: sync + settle after all guestmount injections.
     if not dry and not args.skip_guestmount:
         runner.shell("sync")
         time.sleep(3)
@@ -871,7 +871,7 @@ def main() -> int:
     for index, port in enumerate(ports):
         wait_ssh(port, storage / f"vm_{index}" / "qemu.pid", runner)
 
-    # cxlkv prepare_for_network: high-metric bridge default then delete it so
+    # D-SIDLE prepare_for_network: high-metric bridge default then delete it so
     # DHCP/user NIC remains the preferred default route.
     for port in ports:
         runner.run(

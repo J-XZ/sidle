@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# D-SIDLE VM clear aligned with cxlkv init_scripts_env_99_clear_vm_data.fish:
-# kill QEMU/ivshmem → wipe vm storage contents → remove ivshmem artifacts → umount shared tmpfs.
+# D-SIDLE VM clear: stop QEMU/ivshmem, wipe this project's VM storage, remove
+# its ivshmem artifacts, and unmount its shared tmpfs.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +32,7 @@ done
 }
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 
-# Resolve storage + shared paths from experiment_config.jsonc (cxlkv args.fish equivalent).
+# Resolve storage and shared paths from experiment_config.jsonc.
 eval "$(python3 - "$config" <<'PY'
 import json, re, sys
 from pathlib import Path
@@ -113,7 +113,7 @@ for pid_file in "$storage_real"/vm_*/qemu.pid; do
   kill_pids_safely "$pid"
 done
 
-# 2) Fallback: cmdline feature match (cxlkv uses pgrep -f).
+# 2) Fallback: match this host's QEMU and ivshmem-server processes.
 mapfile -t pids < <(pgrep -f -- 'qemu-system-x86_64' 2>/dev/null || true)
 kill_pids_safely "${pids[@]:-}"
 mapfile -t pids < <(pgrep -f -- 'ivshmem-server' 2>/dev/null || true)
@@ -163,7 +163,7 @@ if [[ -n "${shared:-}" ]]; then
     if ((dry_run)); then
       echo "DRY_RUN rm -f -- $shared_real/ivshmem_shared_mem"
       echo "DRY_RUN find $shared_real -maxdepth 1 -type s -name 'ivshmem*' -delete"
-      # D-SIDLE legacy backing name (pre-cxlkv-aligned init).
+      # Remove the pre-current backing name if a prior local run left it behind.
       echo "DRY_RUN rm -f -- $shared_real/dsidle_shared.pool"
     else
       rm -f -- "$shared_real/ivshmem_shared_mem" 2>/dev/null || true
@@ -187,8 +187,7 @@ if [[ -n "${shared:-}" ]]; then
       else
         echo "SHARED_MEM_PATH is not mounted, skip umount: $shared_real"
       fi
-      # After umount, remove any backing files that were hidden under the tmpfs
-      # (cxlkv only deletes on the mount; D-SIDLE also clears legacy host files).
+      # After unmount, remove files that may have been hidden below the mount.
       rm -f -- "$shared_real/ivshmem_shared_mem" 2>/dev/null || true
       rm -f -- "$shared_real/dsidle_shared.pool" 2>/dev/null || true
     fi

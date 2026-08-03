@@ -32,12 +32,12 @@ template <typename N> struct btree_leaflink<N, true> {
   private:
     static inline N* invalidate_next(N* n) {
         dsidle::InvalidateSwccRange(&n->next_, sizeof(n->next_));
-        return latency_sim::CountedMemoryLoadAs<N*>(
+        return latency_sim::FixedLatencyMemoryLoadAs<N*>(
             latency_sim::PoolKind::kSwcc, &n->next_);
     }
     static inline N* invalidate_prev(N* n) {
         dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
-        return latency_sim::CountedMemoryLoadAs<N*>(
+        return latency_sim::FixedLatencyMemoryLoadAs<N*>(
             latency_sim::PoolKind::kSwcc, &n->prev_);
     }
     static inline void flush_next(N* n) {
@@ -72,21 +72,21 @@ template <typename N> struct btree_leaflink<N, true> {
     /** @overload */
     template <typename SF>
     static void link_split(N *n, N *nr, SF spin_function) {
-        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+        latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                              &nr->prev_, n);
         N *next = lock_next(n, spin_function);
-        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+        latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                              &nr->next_, next);
         // nr is not reachable yet. Publish its complete initialized body,
         // including both links, before the predecessor edge exposes it.
         nr->publish_body_before_edge();
         if (next) {
-            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+            latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                                  &next->prev_, nr);
             flush_prev(next);
         }
         fence();
-        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+        latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                              &n->next_, nr);
         flush_next(n);
         unlock_link(n);
@@ -104,11 +104,11 @@ template <typename N> struct btree_leaflink<N, true> {
     template <typename SF>
     static void change_link(N *n, N *nn, SF spin_function) {
         N *next = lock_next(n, spin_function);
-        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+        latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                              &nn->next_, next);
         flush_next(nn);
         if (next) {
-            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+            latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                                  &next->prev_, nn);
             flush_prev(next);
         }
@@ -127,9 +127,9 @@ template <typename N> struct btree_leaflink<N, true> {
             spin_function();
         }
         if (prev) {
-            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+            latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                                  &prev->next_, nn);
-            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+            latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                                  &nn->prev_, prev);
             flush_next(prev);
             flush_prev(nn);
@@ -164,12 +164,12 @@ template <typename N> struct btree_leaflink<N, true> {
             spin_function();
         }
         if (next) {
-            latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+            latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                                  &next->prev_, prev);
             flush_prev(next);
         }
         fence();
-        latency_sim::CountedMemoryStoreValue(latency_sim::PoolKind::kSwcc,
+        latency_sim::FixedLatencyMemoryStoreValue(latency_sim::PoolKind::kSwcc,
                                              &prev->next_, next);
         flush_next(prev);
         unlock_link(prev);

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# D-SIDLE wrapper aligned with cxlkv's
-# xz_scripts/init_scripts_env_2_make_vm_img.fish: build image/root.img via
-# image/make_vm_img.sh (copied from cxlkv tigon emulation) when missing.
+# D-SIDLE wrapper for the repository-local image/make_vm_img.sh flow.
+# Build image/root.img when the canonical image is missing.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -15,13 +14,13 @@ while (($#)); do
     --dry-run) dry_run=1; shift ;;
     --config)
       # Accepted for API compatibility with other dsidle_* scripts; image build
-      # injects SSH keys from the host ~/.ssh like cxlkv, not from experiment config.
+      # injects SSH keys from the host ~/.ssh, not from experiment config.
       (($# >= 2)) || { echo "usage: $0 [--config PATH] [--force] [--dry-run]" >&2; exit 2; }
       shift 2
       ;;
     --help)
       echo "usage: $0 [--config PATH] [--force] [--dry-run]"
-      echo "Build image/root.img via image/make_vm_img.sh (cxlkv-aligned mkosi flow)."
+      echo "Build image/root.img via the repository-local mkosi flow."
       echo "Skips when image/root.img already exists unless --force is set."
       exit 0
       ;;

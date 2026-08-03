@@ -243,7 +243,7 @@ fi
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY || true
 
 # 清理旧的系统级代理文件；若本次宿主无代理，保持镜像无代理环境。
-rm -f /etc/environment.d/99-cxlkv-proxy.conf || true
+rm -f /etc/environment.d/99-dsidle-proxy.conf || true
 rm -f /etc/profile.d/99-proxy.sh || true
 rm -f /etc/fish/conf.d/99-proxy.fish || true
 
@@ -281,8 +281,8 @@ strip_proxy_keys_from_etc_environment() {
 # 若宿主机导出了代理变量，
 # 在镜像收尾时回填到系统级环境与 shell 配置，
 # 让非交互脚本也可直接继承代理。
-host_bashrc_proxy_exports="/etc/cxlkv_host_bashrc_proxy_exports"
-environment_proxy_snippet="/etc/cxlkv_environment_proxy.snippet"
+host_bashrc_proxy_exports="/etc/dsidle_host_bashrc_proxy_exports"
+environment_proxy_snippet="/etc/dsidle_environment_proxy.snippet"
 
 host_http_proxy=""
 host_https_proxy=""
@@ -322,7 +322,7 @@ if [ -n "${host_http_proxy:-}" ] || [ -n "${host_https_proxy:-}" ] || [ -n "${ho
 
 	# 1.1) /etc/environment.d：systemd 管理的非交互任务也可继承代理。
 	install -d -m 0755 /etc/environment.d
-	cat >/etc/environment.d/99-cxlkv-proxy.conf <<EOF
+	cat >/etc/environment.d/99-dsidle-proxy.conf <<EOF
 $([ -n "${host_http_proxy:-}" ] && echo "http_proxy=${host_http_proxy}")
 $([ -n "${host_http_proxy:-}" ] && echo "HTTP_PROXY=${host_http_proxy}")
 $([ -n "${host_https_proxy:-}" ] && echo "https_proxy=${host_https_proxy}")

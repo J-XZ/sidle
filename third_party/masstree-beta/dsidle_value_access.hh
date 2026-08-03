@@ -14,11 +14,8 @@
 namespace dsidle_masstree {
 
 inline bool IsObservedSwccRange(const void* address, std::size_t bytes) {
-  const auto features = latency_sim::HardwareSimulationFeaturesFast();
-  if (features == 0 ||
-      !(features & (latency_sim::kFixedLatency |
-                    latency_sim::kHwccAccessCount)) ||
-      address == nullptr || bytes == 0)
+  const auto features = latency_sim::FixedLatencyFeaturesFast();
+  if (features == 0 || address == nullptr || bytes == 0)
     return false;
   const auto begin = reinterpret_cast<std::uintptr_t>(address);
   const auto end = begin + bytes;

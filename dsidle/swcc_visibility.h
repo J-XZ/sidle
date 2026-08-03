@@ -15,8 +15,8 @@ inline void FlushSwccRange(const void* address, std::size_t bytes) {
   for (auto line = begin; line < end; line += kSwccCacheLineBytes)
     _mm_clflush(reinterpret_cast<const void*>(line));
   _mm_sfence();
-  // A flush is a protocol event, not a second ordinary SWCC write. It is
-  // intentionally recorded after the real flush and carries no fixed delay.
+  // The flush is a real SWCC access. Charge its covered lines after the
+  // protocol instruction completes; ordinary stores are charged separately.
   latency_sim::GlobalLatencySimulator().RecordRange(
       latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kFlush, address,
       bytes);
@@ -28,14 +28,6 @@ inline void InvalidateSwccRange(const void* address, std::size_t bytes) {
   for (auto line = begin; line < end; line += kSwccCacheLineBytes)
     _mm_clflush(reinterpret_cast<const void*>(line));
   _mm_mfence();
-}
-
-inline void RecordSwccExplicitHandoff(const void* address, std::size_t bytes,
-                                       std::uint32_t from_node,
-                                       std::uint32_t to_node,
-                                       std::uint32_t tag = 0) {
-  latency_sim::GlobalLatencySimulator().RecordSwccExplicitHandoff(
-      latency_sim::PoolKind::kSwcc, address, bytes, from_node, to_node, tag);
 }
 
 }  // namespace dsidle

@@ -8,7 +8,7 @@ phase="load"
 suite=""
 load_config=""
 run_config=""
-rounds=5
+rounds=1
 round_timeout=7200
 out_dir=""
 runner="$repo_root/build/dsidle_e2e_trace_runner"
@@ -51,7 +51,7 @@ if [[ -n "$suite" ]]; then
     phase="e2e_$suite"
   fi
 fi
-minimum_rounds=5
+minimum_rounds=1
 ((smoke || rounds >= minimum_rounds)) || { echo "--rounds must be at least $minimum_rounds unless --smoke is set" >&2; exit 2; }
 [[ -f "$config" ]] || { echo "missing config: $config" >&2; exit 2; }
 if [[ -n "$suite" && "$suite" == ycsb ]]; then

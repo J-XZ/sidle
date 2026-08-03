@@ -88,13 +88,11 @@ def validate_common_config(config: dict[str, Any]) -> None:
     require_equal(policy["verbose"], False, "dsidle.verbose")
     require_equal(policy["extra_check"], False, "dsidle.extra_check")
     latency = policy["latency_inject"]
-    for section in ("fixed_latency", "hwcc_access_count", "atomic_count",
-                    "remote_cache_invalidation"):
-        require_equal(
-            latency[section]["enabled"],
-            False,
-            f"dsidle.latency_inject.{section}.enabled",
-        )
+    require_equal(
+        latency["fixed_latency"]["enabled"],
+        False,
+        "dsidle.latency_inject.fixed_latency.enabled",
+    )
 
 
 def validate_recorded_file(

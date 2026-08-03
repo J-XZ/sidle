@@ -140,9 +140,7 @@ hwcc['offset_mb'], hwcc['size_mb'] = 0, 1024
 swcc['offset_mb'], swcc['size_mb'] = 1024, size - 1024
 latency = config.setdefault('dsidle', {}).setdefault('latency_inject', {})
 if int(no_latency):
-    for section in ('fixed_latency', 'hwcc_access_count', 'atomic_count',
-                    'remote_cache_invalidation'):
-        latency[section]['enabled'] = False
+    latency['fixed_latency']['enabled'] = False
     latency['fixed_latency']['foreground_enabled'] = False
     latency['fixed_latency']['background_enabled'] = False
 open(output, 'w').write(json.dumps(config, separators=(',', ':')) + '\n')
@@ -162,7 +160,7 @@ if ((runnable_threads_per_vm > vm_cores)); then
   echo "warning: each VM runs $threads_per_node foreground + $sidle_background_roles SIDLE background + $heartbeat_threads heartbeat = $runnable_threads_per_vm threads on $vm_cores vCPUs; all original SIDLE roles are retained" >&2
 fi
 if (( ! skip_trace_gen )); then
-  generator="$script_dir/third_party/YCSB-cpp/scripts/generate_cxlkv_trace.sh"
+  generator="$script_dir/scripts/generate_dsidle_trace.sh"
   [[ -x "$generator" ]] || { echo "missing executable YCSB trace generator: $generator (initialize submodules)" >&2; exit 1; }
   generator_root="$script_dir/third_party/YCSB-cpp"
   "$generator" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workloada" \

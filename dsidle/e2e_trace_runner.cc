@@ -27,7 +27,7 @@
 #include <vector>
 
 namespace {
-// Match cxlkv's runner default; formal YCSB passes its recorded seed explicitly.
+// Keep a stable default; formal YCSB passes its recorded seed explicitly.
 constexpr uint64_t kDefaultValueSeed = 0x43584c4b56545241ULL;
 enum class TraceOpKind { kPut, kGet, kDelete, kScan };
 struct TraceOp { TraceOpKind kind; std::string key; uint64_t len; };
@@ -143,10 +143,9 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
           }
         }
         ++total;
-        // cxlkv's corresponding trace runner publishes one shared heartbeat
-        // increment per replayed physical command. Keep this in the same hot
-        // path so progress accounting costs remain symmetric.
-        latency_sim::CountedAtomicFetchAdd(
+        // Publish one shared heartbeat increment per replayed physical command.
+        // This is workload progress metadata, not a hardware-simulation record.
+        latency_sim::FixedLatencyAtomicFetchAdd(
             *heartbeat, std::uint64_t{1}, std::memory_order_relaxed,
             latency_sim::AtomicDomain::kLocalDram);
       }
@@ -161,7 +160,7 @@ int main(int argc, char** argv) {
     const Options options = ParseOptions(argc, argv); const auto cfg = dsidle::LoadExperimentConfig(options.config);
     if (options.node >= cfg.vm_count) Fail("node is outside vm.count");
 #ifndef NDEBUG
-    if (cfg.latency_inject.AnyModuleEnabled())
+    if (cfg.latency_inject.fixed_latency.enabled)
       Fail("enabled latency injection requires a RelWithDebInfo/non-Debug build");
 #endif
     const dsidle::PoolLayout expected_layout{
@@ -216,19 +215,19 @@ int main(int argc, char** argv) {
         worker_cv.wait(lock, [&] { return start; });
       }
       uint64_t previous = 0;
-      while (!latency_sim::CountedAtomicLoad(
+      while (!latency_sim::FixedLatencyAtomicLoad(
           heartbeat_stop, std::memory_order_acquire,
           latency_sim::AtomicDomain::kLocalDram)) {
         std::unique_lock<std::mutex> lock(heartbeat_mutex);
         heartbeat_cv.wait_for(lock, std::chrono::seconds(1), [&] {
-          return latency_sim::CountedAtomicLoad(
+          return latency_sim::FixedLatencyAtomicLoad(
               heartbeat_stop, std::memory_order_acquire,
               latency_sim::AtomicDomain::kLocalDram);
         });
-        if (latency_sim::CountedAtomicLoad(
+        if (latency_sim::FixedLatencyAtomicLoad(
                 heartbeat_stop, std::memory_order_acquire,
                 latency_sim::AtomicDomain::kLocalDram)) break;
-        const uint64_t current = latency_sim::CountedAtomicLoad(
+        const uint64_t current = latency_sim::FixedLatencyAtomicLoad(
             heartbeat, std::memory_order_relaxed,
             latency_sim::AtomicDomain::kLocalDram);
         const uint64_t elapsed = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
@@ -293,7 +292,7 @@ int main(int argc, char** argv) {
       worker_cv.wait(lock, [&] { return done == workers; });
     }
     const auto ended = std::chrono::steady_clock::now();
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         heartbeat_stop, std::uint64_t{1}, std::memory_order_release,
         latency_sim::AtomicDomain::kLocalDram);
     heartbeat_cv.notify_one();
@@ -301,10 +300,8 @@ int main(int argc, char** argv) {
     heartbeat_thread.join();
     replica_workers.Stop();
     if (worker_failure) std::rethrow_exception(worker_failure);
-    // All foreground and local replica workers are drained. Every VM must
-    // cross this barrier before validating the globally ordered remote log;
-    // otherwise a fast VM can observe another VM's reserved-but-uncommitted
-    // record and correctly hard-fail as event loss.
+    // All foreground and local replica workers are drained. Every VM crosses
+    // this barrier before the phase is reported complete.
     const auto end_barrier_begin = std::chrono::steady_clock::now();
     phase_barrier.Wait();
     const auto end_barrier_duration =
@@ -321,7 +318,6 @@ int main(int argc, char** argv) {
               << " phase_id=2 duration_us=" << end_barrier_duration
               << " phase=" << options.phase << "_end\n";
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << total << " duration_us=" << duration << " trace_first=" << first << " trace_workers=" << workers << " batch_ops=" << options.batch_ops << '\n';
-    latency_sim::PrintAndResetLatencySimulatorStats(std::cout, options.phase.c_str());
     std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes << " swcc_bytes=" << pool.header()->swcc_bytes << " replica_bytes=" << replicas.LocalBytes() << '\n';
   } catch (const std::exception& error) { std::cerr << "dsidle_e2e_trace_runner: " << error.what() << '\n'; return 1; }
 }

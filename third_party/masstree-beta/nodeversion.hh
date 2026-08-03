@@ -270,7 +270,7 @@ class nodeversion {
         if (!control_ref_) return v_;
         auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                              ->version_and_state;
-        return static_cast<value_type>(latency_sim::CountedAtomicLoad(
+        return static_cast<value_type>(latency_sim::FixedLatencyAtomicLoad(
             *version, std::memory_order_acquire,
             latency_sim::AtomicDomain::kHwcc));
     }
@@ -280,7 +280,7 @@ class nodeversion {
             auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                                  ->version_and_state;
             const std::uint64_t desired = value;
-            latency_sim::CountedAtomicStore(
+            latency_sim::FixedLatencyAtomicStore(
                 *version, desired, std::memory_order_release,
                 latency_sim::AtomicDomain::kHwcc);
         }
@@ -291,7 +291,7 @@ class nodeversion {
         const std::uint64_t desired_value = desired;
         auto* version = &control_ref_.get(dsidle::SharedPoolBase())
                              ->version_and_state;
-        return latency_sim::CountedCompareExchangeStrong(
+        return latency_sim::FixedLatencyAtomicCompareExchangeStrong(
             *version, observed, desired_value, std::memory_order_acq_rel,
             std::memory_order_acquire, latency_sim::AtomicDomain::kHwcc);
     }

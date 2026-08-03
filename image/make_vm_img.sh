@@ -132,7 +132,7 @@ resolve_host_proxy_value() {
 	echo "${v}"
 }
 
-write_cxlkv_proxy_environment_snippet() {
+write_dsidle_proxy_environment_snippet() {
 	local out="$1"
 	local hp="$2"
 	local hps="$3"
@@ -172,8 +172,8 @@ host_https_proxy="$(resolve_host_proxy_value "https_proxy" "HTTPS_PROXY" "${host
 host_no_proxy="$(resolve_host_proxy_value "no_proxy" "NO_PROXY" "${host_bashrc_file}" "${host_etc_environment}")"
 
 # 记录宿主代理解析结果，供 postinst 在镜像收尾时回填环境变量。
-host_bashrc_proxy_exports="${BUILD_DIR}/mkosi.extra/etc/cxlkv_host_bashrc_proxy_exports"
-environment_proxy_snippet="${BUILD_DIR}/mkosi.extra/etc/cxlkv_environment_proxy.snippet"
+host_bashrc_proxy_exports="${BUILD_DIR}/mkosi.extra/etc/dsidle_host_bashrc_proxy_exports"
+environment_proxy_snippet="${BUILD_DIR}/mkosi.extra/etc/dsidle_environment_proxy.snippet"
 mkdir -p "${BUILD_DIR}/mkosi.extra/etc"
 : >"${host_bashrc_proxy_exports}"
 {
@@ -183,7 +183,7 @@ mkdir -p "${BUILD_DIR}/mkosi.extra/etc"
 } >>"${host_bashrc_proxy_exports}"
 rm -f "${environment_proxy_snippet}" || true
 if [ -n "${host_http_proxy}" ] || [ -n "${host_https_proxy}" ] || [ -n "${host_no_proxy}" ]; then
-	write_cxlkv_proxy_environment_snippet "${environment_proxy_snippet}" \
+	write_dsidle_proxy_environment_snippet "${environment_proxy_snippet}" \
 		"${host_http_proxy}" "${host_https_proxy}" "${host_no_proxy}"
 fi
 

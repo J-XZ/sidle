@@ -234,8 +234,7 @@ int main(int argc, char** argv) {
     else if (options.phase == "e2e09_read") result = ReadAndVerify(table, pool, replicas, phase_barrier, suite, options.node, cfg.vm_count, cfg.foreground_worker_count_per_vm, 1);
     else Fail("unknown suite phase action");
     replica_workers.Stop();
-    // Stop local background workers before the drain barrier. The remote log
-    // is validated only after every VM has stopped producing events.
+    // Stop local background workers before the phase completion barrier.
     const auto end_barrier_begin = std::chrono::steady_clock::now();
     phase_barrier.Wait();
     const auto end_barrier_us =
@@ -250,7 +249,6 @@ int main(int argc, char** argv) {
               << " role=" << role << " phase_id=2 duration_us="
               << end_barrier_us << " phase=" << options.phase << "_end\n";
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << result.operations << " duration_us=" << result.duration_us << " trace_first=" << options.node * cfg.foreground_worker_count_per_vm << " trace_workers=" << cfg.foreground_worker_count_per_vm << " batch_ops=0\n";
-    latency_sim::PrintAndResetLatencySimulatorStats(std::cout, options.phase.c_str());
     std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes
               << " swcc_bytes=" << pool.header()->swcc_bytes
               << " replica_bytes=" << replicas.LocalBytes() << '\n';

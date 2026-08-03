@@ -309,7 +309,7 @@ class internode : public node_base<P> {
     node_link<node_base<P> > child_[width + 1];
     node_link<node_base<P> > parent_;
     kvtimestamp_t created_at_[P::debug_level > 0];
-    
+
 
     internode(uint32_t height)
         : node_base<P>(false), nkeys_(0), height_(height), parent_(), sidle_meta() {
@@ -585,7 +585,7 @@ class leaf : public node_base<P> {
     phantom_epoch_type phantom_epoch_[P::need_phantom_epoch];
     kvtimestamp_t created_at_[P::debug_level > 0];
     internal_ksuf_type iksuf_[0];
-    
+
 
     leaf(size_t sz, phantom_epoch_type phantom_epoch, node_mem_type_t type = node_mem_type_t::unknown, uint8_t depth = 0, uint16_t access_time = 1, dsidle::NodeRef control_ref = {})
         : node_base<P>(true, type, depth, access_time, control_ref), modstate_(modstate_insert),
@@ -875,12 +875,12 @@ class leaf : public node_base<P> {
 
     leaf<P>* safe_next() const {
         dsidle::InvalidateSwccRange(&next_, sizeof(next_));
-        return latency_sim::CountedMemoryLoad(latency_sim::PoolKind::kSwcc,
+        return latency_sim::FixedLatencyMemoryLoad(latency_sim::PoolKind::kSwcc,
                                               &next_);
     }
     leaf<P>* safe_prev() const {
         dsidle::InvalidateSwccRange(&prev_, sizeof(prev_));
-        return latency_sim::CountedMemoryLoad(latency_sim::PoolKind::kSwcc,
+        return latency_sim::FixedLatencyMemoryLoad(latency_sim::PoolKind::kSwcc,
                                               &prev_);
     }
 
@@ -889,7 +889,7 @@ class leaf : public node_base<P> {
             ti.deallocate(external, external->capacity(),
                           memtag_masstree_ksuffixes);
         if (extrasize64_ != 0)
-            iksuf_[0].~stringbag(); 
+            iksuf_[0].~stringbag();
         if (this->sidle_meta.metadata.type == node_mem_type_t::local) {
             ti.pool_deallocate(this, allocated_size(), memtag_masstree_leaf);
         } else {
@@ -899,7 +899,7 @@ class leaf : public node_base<P> {
     void deallocate_rcu(threadinfo& ti) {
         if (external_ksuf_type* external = readable_external_ksuf())
             ti.deallocate_rcu(external, external->capacity(),
-                              memtag_masstree_ksuffixes); 
+                              memtag_masstree_ksuffixes);
         if (this->sidle_meta.metadata.type == node_mem_type_t::local) {
             ti.pool_deallocate_rcu(this, allocated_size(), memtag_masstree_leaf, this->control_ref());
         } else {

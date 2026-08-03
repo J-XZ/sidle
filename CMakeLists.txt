@@ -22,7 +22,7 @@ option(DSIDLE_BUILD_LEGACY_SIDLE_BENCHMARKS
 if(DSIDLE_BUILD_LEGACY_SIDLE_BENCHMARKS)
   message(FATAL_ERROR
     "The upstream benchmark/, src/kv/, and src/helper.* facade is archived "
-    "reference code and is not a supported D-SIDLE/cxlkv comparison path. "
+    "reference code and is not a supported D-SIDLE comparison path. "
     "Use dsidle_e2e_trace_runner or dsidle_e2e_suite_runner.")
 endif()
 

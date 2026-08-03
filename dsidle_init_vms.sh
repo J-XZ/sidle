@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# D-SIDLE VM init wrapper. Implementation is cxlkv-aligned (see scripts/dsidle_init_vm.py):
+# D-SIDLE VM init wrapper. Implementation is D-SIDLE-aligned (see scripts/dsidle_init_vm.py):
 # host tuning, shared-memory tmpfs mpol=bind, bridge/tap, dual-NIC QEMU,
 # guest-built ivpci driver, BAR2 verification, pool --init-pool, taskset.
 set -euo pipefail

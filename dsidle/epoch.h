@@ -11,7 +11,7 @@ constexpr std::uint64_t kEpochInactive = std::numeric_limits<std::uint64_t>::max
 struct alignas(64) EpochSlot { std::atomic<std::uint64_t> value{kEpochInactive}; std::byte padding[56]{}; };
 static_assert(sizeof(EpochSlot) == 64);
 
-// The first line of the fixed diagnostic region is the distributed RCU clock.
+// The first line of the fixed coordination region is the distributed RCU clock.
 // It is separate from the per-thread slots, so advancing it never modifies a
 // remote VM's foreground state.
 struct alignas(64) SharedEpochClock {
@@ -20,7 +20,7 @@ struct alignas(64) SharedEpochClock {
 };
 static_assert(sizeof(SharedEpochClock) == 64);
 
-// A reusable process barrier in the HWCC diagnostic region. It is intentionally
+// A reusable process barrier in the HWCC coordination region. It is intentionally
 // separate from epoch slots: waiting at an experiment phase boundary must not
 // make a VM appear inside an RCU critical section.
 struct alignas(64) SharedPhaseBarrier {
@@ -35,12 +35,12 @@ class SharedEpochClockView {
  public:
   explicit SharedEpochClockView(SharedEpochClock* clock) : clock_(clock) {}
   std::uint64_t Current() const {
-    return latency_sim::CountedAtomicLoad(
+    return latency_sim::FixedLatencyAtomicLoad(
         clock_->value, std::memory_order_acquire,
         latency_sim::AtomicDomain::kHwcc);
   }
   std::uint64_t Advance() const {
-    return latency_sim::CountedAtomicFetchAdd(
+    return latency_sim::FixedLatencyAtomicFetchAdd(
                clock_->value, std::uint64_t{1}, std::memory_order_acq_rel,
                latency_sim::AtomicDomain::kHwcc) +
            1;
@@ -54,23 +54,23 @@ class SharedPhaseBarrierView {
   explicit SharedPhaseBarrierView(SharedPhaseBarrier* barrier) : barrier_(barrier) {}
   void Wait() const {
     if (!barrier_ || !barrier_->participants) throw std::runtime_error("invalid shared phase barrier");
-    const auto generation = latency_sim::CountedAtomicLoad(
+    const auto generation = latency_sim::FixedLatencyAtomicLoad(
         barrier_->generation, std::memory_order_acquire,
         latency_sim::AtomicDomain::kHwcc);
-    if (latency_sim::CountedAtomicFetchAdd(
+    if (latency_sim::FixedLatencyAtomicFetchAdd(
             barrier_->arrived, std::uint32_t{1}, std::memory_order_acq_rel,
             latency_sim::AtomicDomain::kHwcc) +
             1 ==
         barrier_->participants) {
-      latency_sim::CountedAtomicStore(
+      latency_sim::FixedLatencyAtomicStore(
           barrier_->arrived, std::uint32_t{0}, std::memory_order_release,
           latency_sim::AtomicDomain::kHwcc);
-      latency_sim::CountedAtomicFetchAdd(
+      latency_sim::FixedLatencyAtomicFetchAdd(
           barrier_->generation, std::uint64_t{1}, std::memory_order_release,
           latency_sim::AtomicDomain::kHwcc);
       return;
     }
-    while (latency_sim::CountedAtomicLoad(
+    while (latency_sim::FixedLatencyAtomicLoad(
                barrier_->generation, std::memory_order_acquire,
                latency_sim::AtomicDomain::kHwcc) == generation)
       std::this_thread::yield();
@@ -86,20 +86,20 @@ class EpochTable {
   // ordinary DRAM, not the shared pool, so it must not create HWCC traffic.
   void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) {
     auto& slot = Slot(vm, thread);
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         slot.value, epoch, std::memory_order_release,
         latency_sim::AtomicDomain::kLocalDram);
   }
   void Leave(std::uint32_t vm, std::uint32_t thread) {
     auto& slot = Slot(vm, thread);
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         slot.value, kEpochInactive, std::memory_order_release,
         latency_sim::AtomicDomain::kLocalDram);
   }
   std::uint64_t MinimumActive() const {
     std::uint64_t min = kEpochInactive;
     for (const auto& s : slots_) {
-      const auto v = latency_sim::CountedAtomicLoad(
+      const auto v = latency_sim::FixedLatencyAtomicLoad(
           s.value, std::memory_order_acquire,
           latency_sim::AtomicDomain::kLocalDram);
       if (v != kEpochInactive && v < min) min = v;
@@ -119,20 +119,20 @@ class SharedEpochTable {
       : slots_(reinterpret_cast<EpochSlot*>(static_cast<std::byte*>(base) + offset)), vms_(vms), threads_(threads) {}
   void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) {
     auto& slot = Slot(vm, thread);
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         slot.value, epoch, std::memory_order_release,
         latency_sim::AtomicDomain::kHwcc);
   }
   void Leave(std::uint32_t vm, std::uint32_t thread) {
     auto& slot = Slot(vm, thread);
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         slot.value, kEpochInactive, std::memory_order_release,
         latency_sim::AtomicDomain::kHwcc);
   }
   std::uint64_t MinimumActive() const {
     std::uint64_t min = kEpochInactive;
     for (std::uint32_t i = 0; i < vms_ * threads_; ++i) {
-      const auto v = latency_sim::CountedAtomicLoad(
+      const auto v = latency_sim::FixedLatencyAtomicLoad(
           slots_[i].value, std::memory_order_acquire,
           latency_sim::AtomicDomain::kHwcc);
       if (v != kEpochInactive && v < min) min = v;

@@ -42,9 +42,6 @@ def formal_config() -> dict:
                     "foreground_enabled": False,
                     "background_enabled": False,
                 },
-                "hwcc_access_count": {"enabled": False},
-                "atomic_count": {"enabled": False},
-                "remote_cache_invalidation": {"enabled": False},
             },
         },
     }

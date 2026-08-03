@@ -10,19 +10,19 @@ namespace dsidle_replica_worker_detail {
 
 template <typename T>
 inline T Load(const std::atomic<T>& value, std::memory_order order) {
-  return latency_sim::CountedAtomicLoad(
+  return latency_sim::FixedLatencyAtomicLoad(
       value, order, latency_sim::AtomicDomain::kLocalDram);
 }
 
 template <typename T>
 inline void Store(std::atomic<T>& value, T desired, std::memory_order order) {
-  latency_sim::CountedAtomicStore(
+  latency_sim::FixedLatencyAtomicStore(
       value, desired, order, latency_sim::AtomicDomain::kLocalDram);
 }
 
 template <typename T>
 inline T Exchange(std::atomic<T>& value, T desired, std::memory_order order) {
-  return latency_sim::CountedAtomicExchange(
+  return latency_sim::FixedLatencyAtomicExchange(
       value, desired, order, latency_sim::AtomicDomain::kLocalDram);
 }
 

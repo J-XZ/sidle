@@ -35,10 +35,10 @@ void InitializeClass(SharedPool& pool, std::uint32_t count, std::uint64_t block_
   for (std::uint32_t shard = 0; shard < count; ++shard) {
     auto* entry = new (static_cast<std::byte*>(pool.base()) + metadata->shard_controls_offset +
                        (static_cast<std::uint64_t>(shard) * kSwccSizeClassCount + class_index) * sizeof(ShardControl)) ShardControl{};
-    latency_sim::CountedAtomicStore(
+    latency_sim::FixedLatencyAtomicStore(
         entry->bump, range_start + shard * per_shard,
         std::memory_order_relaxed, latency_sim::AtomicDomain::kHwcc);
-    latency_sim::CountedMemoryStore(
+    latency_sim::FixedLatencyMemoryStore(
         latency_sim::PoolKind::kHwcc, &entry->limit,
         range_start + (shard + 1) * per_shard);
   }
@@ -66,7 +66,7 @@ std::uint64_t TaggedFreeListHead::Advance(std::uint64_t old_word,
 void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count, std::uint64_t block_size) {
   if (!count || block_size < sizeof(FreeObjectHeader) || (block_size & (block_size - 1)))
     throw std::runtime_error("invalid shard allocator parameters");
-  if (latency_sim::CountedAtomicLoad(
+  if (latency_sim::FixedLatencyAtomicLoad(
           pool.header()->state, std::memory_order_acquire,
           latency_sim::AtomicDomain::kHwcc) !=
       static_cast<std::uint64_t>(PoolState::kInitializing))
@@ -82,14 +82,14 @@ void FixedBlockShardAllocator::Initialize(SharedPool& pool, std::uint32_t count,
   const auto start = AlignUp(pool.header()->swcc_offset, block_size);
   const auto usable = pool.header()->swcc_bytes - (start - pool.header()->swcc_offset);
   InitializeClass(pool, count, block_size, start, usable);
-  latency_sim::CountedAtomicFence(std::memory_order_release,
+  latency_sim::FixedLatencyAtomicFence(std::memory_order_release,
                                   latency_sim::AtomicDomain::kHwcc);
 }
 
 void FixedBlockShardAllocator::InitializeAll(SharedPool& pool, std::uint32_t count) {
   if (!count || pool.static_layout()->shard_count != count)
     throw std::runtime_error("shared-pool shard metadata does not match allocator");
-  if (latency_sim::CountedAtomicLoad(
+  if (latency_sim::FixedLatencyAtomicLoad(
           pool.header()->state, std::memory_order_acquire,
           latency_sim::AtomicDomain::kHwcc) !=
       static_cast<std::uint64_t>(PoolState::kInitializing))
@@ -106,13 +106,13 @@ void FixedBlockShardAllocator::InitializeAll(SharedPool& pool, std::uint32_t cou
     const auto bytes = span > consumed ? span - consumed : 0;
     InitializeClass(pool, count, block_size, start, bytes);
   }
-  latency_sim::CountedAtomicFence(std::memory_order_release,
+  latency_sim::FixedLatencyAtomicFence(std::memory_order_release,
                                   latency_sim::AtomicDomain::kHwcc);
 }
 
 FixedBlockShardAllocator::FixedBlockShardAllocator(SharedPool& pool, std::uint32_t count, std::uint64_t block_size)
     : pool_(pool), shard_count_(count), block_size_(block_size), class_index_(ClassIndex(block_size)) {
-  const auto shard_count = latency_sim::CountedMemoryLoad(
+  const auto shard_count = latency_sim::FixedLatencyMemoryLoad(
       latency_sim::PoolKind::kHwcc, &pool.static_layout()->shard_count);
   if (!count || block_size < sizeof(FreeObjectHeader) || shard_count != count)
     throw std::runtime_error("invalid shard allocator attach");
@@ -120,7 +120,7 @@ FixedBlockShardAllocator::FixedBlockShardAllocator(SharedPool& pool, std::uint32
 
 ShardControl* FixedBlockShardAllocator::control(std::uint32_t shard) const {
   if (shard >= shard_count_) throw std::runtime_error("invalid shard index");
-  const auto offset = latency_sim::CountedMemoryLoad(
+  const auto offset = latency_sim::FixedLatencyMemoryLoad(
       latency_sim::PoolKind::kHwcc,
       &pool_.static_layout()->shard_controls_offset);
   return reinterpret_cast<ShardControl*>(static_cast<std::byte*>(pool_.base()) + offset +
@@ -131,18 +131,18 @@ void FixedBlockShardAllocator::Push(std::atomic<std::uint64_t>& head,
                                     std::uint64_t offset,
                                     std::uint64_t generation) {
   auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
-  auto old = latency_sim::CountedAtomicLoad(
+  auto old = latency_sim::FixedLatencyAtomicLoad(
       head, std::memory_order_acquire, latency_sim::AtomicDomain::kHwcc);
   do {
-    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kSwcc,
+    latency_sim::FixedLatencyMemoryStore(latency_sim::PoolKind::kSwcc,
                                     &item->next_offset,
                                     TaggedFreeListHead::Offset(old));
-    latency_sim::CountedMemoryStore(latency_sim::PoolKind::kSwcc,
+    latency_sim::FixedLatencyMemoryStore(latency_sim::PoolKind::kSwcc,
                                     &item->generation, generation);
     FlushSwccLine(item);
-    latency_sim::CountedAtomicFence(std::memory_order_release,
+    latency_sim::FixedLatencyAtomicFence(std::memory_order_release,
                                     latency_sim::AtomicDomain::kHwcc);
-  } while (!latency_sim::CountedCompareExchangeWeak(
+  } while (!latency_sim::FixedLatencyAtomicCompareExchangeWeak(
       head, old, TaggedFreeListHead::Advance(old, offset),
       std::memory_order_release, std::memory_order_acquire,
       latency_sim::AtomicDomain::kHwcc));
@@ -156,13 +156,13 @@ std::uint64_t FixedBlockShardAllocator::Pop(
   // consumer could otherwise pop and reuse that object while this consumer
   // is reading it. Serialize consumers; producers remain lock-free.
   for (;;) {
-    while (latency_sim::CountedAtomicLoad(
+    while (latency_sim::FixedLatencyAtomicLoad(
                pop_lock, std::memory_order_relaxed,
                latency_sim::AtomicDomain::kHwcc) != 0) {
       _mm_pause();
     }
     std::uint32_t expected = 0;
-    if (latency_sim::CountedCompareExchangeWeak(
+    if (latency_sim::FixedLatencyAtomicCompareExchangeWeak(
             pop_lock, expected, std::uint32_t{1}, std::memory_order_acquire,
             std::memory_order_relaxed, latency_sim::AtomicDomain::kHwcc))
       break;
@@ -170,20 +170,20 @@ std::uint64_t FixedBlockShardAllocator::Pop(
   struct PopUnlock {
     std::atomic<std::uint32_t>& lock;
     ~PopUnlock() {
-      latency_sim::CountedAtomicStore(lock, 0U, std::memory_order_release,
+      latency_sim::FixedLatencyAtomicStore(lock, 0U, std::memory_order_release,
                                       latency_sim::AtomicDomain::kHwcc);
     }
   } unlock{pop_lock};
-  auto old = latency_sim::CountedAtomicLoad(
+  auto old = latency_sim::FixedLatencyAtomicLoad(
       head, std::memory_order_acquire, latency_sim::AtomicDomain::kHwcc);
   while (const auto offset = TaggedFreeListHead::Offset(old)) {
     auto* item = reinterpret_cast<FreeObjectHeader*>(static_cast<std::byte*>(pool_.base()) + offset);
     FlushSwccLine(item);
-    latency_sim::CountedAtomicFence(std::memory_order_acquire,
+    latency_sim::FixedLatencyAtomicFence(std::memory_order_acquire,
                                     latency_sim::AtomicDomain::kHwcc);
-    const auto next = latency_sim::CountedMemoryLoad(
+    const auto next = latency_sim::FixedLatencyMemoryLoad(
         latency_sim::PoolKind::kSwcc, &item->next_offset);
-    if (latency_sim::CountedCompareExchangeWeak(
+    if (latency_sim::FixedLatencyAtomicCompareExchangeWeak(
             head, old, TaggedFreeListHead::Advance(old, next),
             std::memory_order_acq_rel, std::memory_order_acquire,
             latency_sim::AtomicDomain::kHwcc))
@@ -213,10 +213,10 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
   if (const auto reused =
           Pop(entry->local_free_head, entry->local_pop_lock))
     return SwccOffset<std::byte>(reused);
-  const auto offset = latency_sim::CountedAtomicFetchAdd(
+  const auto offset = latency_sim::FixedLatencyAtomicFetchAdd(
       entry->bump, block_size_, std::memory_order_acq_rel,
       latency_sim::AtomicDomain::kHwcc);
-  const auto limit = latency_sim::CountedMemoryLoad(
+  const auto limit = latency_sim::FixedLatencyMemoryLoad(
       latency_sim::PoolKind::kHwcc, &entry->limit);
   if (offset + block_size_ > limit)
     throw std::runtime_error("D-SIDLE SWCC shard OOM: block=" + std::to_string(block_size_) +
@@ -232,14 +232,6 @@ SwccOffset<std::byte> FixedBlockShardAllocator::Allocate(std::uint32_t shard) {
 void FixedBlockShardAllocator::Free(std::uint32_t owner, SwccOffset<std::byte> block, std::uint64_t generation) {
   if (!block) throw std::runtime_error("cannot free null SWCC offset");
   Push(control(owner)->remote_free_head, block.value(), generation);
-  const auto from_node = latency_sim::GlobalLatencySimulator().node_id();
-  if ((latency_sim::HardwareSimulationFeaturesFast() &
-       latency_sim::kRemoteInvalidation) &&
-      from_node != owner) {
-    RecordSwccExplicitHandoff(
-        static_cast<std::byte*>(pool_.base()) + block.value(),
-        sizeof(FreeObjectHeader), from_node, owner);
-  }
 }
 
 std::uint64_t SwccShardAllocator::SizeClassBlockSize(std::uint64_t size) {
@@ -259,9 +251,9 @@ std::uint32_t SwccShardAllocator::OwnerOf(SwccOffset<std::byte> block, std::uint
   if (!block) throw std::runtime_error("cannot determine owner of null SWCC offset");
   const auto class_index = ClassIndex(SizeClassBlockSize(size));
   const auto block_size = kSmallestSwccBlock << class_index;
-  const auto swcc_offset = latency_sim::CountedMemoryLoad(
+  const auto swcc_offset = latency_sim::FixedLatencyMemoryLoad(
       latency_sim::PoolKind::kHwcc, &pool_.header()->swcc_offset);
-  const auto swcc_bytes = latency_sim::CountedMemoryLoad(
+  const auto swcc_bytes = latency_sim::FixedLatencyMemoryLoad(
       latency_sim::PoolKind::kHwcc, &pool_.header()->swcc_bytes);
   const auto span = swcc_bytes / kSwccSizeClassCount;
   const auto raw_start = swcc_offset + static_cast<std::uint64_t>(class_index) * span;

@@ -263,42 +263,7 @@ int main() {
   const lcdf::Str new_suffix = cow_leaf->ksuf_storage(new_cow_slot);
   assert(new_suffix.s != old_suffix.s);
   assert(std::string(old_suffix.s, old_suffix.len) == old_suffix_copy);
-  if (latency_sim::TscSpinAvailableForTest()) {
-    const auto cow_permutation = cow_leaf->permutation();
-    using cow_leaf_type = Masstree::leaf<table_params>;
-    using cow_replica_type = Masstree::leaf_replica<table_params>;
-    auto* external =
-        static_cast<typename cow_leaf_type::external_ksuf_type*>(cow_leaf->ksuf_);
-    assert(external);
-    latency_sim::Config suffix_latency;
-    suffix_latency.remote_cache_invalidation.enabled = true;
-    suffix_latency.remote_cache_invalidation.cache_line_bytes = 1;
-    latency_sim::GlobalLatencySimulator().Configure(suffix_latency);
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      const auto measured_suffix = cow_leaf->ksuf_storage(new_cow_slot);
-      assert(measured_suffix.len == new_suffix.len);
-    }
-    const auto suffix_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    // Ordinary SWCC suffix reads are not remote hardware-coherence events.
-    // Only a real flush/visibility handoff is sent to that state machine.
-    assert(suffix_stats.remote_events == 0);
-    latency_sim::Config latency;
-    latency.remote_cache_invalidation.enabled = true;
-    latency_sim::GlobalLatencySimulator().Configure(latency);
-    void* measured_replica = nullptr;
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
-      measured_replica =
-          cow_replica_type::Create(*cow_leaf, cow_permutation);
-    }
-    const auto stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(stats.remote_events == 0);
-    std::free(measured_replica);
-    latency_sim::GlobalLatencySimulator().Configure({});
-  }
+
   expected[cow_key_a] = "cow-a";
   expected[cow_key_b] = "cow-b";
   lcdf::Str held_value;
@@ -371,24 +336,7 @@ int main() {
   typename replica_node_type::nodeversion_type layered_version;
   auto* layered_leaf =
       table.table().root()->reach_leaf(layered_search, layered_version, *ti);
-  if (latency_sim::TscSpinAvailableForTest()) {
-    const auto permutation = layered_leaf->permutation();
-    latency_sim::Config latency;
-    latency.remote_cache_invalidation.enabled = true;
-    latency_sim::GlobalLatencySimulator().Configure(latency);
-    void* layered_snapshot = nullptr;
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
-      layered_snapshot =
-          Masstree::leaf_replica<replica_params>::Create(
-              *layered_leaf, permutation);
-    }
-    const auto stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(stats.remote_events == 0);
-    std::free(layered_snapshot);
-    latency_sim::GlobalLatencySimulator().Configure({});
-  }
+
   assert(Masstree::leaf_replica<replica_params>::Promote(
       *layered_leaf, layered_version, replicas));
   {
@@ -447,31 +395,7 @@ int main() {
   typename replica_node_type::nodeversion_type replica_version;
   auto* canonical_leaf = table.table().root()->reach_leaf(replica_key, replica_version, *ti);
   assert(replicas.AccessCount(canonical_leaf->control_ref()) > 0);
-  if (latency_sim::TscSpinAvailableForTest()) {
-    const int slot = find_slot(canonical_leaf, replica_key_text);
-    assert(slot >= 0 && !canonical_leaf->is_layer(slot));
-    latency_sim::Config prefetch_latency;
-    prefetch_latency.remote_cache_invalidation.enabled = true;
-    prefetch_latency.remote_cache_invalidation.cache_line_bytes = 1;
-    latency_sim::GlobalLatencySimulator().Configure(prefetch_latency);
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      canonical_leaf->lv_[slot].prefetch(canonical_leaf->keylenx_[slot]);
-    }
-    assert(latency_sim::GlobalLatencySimulator()
-               .TakeStatsAndReset()
-               .remote_events == 0);
-    std::size_t value_bytes = 0;
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      const auto value = canonical_leaf->lv_[slot].value();
-      value_bytes = value->size();
-    }
-    const auto prefetch_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(prefetch_stats.remote_events == 0);
-    latency_sim::GlobalLatencySimulator().Configure({});
-  }
+
   void* encoded_leaf = Masstree::leaf_replica<replica_params>::Create(
       *canonical_leaf, canonical_leaf->permutation());
   const row_type* replica_value = nullptr;
@@ -496,24 +420,7 @@ int main() {
                      replica_column.len) == 0);
   std::free(encoded_leaf);
   const auto promote_version = canonical_leaf->stable();
-  if (latency_sim::TscSpinAvailableForTest()) {
-    latency_sim::Config promotion_latency;
-    promotion_latency.remote_cache_invalidation.enabled = true;
-    latency_sim::GlobalLatencySimulator().Configure(promotion_latency);
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kMerge);
-      assert(Masstree::leaf_replica<replica_params>::Promote(
-          *canonical_leaf, promote_version, replicas));
-    }
-    const auto promotion_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    // Promotion validates/publishes NodeControl in HWCC; its SWCC body
-    // accesses still do not manufacture coherence events.
-    assert(promotion_stats.remote_events > 0);
-    assert(promotion_stats.swcc_delayed_ns == 0);
-    std::free(replicas.Invalidate(canonical_leaf->control_ref()));
-    latency_sim::GlobalLatencySimulator().Configure({});
-  }
+
   assert(Masstree::leaf_replica<replica_params>::Promote(*canonical_leaf, promote_version, replicas));
   const auto promote_generation = canonical_leaf->control_ref().get(pool.base())->generation;
   auto replica_handle = replicas.Acquire(canonical_leaf->control_ref(), promote_generation,
@@ -552,71 +459,7 @@ int main() {
     assert(replica_cursor.used_replica());
     assert(replica_cursor.value()->col(0).len == expected.begin()->second.size());
   }
-  if (latency_sim::TscSpinAvailableForTest()) {
-    latency_sim::Config latency;
-    latency.remote_cache_invalidation.enabled = true;
-    latency_sim::GlobalLatencySimulator().Configure(latency);
-    dsidle::ReplicaDirectory empty_replicas(pool);
-    dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
-    bool canonical_get_used_replica = false;
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      Masstree::unlocked_tcursor<replica_params> cursor(
-          table.table(),
-          lcdf::Str(replica_key_text.data(), replica_key_text.size()));
-      assert(cursor.find_unlocked(*ti));
-      canonical_get_used_replica = cursor.used_replica();
-    }
-    const auto canonical_get_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(!canonical_get_used_replica);
 
-    dsidle::ConfigureCurrentReplicaDirectory(replicas);
-    bool local_get_used_replica = false;
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      Masstree::unlocked_tcursor<replica_params> cursor(
-          table.table(),
-          lcdf::Str(replica_key_text.data(), replica_key_text.size()));
-      assert(cursor.find_unlocked(*ti));
-      local_get_used_replica = cursor.used_replica();
-    }
-    const auto local_get_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(local_get_used_replica);
-    assert(local_get_stats.remote_swcc_explicit_handoffs == 0);
-    assert(canonical_get_stats.remote_events > 0);
-
-    dsidle::ConfigureCurrentReplicaDirectory(empty_replicas);
-    ReplicaPointerScanCollector canonical_scan{
-        static_cast<const std::byte*>(pool.base()),
-        static_cast<const std::byte*>(pool.base()) + kPoolBytes};
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      table.table().scan(
-          lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
-          canonical_scan, *ti);
-    }
-    const auto canonical_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(!canonical_scan.used_replica);
-
-    dsidle::ConfigureCurrentReplicaDirectory(replicas);
-    ReplicaPointerScanCollector measured_replica_scan{
-        static_cast<const std::byte*>(pool.base()),
-        static_cast<const std::byte*>(pool.base()) + kPoolBytes};
-    {
-      latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
-      table.table().scan(
-          lcdf::Str(replica_key_text.data(), replica_key_text.size()), true,
-          measured_replica_scan, *ti);
-    }
-    const auto replica_stats =
-        latency_sim::GlobalLatencySimulator().TakeStatsAndReset();
-    assert(measured_replica_scan.used_replica);
-    assert(replica_stats.remote_events < canonical_stats.remote_events);
-    latency_sim::GlobalLatencySimulator().Configure({});
-  }
   ReplicaPointerScanCollector replica_scan{
       static_cast<const std::byte*>(pool.base()),
       static_cast<const std::byte*>(pool.base()) + kPoolBytes};
