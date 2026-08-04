@@ -174,21 +174,16 @@ class nodeversion {
         else
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
         if (control_ref_ && publish_canonical) {
-            // dsidle: publish the exact canonical allocation before releasing
-            // the matching HWCC version. The range observation uses the same
-            // node-envelope upper bound as the original Masstree
-            // mutation path: fields are written directly by many inline
-            // helpers, so exact dirty-line tracking would require replacing
-            // the upstream control flow with pervasive wrappers. Flush remains
-            // a separate physical/protocol charge.
+            // Publish the canonical node with a real writeback before
+            // releasing the matching HWCC version.  Individual field writes
+            // were already charged once by their typed stores; there is no
+            // additional whole-node envelope charge, and the flush itself is
+            // a real protocol operation, not a second latency charge.
             auto* canonical =
                 static_cast<std::byte*>(dsidle::SharedPoolBase()) +
                 dsidle::LoadCanonicalSwccOffset(control_ref_);
             const auto canonical_bytes =
                 dsidle::LoadCanonicalNodeBytes(control_ref_);
-            latency_sim::GlobalLatencySimulator().RecordRange(
-                latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kWrite,
-                canonical, canonical_bytes);
             dsidle::FlushSwccRange(
                 canonical, canonical_bytes);
         }
@@ -302,16 +297,11 @@ class nodeversion {
             dsidle::LoadCanonicalSwccOffset(control_ref_);
         const auto canonical_bytes =
             dsidle::LoadCanonicalNodeBytes(control_ref_);
-        // Original Masstree traversal reads node fields directly and prefetches
-        // cache lines 1..3; the selected child/value/link can occupy the final
-        // line of the 288B internode or 336B+ leaf. Use the exact allocation as
-        // a bounded per-node read envelope instead of rewriting every upstream
-        // inline accessor. This is distinct from external value/ksuf payloads,
-        // which have their own byte-accurate accounting.
+        // The real invalidate makes a previously cached body visible again.
+        // No whole-node envelope charge is applied here: every real field
+        // access is charged once at its own typed load/store layer, and the
+        // node allocation size must not be used as a rough per-node estimate.
         dsidle::InvalidateSwccRange(canonical, canonical_bytes);
-        latency_sim::GlobalLatencySimulator().RecordRange(
-            latency_sim::PoolKind::kSwcc, latency_sim::AccessKind::kRead,
-            canonical, canonical_bytes);
     }
     value_type v_{};
     dsidle::NodeRef control_ref_{};

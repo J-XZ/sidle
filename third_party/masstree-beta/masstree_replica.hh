@@ -67,14 +67,18 @@ class leaf_replica {
       if (source.has_ksuf(slot)) {
         item.suffix = external_suffixes
             ? leaf_type::readable_external_ksuf_value(
-                  external_suffixes, slot, false)
+                  external_suffixes, slot)
             : source.ksuf_storage(slot);
         bytes += item.suffix.len;
       }
       if (item.is_layer) {
         item.layer_ref = source.lv_[slot].layer_ref();
       } else {
-        item.value = source.lv_[slot].value(false);
+        // observe=true performs the real SWCC invalidate before any copy so
+        // the replica never publishes stale suffix/value bytes.  The actual
+        // payload read is charged once at the copy below (ReadSwcc), keeping
+        // visibility and billing separate.
+        item.value = source.lv_[slot].value();
         if (!item.value)
           throw std::runtime_error("cannot replicate null Masstree value");
         bytes = Align(bytes, alignof(value_type));

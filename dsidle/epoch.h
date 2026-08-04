@@ -86,22 +86,16 @@ class EpochTable {
   // ordinary DRAM, not the shared pool, so it must not create HWCC traffic.
   void Enter(std::uint32_t vm, std::uint32_t thread, std::uint64_t epoch) {
     auto& slot = Slot(vm, thread);
-    latency_sim::FixedLatencyAtomicStore(
-        slot.value, epoch, std::memory_order_release,
-        latency_sim::AtomicDomain::kLocalDram);
+    slot.value.store(epoch, std::memory_order_release);
   }
   void Leave(std::uint32_t vm, std::uint32_t thread) {
     auto& slot = Slot(vm, thread);
-    latency_sim::FixedLatencyAtomicStore(
-        slot.value, kEpochInactive, std::memory_order_release,
-        latency_sim::AtomicDomain::kLocalDram);
+    slot.value.store(kEpochInactive, std::memory_order_release);
   }
   std::uint64_t MinimumActive() const {
     std::uint64_t min = kEpochInactive;
     for (const auto& s : slots_) {
-      const auto v = latency_sim::FixedLatencyAtomicLoad(
-          s.value, std::memory_order_acquire,
-          latency_sim::AtomicDomain::kLocalDram);
+      const auto v = s.value.load(std::memory_order_acquire);
       if (v != kEpochInactive && v < min) min = v;
     }
     return min;

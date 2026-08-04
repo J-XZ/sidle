@@ -10,20 +10,17 @@ namespace dsidle_replica_worker_detail {
 
 template <typename T>
 inline T Load(const std::atomic<T>& value, std::memory_order order) {
-  return latency_sim::FixedLatencyAtomicLoad(
-      value, order, latency_sim::AtomicDomain::kLocalDram);
+  return value.load(order);
 }
 
 template <typename T>
 inline void Store(std::atomic<T>& value, T desired, std::memory_order order) {
-  latency_sim::FixedLatencyAtomicStore(
-      value, desired, order, latency_sim::AtomicDomain::kLocalDram);
+  value.store(desired, order);
 }
 
 template <typename T>
 inline T Exchange(std::atomic<T>& value, T desired, std::memory_order order) {
-  return latency_sim::FixedLatencyAtomicExchange(
-      value, desired, order, latency_sim::AtomicDomain::kLocalDram);
+  return value.exchange(desired, order);
 }
 
 }  // namespace dsidle_replica_worker_detail
@@ -428,7 +425,15 @@ class replica_workers {
     }
   }
 
-  void BindCurrentThread() { dsidle::ConfigureCurrentSwccAllocator(pool_, shard_count_, local_shard_); dsidle::ConfigureCurrentReplicaDirectory(directory_); }
+  void BindCurrentThread() {
+    // Every background role binds inside its own short merge/background
+    // scope: the typed HWCC layout reads in the binding are charged and the
+    // busy-wait settles here, before the mutex/condition-variable wait or
+    // the long worker loop.  Each Once()/loop task opens its own scope.
+    latency_sim::ScopeGuard latency_scope(latency_sim::ScopeKind::kMerge);
+    dsidle::ConfigureCurrentSwccAllocator(pool_, shard_count_, local_shard_);
+    dsidle::ConfigureCurrentReplicaDirectory(directory_);
+  }
   bool WaitForInterval(std::chrono::milliseconds interval) {
     std::unique_lock<std::mutex> lock(worker_mutex_);
     worker_wakeup_.wait_for(lock, interval, [this] {

@@ -83,25 +83,17 @@ class ReplicaDirectory {
   // the process-local dense counter instead of touching canonical SWCC data.
   void HalveAccess(NodeRef ref) const;
   void RecordInternalHit() {
-    latency_sim::FixedLatencyAtomicFetchAdd(
-        internal_hits_, std::uint64_t{1}, std::memory_order_relaxed,
-        latency_sim::AtomicDomain::kLocalDram);
+    internal_hits_.fetch_add(std::uint64_t{1}, std::memory_order_relaxed);
   }
   std::uint64_t InternalHits() const {
-    return latency_sim::FixedLatencyAtomicLoad(
-        internal_hits_, std::memory_order_relaxed,
-        latency_sim::AtomicDomain::kLocalDram);
+    return internal_hits_.load(std::memory_order_relaxed);
   }
   void SetBudgetBytes(std::uint64_t bytes);
   std::uint64_t LocalBytes() const {
-    return latency_sim::FixedLatencyAtomicLoad(
-        local_bytes_, std::memory_order_acquire,
-        latency_sim::AtomicDomain::kLocalDram);
+    return local_bytes_.load(std::memory_order_acquire);
   }
   std::uint64_t BudgetBytes() const {
-    return latency_sim::FixedLatencyAtomicLoad(
-        budget_bytes_, std::memory_order_acquire,
-        latency_sim::AtomicDomain::kLocalDram);
+    return budget_bytes_.load(std::memory_order_acquire);
   }
 
  private:

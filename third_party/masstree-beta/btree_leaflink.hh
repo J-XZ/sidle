@@ -16,6 +16,7 @@
 #ifndef BTREE_LEAFLINK_HH
 #define BTREE_LEAFLINK_HH 1
 #include "compiler.hh"
+#include "masstree_struct.hh"
 #include "dsidle/swcc_visibility.h"
 
 /** @brief Operations to manage linked lists of B+tree leaves.
@@ -39,6 +40,21 @@ template <typename N> struct btree_leaflink<N, true> {
         dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
         return latency_sim::FixedLatencyMemoryLoadAs<N*>(
             latency_sim::PoolKind::kSwcc, &n->prev_);
+    }
+    // Read the persistent NodeRef directly after the real invalidate.  The
+    // original leaf-link comparison is on the stored ref, not on a canonical
+    // node resolved only for the wrapper charge.
+    static inline dsidle::NodeRef invalidate_next_ref(N* n) {
+        dsidle::InvalidateSwccRange(&n->next_, sizeof(n->next_));
+        return latency_sim::FixedLatencyMemoryLoad<Masstree::tagged_node_link<N>>(
+                   latency_sim::PoolKind::kSwcc, &n->next_)
+            .ref();
+    }
+    static inline dsidle::NodeRef invalidate_prev_ref(N* n) {
+        dsidle::InvalidateSwccRange(&n->prev_, sizeof(n->prev_));
+        return latency_sim::FixedLatencyMemoryLoad<Masstree::node_link<N>>(
+                   latency_sim::PoolKind::kSwcc, &n->prev_)
+            .ref();
     }
     static inline void flush_next(N* n) {
         dsidle::FlushSwccRange(&n->next_, sizeof(n->next_));
@@ -119,9 +135,8 @@ template <typename N> struct btree_leaflink<N, true> {
             if (!prev)
                 break;
             lock_link(prev, spin_function);
-            const N* observed_next = invalidate_next(prev);
-            if (observed_next && observed_next->control_ref() ==
-                    n->control_ref())
+            const auto observed_next = invalidate_next_ref(prev);
+            if (observed_next && observed_next == n->control_ref())
                 break;
             unlock_link(prev);
             spin_function();
@@ -156,9 +171,8 @@ template <typename N> struct btree_leaflink<N, true> {
         while (1) {
             prev = invalidate_prev(n);
             lock_link(prev, spin_function);
-            const N* observed_next = invalidate_next(prev);
-            if (observed_next && observed_next->control_ref() ==
-                    n->control_ref())
+            const auto observed_next = invalidate_next_ref(prev);
+            if (observed_next && observed_next == n->control_ref())
                 break;
             unlock_link(prev);
             spin_function();

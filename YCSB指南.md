@@ -2,7 +2,8 @@
 
 ## 开发验证
 
-YCSB 脚本默认一轮，适合本机 R6525 的短验证；无延迟是默认比较基线：
+YCSB 脚本默认一轮，适合默认 CloudLab R6525 2-NUMA 设备的短验证；根配置使用 VM
+NUMA0、共享池 NUMA1，无延迟是默认比较基线：
 
 ~~~bash
 cd /root/code/sidle

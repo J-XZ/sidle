@@ -18,7 +18,6 @@ namespace dsidle {
 namespace {
 constexpr std::uint64_t kCacheLine = 64;
 constexpr std::uint64_t kCoordinationBytes = 4096;
-constexpr std::uint64_t kCoordinationControlBytes = 256;
 constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
@@ -30,11 +29,25 @@ constexpr std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
 namespace {
 thread_local void* shared_pool_base = nullptr;
 struct SwccAllocatorContext {
+  SwccRangeCache range{};
   SharedPool* pool{};
   std::uint32_t shard_count{};
   std::uint32_t local_shard{};
 };
 thread_local SwccAllocatorContext swcc_allocator_context;
+
+// Migrates the current thread's SWCC binding when a SharedPool object moves.
+// The mapping address itself does not change, so the cached SWCC range stays
+// valid; only the owning object pointer must follow the destination so its
+// Close()/destructor clears the binding, shared-pool base TLS and range
+// cache.  Moving a SharedPool is only legal with no concurrent users (all
+// workers stopped and joined).
+void MigrateThreadBinding(SharedPool* from, SharedPool* to) {
+  if (swcc_allocator_context.pool == from) {
+    swcc_allocator_context.pool = to;
+    if (shared_pool_base == from->base()) shared_pool_base = to->base();
+  }
+}
 }
 
 void SetSharedPoolBase(void* base) { shared_pool_base = base; }
@@ -47,10 +60,38 @@ void* SharedPoolBaseOrNull() noexcept { return shared_pool_base; }
 
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard) {
-  if (!shard_count || local_shard >= shard_count || pool.static_layout()->shard_count != shard_count)
+  // Explicit binding stage.  The three HWCC fields below are real shared
+  // reads; when fixed latency is enabled they must be charged inside the
+  // caller's short binding scope (missing scope hard fails in the wrapper).
+  const auto layout_shard_count = latency_sim::FixedLatencyMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &pool.static_layout()->shard_count);
+  const auto swcc_offset = latency_sim::FixedLatencyMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &pool.header()->swcc_offset);
+  const auto swcc_bytes = latency_sim::FixedLatencyMemoryLoad(
+      latency_sim::PoolKind::kHwcc, &pool.header()->swcc_bytes);
+  if (!shard_count || local_shard >= shard_count ||
+      layout_shard_count != shard_count)
     throw std::runtime_error("invalid D-SIDLE SWCC allocator binding");
+  if (swcc_bytes == 0 || swcc_offset > pool.size() ||
+      swcc_bytes > pool.size() - swcc_offset)
+    throw std::runtime_error("invalid D-SIDLE SWCC mapping range");
+  const std::uintptr_t base =
+      reinterpret_cast<std::uintptr_t>(pool.base());
+  const std::uintptr_t begin = base + swcc_offset;
+  if (begin < base || swcc_bytes > std::numeric_limits<std::uintptr_t>::max() - begin)
+    throw std::runtime_error("D-SIDLE SWCC mapping range overflows");
+  const std::uintptr_t end = begin + swcc_bytes;
   SetSharedPoolBase(pool.base());
-  swcc_allocator_context = {&pool, shard_count, local_shard};
+  swcc_allocator_context = {SwccRangeCache{begin, end, true}, &pool,
+                            shard_count, local_shard};
+}
+
+const SwccRangeCache& CurrentSwccRangeCache() {
+  if (!swcc_allocator_context.range.valid || !swcc_allocator_context.pool)
+    throw std::runtime_error(
+        "D-SIDLE SWCC classifier has no bound SWCC allocator; refusing to "
+        "classify a potential SWCC access as local DRAM");
+  return swcc_allocator_context.range;
 }
 
 SharedPool& CurrentSharedPool() {
@@ -217,11 +258,27 @@ SharedPool SharedPool::AttachAt(const std::string& path, std::uint64_t expected_
 }
 
 SharedPool::~SharedPool() { Close(); }
-SharedPool::SharedPool(SharedPool&& other) noexcept : fd_(other.fd_), base_(other.base_), bytes_(other.bytes_) {
-  other.fd_ = -1; other.base_ = nullptr; other.bytes_ = 0;
+SharedPool::SharedPool(SharedPool&& other) noexcept
+    : fd_(other.fd_), base_(other.base_), bytes_(other.bytes_) {
+  MigrateThreadBinding(&other, this);
+  other.fd_ = -1;
+  other.base_ = nullptr;
+  other.bytes_ = 0;
 }
 SharedPool& SharedPool::operator=(SharedPool&& other) noexcept {
-  if (this != &other) { Close(); fd_ = other.fd_; base_ = other.base_; bytes_ = other.bytes_; other.fd_ = -1; other.base_ = nullptr; other.bytes_ = 0; }
+  if (this != &other) {
+    // Close the destination's previous mapping first: this clears its TLS
+    // binding and range cache, and never touches a binding that points to
+    // the source.  The source binding is migrated below.
+    Close();
+    fd_ = other.fd_;
+    base_ = other.base_;
+    bytes_ = other.bytes_;
+    MigrateThreadBinding(&other, this);
+    other.fd_ = -1;
+    other.base_ = nullptr;
+    other.bytes_ = 0;
+  }
   return *this;
 }
 void SharedPool::Close() {
@@ -280,10 +337,12 @@ void InitializePoolMetadata(SharedPool& pool, const PoolInitialization& options)
   for (std::uint64_t index = 0; index < epoch_count; ++index)
     new (base + epochs_offset + index * sizeof(EpochSlot)) EpochSlot{};
   std::memset(base + coordination_offset, 0, kCoordinationBytes);
-  new (base + coordination_offset + kCoordinationControlBytes) SharedEpochClock{};
-  auto* phase_barrier = new (base + coordination_offset +
-                             kCoordinationControlBytes + sizeof(SharedEpochClock))
-      SharedPhaseBarrier{};
+  // The epoch clock and phase barrier start at the real business coordination
+  // region base; no legacy instrumentation hole is preserved.
+  new (base + coordination_offset) SharedEpochClock{};
+  auto* phase_barrier =
+      new (base + coordination_offset + sizeof(SharedEpochClock))
+          SharedPhaseBarrier{};
   phase_barrier->participants = options.vm_count;
   layout->node_control_offset = nodes_offset;
   layout->node_control_capacity = options.node_control_capacity;
@@ -561,8 +620,7 @@ SharedEpochClockView SharedEpochState(SharedPool& pool) {
   if (!coordination_offset)
     throw std::runtime_error("D-SIDLE epoch clock is not initialized");
   return SharedEpochClockView(reinterpret_cast<SharedEpochClock*>(
-      static_cast<std::byte*>(pool.base()) + coordination_offset +
-      kCoordinationControlBytes));
+      static_cast<std::byte*>(pool.base()) + coordination_offset));
 }
 
 SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool) {
@@ -571,14 +629,25 @@ SharedPhaseBarrierView SharedExperimentPhaseBarrier(SharedPool& pool) {
       &pool.static_layout()->coordination_offset);
   return SharedPhaseBarrierView(reinterpret_cast<SharedPhaseBarrier*>(
       static_cast<std::byte*>(pool.base()) + coordination_offset +
-      kCoordinationControlBytes + sizeof(SharedEpochClock)));
+      sizeof(SharedEpochClock)));
 }
 
 void ConfigureLatencySimulatorForPool(
     SharedPool& pool, const latency_sim::Config& config, std::uint32_t node_id) {
-  (void)pool;
   (void)node_id;
-  latency_sim::GlobalLatencySimulator().Configure(config);
+  auto& simulator = latency_sim::GlobalLatencySimulator();
+  // Explicit startup boundary: disable any previously enabled state and drop
+  // stale registrations from an earlier mapping in this process before
+  // registering the current immutable HWCC/SWCC ranges.
+  simulator.Configure(latency_sim::Config{});
+  simulator.ClearPoolRegistrations();
+  // Register the immutable HWCC/SWCC mapping boundaries before enabling fixed
+  // latency.  Owner-private SWCC validates against the SWCC region.
+  simulator.RegisterPool(latency_sim::PoolKind::kHwcc, pool.hwcc_base(),
+                         pool.header()->hwcc_bytes);
+  simulator.RegisterPool(latency_sim::PoolKind::kSwcc, pool.swcc_base(),
+                         pool.header()->swcc_bytes);
+  simulator.Configure(config);
 }
 
 std::string DescribeHwccBudget(const SharedPool& pool) {

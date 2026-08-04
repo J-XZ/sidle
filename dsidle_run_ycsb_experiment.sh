@@ -163,12 +163,17 @@ if (( ! skip_trace_gen )); then
   generator="$script_dir/scripts/generate_dsidle_trace.sh"
   [[ -x "$generator" ]] || { echo "missing executable YCSB trace generator: $generator (initialize submodules)" >&2; exit 1; }
   generator_root="$script_dir/third_party/YCSB-cpp"
-  "$generator" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workloada" \
+  # The generator builds the small YCSB helper binary.  Keep that build out of
+  # the third_party submodule so the parent repo never shows it dirty: use a
+  # gitignored project-local dir by default, and the CTest temp root when the
+  # test wrapper exports DSIDLE_YCSB_GENERATOR_BUILD_DIR.
+  generator_build_dir="${DSIDLE_YCSB_GENERATOR_BUILD_DIR:-$script_dir/.dsidle-ycsb-build}"
+  "$generator" --build-dir "$generator_build_dir" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workloada" \
     --phase load --nodes "$vm_count" --threads-per-node "$threads_per_node" --record-count "$record_count" \
     --operation-count "$operation_count" --field-length 32 --request-distribution zipfian --force
   cp "$out_dir/traces/manifest.txt" "$out_dir/logs/manifest_load.txt"
   for workload in "${requested[@]}"; do
-    generator_args=(--output-dir "$out_dir/traces" --workload "$generator_root/workloads/workload$workload" \
+    generator_args=(--build-dir "$generator_build_dir" --output-dir "$out_dir/traces" --workload "$generator_root/workloads/workload$workload" \
       --run-name "workload$workload" --phase run --nodes "$vm_count" --threads-per-node "$threads_per_node" \
       --record-count "$record_count" --operation-count "$operation_count" --field-length 32 --force)
     if [[ "$workload" == d ]]; then

@@ -102,29 +102,52 @@ add_test(NAME dsidle_disabled_overhead_benchmark
   COMMAND dsidle_disabled_overhead_benchmark)
 set_tests_properties(dsidle_disabled_overhead_benchmark PROPERTIES
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set(DSIDLE_CTEST_WRAPPER
+  ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dsidle_ctest_wrapper.sh)
+set(DSIDLE_TEST_DATA ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
+
 add_test(NAME dsidle_e2e_trace_runner_smoke
-  COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase smoke --node 0 --bootstrap"
-    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --init-pool --config \"$DSIDLE_TEST_CONFIG\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$2\" --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --node 0 --bootstrap"
+    sh $<TARGET_FILE:dsidle_shared_pool> $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_min_duration
-  COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner-duration.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase duration --node 0 --bootstrap --min-duration-sec 1 > /tmp/dsidle-e2e-duration.log && python3 -c 'import re,sys; x=re.search(r\"^E2E_TRACE_TIME_US .* duration_us=(\\d+)\", open(sys.argv[1]).read(), re.M); sys.exit(not x or int(x.group(1)) < 1000000)' /tmp/dsidle-e2e-duration.log"
-    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --init-pool --config \"$DSIDLE_TEST_CONFIG\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$2\" --config \"$DSIDLE_TEST_CONFIG\" --phase duration --node 0 --bootstrap --min-duration-sec 1 > \"$DSIDLE_TEST_ROOT/duration.log\" && python3 -c 'import re,sys; x=re.search(r\"^E2E_TRACE_TIME_US .* duration_us=([0-9]+)\", open(sys.argv[1]).read(), re.M); sys.exit(not x or int(x.group(1)) < 1000000)' \"$DSIDLE_TEST_ROOT/duration.log\""
+    sh $<TARGET_FILE:dsidle_shared_pool> $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_min_duration PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_replica_activation
-  COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$2\" --phase seed --node 0 --bootstrap && \"$3\" --config \"$4\" --phase replica-read --node 0 --min-duration-sec 1 > /tmp/dsidle-e2e-replica.log && python3 -c 'import re,sys; x=re.search(r\"replica_bytes=(\\d+)\", open(sys.argv[1]).read()); sys.exit(not x or int(x.group(1)) <= 8)' /tmp/dsidle-e2e-replica.log"
-    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_replica_seed_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_replica_read_config.jsonc)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_replica_seed_config.jsonc
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_replica_read_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --init-pool --config \"$DSIDLE_TEST_CONFIG\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$2\" --config \"$DSIDLE_TEST_CONFIG\" --phase seed --node 0 --bootstrap && \"$2\" --config \"$DSIDLE_TEST_CONFIG_1\" --phase replica-read --node 0 --min-duration-sec 1 > \"$DSIDLE_TEST_ROOT/replica.log\" && python3 -c 'import re,sys; x=re.search(r\"replica_bytes=([0-9]+)\", open(sys.argv[1]).read()); sys.exit(not x or int(x.group(1)) <= 8)' \"$DSIDLE_TEST_ROOT/replica.log\""
+    sh $<TARGET_FILE:dsidle_shared_pool> $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_replica_activation PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_trace_runner_2vm_smoke
-  COMMAND /bin/sh -c
-    "truncate -s 128M /tmp/dsidle-e2e-runner-2vm.pool && \"$1\" --init-pool --config \"$2\" --node-control-capacity 1024 --max-threads-per-vm 5 && { \"$3\" --config \"$2\" --phase smoke --node 0 --bootstrap > /tmp/dsidle-e2e-node0.log 2>&1 & p=$!; \"$3\" --config \"$2\" --phase smoke --node 1 > /tmp/dsidle-e2e-node1.log 2>&1 & q=$!; wait $p && wait $q; } && grep -q 'E2E_TRACE_TIME_US phase=smoke node=0' /tmp/dsidle-e2e-node0.log && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' /tmp/dsidle-e2e-node1.log"
-    sh $<TARGET_FILE:dsidle_shared_pool> ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_2vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --init-pool --config \"$DSIDLE_TEST_CONFIG\" --node-control-capacity 1024 --max-threads-per-vm 5 && { \"$2\" --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --node 0 --bootstrap > \"$DSIDLE_TEST_ROOT/node0.log\" 2>&1 & p=$!; \"$2\" --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --node 1 > \"$DSIDLE_TEST_ROOT/node1.log\" 2>&1 & q=$!; wait $p && wait $q; } && grep -q 'E2E_TRACE_TIME_US phase=smoke node=0' \"$DSIDLE_TEST_ROOT/node0.log\" && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' \"$DSIDLE_TEST_ROOT/node1.log\""
+    sh $<TARGET_FILE:dsidle_shared_pool> $<TARGET_FILE:dsidle_e2e_trace_runner>)
 set_tests_properties(dsidle_e2e_trace_runner_2vm_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME dsidle_e2e_trace_runner_fixed_latency_smoke
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_config_fixed_latency.jsonc
+    -- /bin/sh -c
+    "if [ \"$1\" != RelWithDebInfo ]; then exit 77; fi; \"$2\" --init-pool --config \"$DSIDLE_TEST_CONFIG\" --node-control-capacity 1024 --max-threads-per-vm 5 && \"$3\" --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --node 0 --bootstrap > \"$DSIDLE_TEST_ROOT/fixed.log\" 2>&1 && grep -q 'E2E_TRACE_TIME_US phase=smoke node=0' \"$DSIDLE_TEST_ROOT/fixed.log\" && ! grep -q 'fixed latency hard fail' \"$DSIDLE_TEST_ROOT/fixed.log\" && ! grep -qE 'access_count|atomic_count|delayed_ns|remote_cache' \"$DSIDLE_TEST_ROOT/fixed.log\""
+    sh "${CMAKE_BUILD_TYPE}" $<TARGET_FILE:dsidle_shared_pool> $<TARGET_FILE:dsidle_e2e_trace_runner>)
+set_tests_properties(dsidle_e2e_trace_runner_fixed_latency_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  SKIP_RETURN_CODE 77)
 add_test(NAME dsidle_ycsb_summarizer_tests
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-summary.XXXXXX); python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\" && grep -q 'avg_ops_sum' \"$out/ycsb_summary.csv\" && grep -q 'ops_per_sec_p90' \"$out/ycsb_summary.csv\""
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    -- /bin/sh -c
+    "out=\"$DSIDLE_TEST_ROOT/out\"; python3 \"$1\" --log-dir \"$2\" --out-dir \"$out\" && test -s \"$out/ycsb_summary.json\" && test -s \"$out/ycsb_summary.csv\" && test -s \"$out/YCSB实验报告.md\" && grep -q 'avg_ops_sum' \"$out/ycsb_summary.csv\" && grep -q 'ops_per_sec_p90' \"$out/ycsb_summary.csv\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/summarize_ycsb_experiment.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ycsb_logs)
 set_tests_properties(dsidle_ycsb_summarizer_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_vm_e2e_harness_tests
@@ -145,39 +168,51 @@ add_test(NAME dsidle_latency_access_audit_tests
     ${CMAKE_CURRENT_SOURCE_DIR})
 set_tests_properties(dsidle_latency_access_audit_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_prepare_only_tests
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-prepare.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out/result\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/run_meta.json\" && test -s \"$out/result/trace_manifest.json\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); t=json.load(open(sys.argv[2])); sys.exit(m[\"warmup_rounds\"] != 1 or m[\"value_seed\"] != 4851300051586183745 or m[\"sidle_background_roles_per_node\"] != 5 or m[\"background_epoch_slots_per_node\"] != 4 or m[\"epoch_slots_per_node\"] != 5 or m[\"runnable_threads_per_node\"] != 7 or m[\"shared_size_mb\"] != 2048 or m[\"requested_shared_size_mb\"] != 2048 or m[\"shared_memory_size_source\"] != \"explicit\" or len(t[\"trace_set_sha256\"]) != 64 or any(len(w[\"sha256\"]) != 64 for p in t[\"phases\"].values() for w in p[\"workers\"].values()))' \"$out/result/run_meta.json\" \"$out/result/trace_manifest.json\" && ! \"$1\" --prepare-only --out-dir \"$out/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$out/invalid\" && ! \"$1\" --prepare-only --out-dir \"$out/reserve\" --shared-reserve-mb 4096 >/dev/null 2>&1 && test ! -e \"$out/reserve\""
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    -- /bin/sh -c
+    "out=\"$DSIDLE_TEST_ROOT/result\"; \"$1\" --prepare-only --out-dir \"$out\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && \"$1\" --prepare-only --skip-trace-gen --out-dir \"$out\" --workloads a,e --record-count 10 --operation-count 20 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/run_meta.json\" && test -s \"$out/trace_manifest.json\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); t=json.load(open(sys.argv[2])); sys.exit(m[\"warmup_rounds\"] != 1 or m[\"value_seed\"] != 4851300051586183745 or m[\"sidle_background_roles_per_node\"] != 5 or m[\"background_epoch_slots_per_node\"] != 4 or m[\"epoch_slots_per_node\"] != 5 or m[\"runnable_threads_per_node\"] != 7 or m[\"shared_size_mb\"] != 2048 or m[\"requested_shared_size_mb\"] != 2048 or m[\"shared_memory_size_source\"] != \"explicit\" or len(t[\"trace_set_sha256\"]) != 64 or any(len(w[\"sha256\"]) != 64 for p in t[\"phases\"].values() for w in p[\"workers\"].values()))' \"$out/run_meta.json\" \"$out/trace_manifest.json\" && ! \"$1\" --prepare-only --out-dir \"$DSIDLE_TEST_ROOT/invalid\" --workloads a, >/dev/null 2>&1 && test ! -e \"$DSIDLE_TEST_ROOT/invalid\" && ! \"$1\" --prepare-only --out-dir \"$DSIDLE_TEST_ROOT/reserve\" --shared-reserve-mb 4096 >/dev/null 2>&1 && test ! -e \"$DSIDLE_TEST_ROOT/reserve\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_prepare_only_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_ycsb_trace_generation_tests
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-ycsb-traces.XXXXXX); \"$1\" --prepare-only --out-dir \"$out/result\" --workloads a,d,e --record-count 10 --operation-count 10 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/result/traces/load/worker0.txt\" && test -s \"$out/result/traces/workloada/worker0.txt\" && test -s \"$out/result/traces/workloadd/worker0.txt\" && test -s \"$out/result/traces/workloade/worker0.txt\" && test -s \"$out/result/configs/experiment_config_ycsb_workloada.jsonc\" && grep -q \"$out/result/traces/workloada\" \"$out/result/configs/experiment_config_ycsb_workloada.jsonc\" && grep -R -q '^GET ' \"$out/result/traces/workloada\" && grep -R -q '^PUT ' \"$out/result/traces/workloada\" && grep -q '^request_distribution=latest$' \"$out/result/logs/manifest_workloadd.txt\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(m[\"phases\"][\"workloadd\"][\"request_distribution\"] != \"latest\" or m[\"fixed_key_size_bytes\"] != 32 or m[\"fixed_value_size_bytes\"] != 32)' \"$out/result/trace_manifest.json\""
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    -- /bin/sh -c
+    "out=\"$DSIDLE_TEST_ROOT/result\"; \"$1\" --prepare-only --out-dir \"$out\" --workloads a,d,e --record-count 10 --operation-count 10 --threads-per-node 1 --vm-count 1 --shared-size-mb 2048 --no-latency && test -s \"$out/traces/load/worker0.txt\" && test -s \"$out/traces/workloada/worker0.txt\" && test -s \"$out/traces/workloadd/worker0.txt\" && test -s \"$out/traces/workloade/worker0.txt\" && test -s \"$out/configs/experiment_config_ycsb_workloada.jsonc\" && grep -q \"$out/traces/workloada\" \"$out/configs/experiment_config_ycsb_workloada.jsonc\" && grep -R -q '^GET ' \"$out/traces/workloada\" && grep -R -q '^PUT ' \"$out/traces/workloada\" && grep -q '^request_distribution=latest$' \"$out/logs/manifest_workloadd.txt\" && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(m[\"phases\"][\"workloadd\"][\"request_distribution\"] != \"latest\" or m[\"fixed_key_size_bytes\"] != 32 or m[\"fixed_value_size_bytes\"] != 32)' \"$out/trace_manifest.json\""
     sh ${CMAKE_CURRENT_SOURCE_DIR}/dsidle_run_ycsb_experiment.sh)
 set_tests_properties(dsidle_ycsb_trace_generation_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_rounds_script_smoke
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e-rounds.XXXXXX); \"$1\" --execute --smoke --rounds 1 --config \"$2\" --phase smoke --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 1024 --max-threads-per-vm 5 && test -s \"$out/round_logs/smoke_round_1.meta\" && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' \"$out/logs/smoke_round_1_run_node1.log\""
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_2vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --execute --smoke --rounds 1 --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --out-dir \"$DSIDLE_TEST_ROOT/rounds\" --runner \"$2\" --pool-tool \"$3\" --node-control-capacity 1024 --max-threads-per-vm 5 && test -s \"$DSIDLE_TEST_ROOT/rounds/round_logs/smoke_round_1.meta\" && grep -q 'E2E_TRACE_TIME_US phase=smoke node=1' \"$DSIDLE_TEST_ROOT/rounds/logs/smoke_round_1_run_node1.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e_rounds_script_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_rounds_script_4vm_smoke
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e-rounds-4vm.XXXXXX); \"$1\" --execute --smoke --rounds 1 --config \"$2\" --phase smoke --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 1024 --max-threads-per-vm 5 && grep -q 'E2E_TRACE_TIME_US phase=smoke node=3' \"$out/logs/smoke_round_1_run_node3.log\""
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_4vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --execute --smoke --rounds 1 --config \"$DSIDLE_TEST_CONFIG\" --phase smoke --out-dir \"$DSIDLE_TEST_ROOT/rounds\" --runner \"$2\" --pool-tool \"$3\" --node-control-capacity 1024 --max-threads-per-vm 5 && grep -q 'E2E_TRACE_TIME_US phase=smoke node=3' \"$DSIDLE_TEST_ROOT/rounds/logs/smoke_round_1_run_node3.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e_rounds_script_4vm_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e_ycsb_suite_smoke
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e-ycsb-suite.XXXXXX); \"$1\" --execute --smoke --suite ycsb --rounds 1 --load-config \"$2\" --run-config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 1024 --max-threads-per-vm 5 && grep -q 'E2E_TRACE_TIME_US phase=load node=0' \"$out/logs/load_round_1_load_node0.log\" && grep -q 'E2E_TRACE_TIME_US phase=workloada node=1' \"$out/logs/workloada_round_1_run_node1.log\""
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_2vm_config.jsonc $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_2vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --execute --smoke --suite ycsb --rounds 1 --load-config \"$DSIDLE_TEST_CONFIG\" --run-config \"$DSIDLE_TEST_CONFIG\" --out-dir \"$DSIDLE_TEST_ROOT/rounds\" --runner \"$2\" --pool-tool \"$3\" --node-control-capacity 1024 --max-threads-per-vm 5 && grep -q 'E2E_TRACE_TIME_US phase=load node=0' \"$DSIDLE_TEST_ROOT/rounds/logs/load_round_1_load_node0.log\" && grep -q 'E2E_TRACE_TIME_US phase=workloada node=1' \"$DSIDLE_TEST_ROOT/rounds/logs/workloada_round_1_run_node1.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh $<TARGET_FILE:dsidle_e2e_trace_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e_ycsb_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e08_suite_smoke
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e08-suite.XXXXXX); \"$1\" --execute --smoke --suite 08 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 5 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=08 phase=e2e08_read node=3 status=ok' \"$out/logs/e2e08_read_round_1_read_node3.log\""
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e_runner_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e_runner_4vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --execute --smoke --suite 08 --rounds 1 --config \"$DSIDLE_TEST_CONFIG\" --out-dir \"$DSIDLE_TEST_ROOT/rounds\" --runner \"$2\" --pool-tool \"$3\" --node-control-capacity 65536 --max-threads-per-vm 5 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=08 phase=e2e08_read node=3 status=ok' \"$DSIDLE_TEST_ROOT/rounds/logs/e2e08_read_round_1_read_node3.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e08_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dsidle_e2e09_suite_smoke
-  COMMAND /bin/sh -c
-    "out=$(mktemp -d /tmp/dsidle-e2e09-suite.XXXXXX); \"$1\" --execute --smoke --suite 09 --rounds 1 --config \"$2\" --out-dir \"$out\" --runner \"$3\" --pool-tool \"$4\" --node-control-capacity 65536 --max-threads-per-vm 5 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=09 phase=e2e09_read node=3 status=ok' \"$out/logs/e2e09_read_round_1_read_node3.log\""
-    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/e2e09_4vm_config.jsonc $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
+  COMMAND ${DSIDLE_CTEST_WRAPPER}
+    --config-file ${DSIDLE_TEST_DATA}/e2e09_4vm_config.jsonc
+    -- /bin/sh -c
+    "\"$1\" --execute --smoke --suite 09 --rounds 1 --config \"$DSIDLE_TEST_CONFIG\" --out-dir \"$DSIDLE_TEST_ROOT/rounds\" --runner \"$2\" --pool-tool \"$3\" --node-control-capacity 65536 --max-threads-per-vm 5 && grep -q 'DSIDLE_E2E_SUITE_VERIFY suite=09 phase=e2e09_read node=3 status=ok' \"$DSIDLE_TEST_ROOT/rounds/logs/e2e09_read_round_1_read_node3.log\""
+    sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dsidle_e2e_rounds.sh $<TARGET_FILE:dsidle_e2e_suite_runner> $<TARGET_FILE:dsidle_shared_pool>)
 set_tests_properties(dsidle_e2e09_suite_smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 set_tests_properties(
   dsidle_e2e_trace_runner_smoke
@@ -207,6 +242,8 @@ set_tests_properties(dsidle_config_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CU
 
 add_executable(dsidle_shared_pool_tests tests/shared_pool_tests.cc)
 target_link_libraries(dsidle_shared_pool_tests PRIVATE dsidle)
+target_include_directories(dsidle_shared_pool_tests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree-beta)
 target_compile_options(dsidle_shared_pool_tests PRIVATE -UNDEBUG)
 add_test(NAME dsidle_shared_pool_tests COMMAND dsidle_shared_pool_tests)
 

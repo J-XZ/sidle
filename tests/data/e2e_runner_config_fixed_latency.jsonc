@@ -1,0 +1,22 @@
+{
+  "shared_memory": {
+    "size_mb": 128, "path": "/tmp/dsidle-e2e-runner-fixed.pool",
+    "device_path": "/dev/null", "numa_node": [0],
+    "hwcc": { "offset_mb": 0, "size_mb": 32 },
+    "swcc": { "offset_mb": 32, "size_mb": 96 }
+  },
+  "vm": {
+    "count": 1, "core_count_per_vm": 1, "mem_size_mb_per_vm": 128,
+    "storage_path": "/tmp", "ssh_base_port": 10022, "numa_node": [0],
+    "local_ssh_pub_key": "", "first_ip": "127.0.0.1", "bridge_tap_ip": "127.0.0.1"
+  },
+  "host_cpu": { "reserved_cores": [0], "ivshmem_server_cores": [0], "vm_cores": [0] },
+  "e2e": { "foreground_worker_count_per_vm": 1 },
+  "dsidle": {
+    "replica_budget_mb": 8, "hot_percentage_seed": 50,
+    "fixed_key_size": 8, "fixed_value_size": 8, "trace_dir": "tests/data/e2e_trace",
+    "verbose": false, "extra_check": false,
+    "latency_inject": {
+      "fixed_latency": {"enabled": true, "cache_line_bytes": 64, "swcc_fixed_ns_per_line": 100, "hwcc_fixed_ns_per_line": 200, "foreground_enabled": true, "background_enabled": true}}
+  }
+}

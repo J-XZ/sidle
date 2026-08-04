@@ -58,8 +58,8 @@ pending_delay_ns += touched_hwcc_lines * hwcc_fixed_ns_per_line
 
 ## R6525 VM 验证
 
-experiment_config.jsonc 是本机双 NUMA R6525 配置：VM 使用 NUMA0 偶数 CPU，
-共享池使用 NUMA1，业务设备只有 /dev/ivpci0。使用本仓自己的镜像、pool tool
+默认设备是 CloudLab R6525 2-NUMA；根 experiment_config.jsonc 配置 4 台 VM 使用
+NUMA0 连续 CPU `0..31`，共享池使用 NUMA1，业务设备只有 /dev/ivpci0。使用本仓自己的镜像、pool tool
 和脚本：
 
 ~~~bash

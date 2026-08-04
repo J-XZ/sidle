@@ -110,9 +110,17 @@ RunResult RunWorkers(
     threads.emplace_back([&, worker] {
       threadinfo* ti = nullptr;
       try {
-        dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node);
-        dsidle::ConfigureCurrentReplicaDirectory(replicas);
-        ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+        // Short worker-local binding scope covering the typed HWCC layout
+        // reads plus thread initialization; settles before the ready/cv
+        // handshake.  Every operation below opens its own top-level
+        // foreground scope.
+        {
+          latency_sim::ScopeGuard bind_scope(
+              latency_sim::ScopeKind::kForeground);
+          dsidle::ConfigureCurrentSwccAllocator(pool, vm_count, node);
+          dsidle::ConfigureCurrentReplicaDirectory(replicas);
+          ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+        }
       } catch (...) {
         std::lock_guard<std::mutex> lock(mutex);
         if (!failure) failure = std::current_exception();
@@ -142,7 +150,10 @@ RunResult RunWorkers(
     cv.wait(lock, [&] { return ready == workers; });
   }
   const auto barrier_begin = std::chrono::steady_clock::now();
-  phase_barrier.Wait();
+  {
+    latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+    phase_barrier.Wait();
+  }
   const auto barrier_end = std::chrono::steady_clock::now();
   const auto begin = std::chrono::steady_clock::now();
   {
@@ -208,12 +219,31 @@ int main(int argc, char** argv) {
         &sidle::strategy_manager;
     threadinfo* ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
-    if (options.bootstrap) table.initialize(*ti, cfg.hot_percentage_seed);
-    auto phase_barrier = dsidle::SharedExperimentPhaseBarrier(pool);
-    phase_barrier.Wait();
-    if (!options.bootstrap) table.table().attach();
-    const auto epoch_slots_per_vm =
-        pool.static_layout()->epoch_slot_count / cfg.vm_count;
+    if (options.bootstrap) {
+      latency_sim::ScopeGuard bootstrap_scope(latency_sim::ScopeKind::kOther);
+      table.initialize(*ti, cfg.hot_percentage_seed);
+    }
+    auto phase_barrier = [&pool] {
+      latency_sim::ScopeGuard layout_scope(latency_sim::ScopeKind::kOther);
+      return dsidle::SharedExperimentPhaseBarrier(pool);
+    }();
+    {
+      latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+      phase_barrier.Wait();
+    }
+    if (!options.bootstrap) {
+      latency_sim::ScopeGuard attach_scope(latency_sim::ScopeKind::kOther);
+      table.table().attach();
+    }
+    std::uint64_t epoch_slots_per_vm = 0;
+    {
+      latency_sim::ScopeGuard layout_scope(latency_sim::ScopeKind::kOther);
+      epoch_slots_per_vm =
+          latency_sim::FixedLatencyMemoryLoad(
+              latency_sim::PoolKind::kHwcc,
+              &pool.static_layout()->epoch_slot_count) /
+          cfg.vm_count;
+    }
     if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
       Fail("pool epoch slots must reserve four SIDLE replica workers per VM");
     auto& thresholds = *sidle::strategy_manager.get_threshold_manager();
@@ -236,7 +266,10 @@ int main(int argc, char** argv) {
     replica_workers.Stop();
     // Stop local background workers before the phase completion barrier.
     const auto end_barrier_begin = std::chrono::steady_clock::now();
-    phase_barrier.Wait();
+    {
+      latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+      phase_barrier.Wait();
+    }
     const auto end_barrier_us =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - end_barrier_begin).count();
@@ -249,8 +282,16 @@ int main(int argc, char** argv) {
               << " role=" << role << " phase_id=2 duration_us="
               << end_barrier_us << " phase=" << options.phase << "_end\n";
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << result.operations << " duration_us=" << result.duration_us << " trace_first=" << options.node * cfg.foreground_worker_count_per_vm << " trace_workers=" << cfg.foreground_worker_count_per_vm << " batch_ops=0\n";
-    std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes
-              << " swcc_bytes=" << pool.header()->swcc_bytes
+    std::uint64_t hwcc_bytes = 0, swcc_bytes = 0;
+    {
+      latency_sim::ScopeGuard stats_scope(latency_sim::ScopeKind::kOther);
+      hwcc_bytes = latency_sim::FixedLatencyMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &pool.header()->hwcc_bytes);
+      swcc_bytes = latency_sim::FixedLatencyMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &pool.header()->swcc_bytes);
+    }
+    std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << hwcc_bytes
+              << " swcc_bytes=" << swcc_bytes
               << " replica_bytes=" << replicas.LocalBytes() << '\n';
     std::cout << "DSIDLE_E2E_SUITE_VERIFY suite=" << suite.prefix << " phase=" << options.phase << " node=" << options.node << " status=ok\n";
   } catch (const std::exception& error) { std::cerr << "dsidle_e2e_suite_runner: " << error.what() << '\n'; return 1; }

@@ -21,8 +21,9 @@ dsidle_init_vms.sh 使用 experiment_config.jsonc、image/root.img、本仓
 pool tool 和本仓 QEMU 运行目录。测试前应确认其它项目的 QEMU、ivshmem 服务和
 PID 文件已停止；测试后立即执行 kill 脚本。
 
-R6525 默认拓扑是 VM NUMA0、共享池 NUMA1、4 VM、每 VM 8 vCPU 和 4 个前台
-worker。配置中的 HWCC 为 1024 MiB，SWCC 为剩余容量；共享池元数据只占普通
+根 experiment_config.jsonc 的默认设备是 R6525 2-NUMA：VM 使用 NUMA0 连续 CPU
+`0..31`，共享池使用 NUMA1，共 4 VM、每 VM 8 vCPU 和 4 个前台 worker。配置中的
+HWCC 为 1024 MiB，SWCC 为剩余容量；共享池元数据只占普通
 业务 metadata。
 
 ## E2E

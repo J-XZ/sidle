@@ -199,9 +199,15 @@ std::uint64_t FixedBlockShardAllocator::HarvestRemote(std::uint32_t shard, std::
     const auto offset =
         Pop(entry->remote_free_head, entry->remote_pop_lock);
     if (!offset) break;
-    Push(entry->local_free_head, offset,
-         reinterpret_cast<FreeObjectHeader*>(
-             static_cast<std::byte*>(pool_.base()) + offset)->generation);
+    // The generation is a real SWCC load on the reused free object.  It is
+    // charged once even though next_offset above touched the same cache
+    // line: every real access bills independently.  The ABA/owner protocol
+    // and FlushSwccLine ordering are unchanged.
+    auto* item = reinterpret_cast<FreeObjectHeader*>(
+        static_cast<std::byte*>(pool_.base()) + offset);
+    const auto generation = latency_sim::FixedLatencyMemoryLoad(
+        latency_sim::PoolKind::kSwcc, &item->generation);
+    Push(entry->local_free_head, offset, generation);
     ++harvested;
   }
   return harvested;

@@ -15,7 +15,9 @@ constexpr std::uint64_t kPoolMagic = 0x445349444c455031ULL;  // "DSIDLEP1"
 // parent/phantom metadata. Version 4 assigns ShardControl padding to the
 // consumer locks that protect free-object link dereferences. Reject older
 // pools rather than interpreting stale padding as live cross-VM state.
-constexpr std::uint64_t kPoolAbiVersion = 4;
+// Version 5 removes the legacy 256-byte coordination control hole: the epoch
+// clock and phase barrier now start at the real coordination region base.
+constexpr std::uint64_t kPoolAbiVersion = 5;
 
 enum class PoolState : std::uint64_t {
   kEmpty = 0,
@@ -72,6 +74,12 @@ class SharedPool {
   ~SharedPool();
   SharedPool(const SharedPool&) = delete;
   SharedPool& operator=(const SharedPool&) = delete;
+  // Moving a SharedPool is only legal with no concurrent users (all workers
+  // stopped and joined).  The current thread's SWCC binding is migrated from
+  // the source to the destination; the moved-from object becomes an empty
+  // shell whose Close()/destructor never touches the destination's mapping
+  // or binding, and the destination's Close() clears TLS, SharedPoolBase and
+  // the SWCC range cache.
   SharedPool(SharedPool&& other) noexcept;
   SharedPool& operator=(SharedPool&& other) noexcept;
 
@@ -125,6 +133,13 @@ void ConfigureLatencySimulatorForPool(SharedPool& pool,
 // The Masstree runtime binds one process-local shard before creating its
 // threadinfos. Persistent data allocation is then always in SWCC; no DAX or
 // memkind fallback exists.
+// Explicit binding stage: when fixed latency is enabled the caller must hold
+// a scope (foreground for E2E workers, merge/background for replica roles),
+// because the shard/layout reads go through the typed HWCC wrapper.  The
+// binding scope must end before any mutex/condition-variable wait or long
+// worker loop.  On success the thread-local SWCC range cache below is
+// replaced atomically (same thread), so value-range classification never
+// dereferences the pool header or static layout again.
 void ConfigureCurrentSwccAllocator(SharedPool& pool, std::uint32_t shard_count,
                                    std::uint32_t local_shard);
 SharedPool& CurrentSharedPool();
@@ -133,6 +148,16 @@ SharedPool& CurrentSharedPool();
 // the correctness boundary for business paths that require a pool.
 void* SharedPoolBaseOrNull() noexcept;
 SharedPool* CurrentSharedPoolOrNull() noexcept;
+// Immutable per-thread SWCC range snapshot published by the explicit binding
+// stage.  Hard fails when fixed latency is enabled and this thread has no
+// valid binding, so a potential SWCC access is never silently classified as
+// local DRAM.  The disabled fast path must not call this accessor.
+struct SwccRangeCache {
+  std::uintptr_t swcc_begin{};
+  std::uintptr_t swcc_end{};
+  bool valid{false};
+};
+const SwccRangeCache& CurrentSwccRangeCache();
 std::uint32_t CurrentSwccShard();
 SwccOffset<std::byte> AllocateCurrentSwcc(std::uint64_t size);
 std::uint32_t CurrentSwccOwner(SwccOffset<std::byte> block, std::uint64_t size);

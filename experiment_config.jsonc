@@ -1,5 +1,5 @@
 {
-  // 本配置文件适合双 numa r6525 的实验机器
+  // 默认设备配置：CloudLab R6525，2 NUMA，4 VM
   // D-SIDLE's standalone experiment contract.  Paths are host-local inputs.
   "shared_memory": {
     "size_mb": 32768,

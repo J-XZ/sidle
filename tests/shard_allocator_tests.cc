@@ -1,4 +1,5 @@
 #include "dsidle/shard_allocator.h"
+#include "dsidle/latency_simulator.h"
 #include <atomic>
 #include <cassert>
 #include <cstring>
@@ -75,10 +76,64 @@ void TestConcurrentAbaIsRejected() {
   }
   assert(rejected_wrap);
 }
+
+void TestHarvestRemoteGenerationChargedOnce() {
+  // With hwcc=0 / swcc=1 the only charged accesses in one remote harvest are
+  // SWCC: Pop's next_offset read, the generation read being fixed here, and
+  // Push's next_offset + generation stores = exactly 4ns.  A raw generation
+  // dereference would leave pending == 3 and fail the assertion.
+  char path[] = "/tmp/dsidle-harvest-gen.XXXXXX";
+  int fd = mkstemp(path);
+  assert(fd >= 0);
+  close(fd);
+  unlink(path);
+  constexpr std::uint64_t kPoolBytes = 128ULL << 20;
+  auto pool = dsidle::SharedPool::Create(
+      path, {kPoolBytes, 0, 32ULL << 20, 32ULL << 20, 96ULL << 20});
+  dsidle::InitializePoolMetadata(pool, {2, 2, 64});
+  dsidle::FixedBlockShardAllocator::InitializeAll(pool, 2);
+  dsidle::FinalizePoolInitialization(pool);
+  latency_sim::Config config;
+  config.fixed_latency.enabled = true;
+  config.fixed_latency.cache_line_bytes = 64;
+  config.fixed_latency.swcc_fixed_ns_per_line = 1;
+  config.fixed_latency.hwcc_fixed_ns_per_line = 0;
+  config.fixed_latency.foreground_enabled = true;
+  config.fixed_latency.background_enabled = true;
+  dsidle::ConfigureLatencySimulatorForPool(pool, config, 0);
+  auto& simulator = latency_sim::GlobalLatencySimulator();
+  {
+    latency_sim::ScopeGuard scope(latency_sim::ScopeKind::kForeground);
+    dsidle::ConfigureCurrentSwccAllocator(pool, 2, 0);
+    dsidle::FixedBlockShardAllocator alloc(pool, 2, 1024);
+    const auto first = alloc.Allocate(0);
+    assert(first);
+    // Allocate memsets 1024 bytes = 16 SWCC lines.
+    assert(simulator.PendingDelayNsForTest() == 16);
+    alloc.Free(0, first, 9);
+    // Free pushes next_offset + generation: 2 SWCC lines.
+    assert(simulator.PendingDelayNsForTest() == 18);
+    assert(alloc.HarvestRemote(0) == 1);
+    // Pop next read (1) + generation read (1) + push next store (1) + push
+    // generation store (1).
+    assert(simulator.PendingDelayNsForTest() == 22);
+    // Generation survived the harvest round trip and the offset is reusable.
+    const auto* item = reinterpret_cast<const dsidle::FreeObjectHeader*>(
+        static_cast<std::byte*>(pool.base()) + first.value());
+    assert(item->generation == 9);
+    const auto reused = alloc.Allocate(0);
+    assert(reused == first);
+  }
+  simulator.Configure({});
+  simulator.ClearPoolRegistrations();
+  pool.Close();
+  unlink(path);
+}
 }  // namespace
 
 int main() {
   TestConcurrentAbaIsRejected();
+  TestHarvestRemoteGenerationChargedOnce();
   char path[] = "/tmp/dsidle-shard-test.XXXXXX";
   int fd = mkstemp(path); assert(fd >= 0); close(fd); unlink(path);
   constexpr std::uint64_t kPoolBytes = 128ULL << 20;

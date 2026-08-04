@@ -1,5 +1,6 @@
 build/
 build-jammy/
+.dsidle-ycsb-build/
 */build/
 exp_data/
 .vscode

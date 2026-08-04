@@ -414,8 +414,9 @@ class RootControlAccessor {
           latency_sim::AtomicDomain::kHwcc);
       if (first & 1U)
         continue;
-      const NodeRef ref(root_->root_ref);
-      const auto generation = root_->root_generation;
+      // Each slot is read exactly once through the HWCC wrapper; the wrapper
+      // result is the value used by the seqlock, never a discarded second
+      // read of the raw field.
       const auto observed_ref = latency_sim::FixedLatencyMemoryLoad(
           latency_sim::PoolKind::kHwcc, &root_->root_ref);
       const auto observed_generation = latency_sim::FixedLatencyMemoryLoad(
@@ -423,9 +424,8 @@ class RootControlAccessor {
       const auto second = latency_sim::FixedLatencyAtomicLoad(
           root_->version, std::memory_order_acquire,
           latency_sim::AtomicDomain::kHwcc);
-      (void)observed_ref;
-      (void)observed_generation;
-      if (first == second) return {ref, generation, second};
+      if (first == second)
+        return {NodeRef(observed_ref), observed_generation, second};
     }
   }
 

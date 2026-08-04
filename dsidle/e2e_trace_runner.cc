@@ -145,13 +145,17 @@ uint64_t ReplayFile(const std::filesystem::path& path, const dsidle::ExperimentC
         ++total;
         // Publish one shared heartbeat increment per replayed physical command.
         // This is workload progress metadata, not a hardware-simulation record.
-        latency_sim::FixedLatencyAtomicFetchAdd(
-            *heartbeat, std::uint64_t{1}, std::memory_order_relaxed,
-            latency_sim::AtomicDomain::kLocalDram);
+        heartbeat->fetch_add(std::uint64_t{1}, std::memory_order_relaxed);
       }
     }
   } while (std::chrono::steady_clock::now() < deadline);
-  ti->rcu_drain(); return total;
+  // The trailing RCU drain reads shared epoch state; settle only after
+  // rcu_drain() returned and every RCU/allocator guard is released.
+  {
+    latency_sim::ScopeGuard drain_scope(latency_sim::ScopeKind::kForeground);
+    ti->rcu_drain();
+  }
+  return total;
 }
 } // namespace
 
@@ -180,15 +184,36 @@ int main(int argc, char** argv) {
         &sidle::strategy_manager;
     threadinfo* bootstrap_ti = threadinfo::make(threadinfo::TI_MAIN, 0);
     Masstree::default_table table;
-    if (options.bootstrap)
+    if (options.bootstrap) {
+      // Main-thread bootstrap touches HWCC/SWCC; settle in its own short
+      // scope before any barrier or worker start.
+      latency_sim::ScopeGuard bootstrap_scope(latency_sim::ScopeKind::kOther);
       table.initialize(*bootstrap_ti, cfg.hot_percentage_seed);
+    }
     // Node zero publishes the root before entering; every other VM waits
     // before attaching. This is an ivshmem-backed phase barrier, excluded
     // from the workload timer below.
-    auto phase_barrier = dsidle::SharedExperimentPhaseBarrier(pool);
-    phase_barrier.Wait();
-    if (!options.bootstrap) table.table().attach();
-    const auto epoch_slots_per_vm = pool.static_layout()->epoch_slot_count / cfg.vm_count;
+    auto phase_barrier = [&pool] {
+      latency_sim::ScopeGuard layout_scope(latency_sim::ScopeKind::kOther);
+      return dsidle::SharedExperimentPhaseBarrier(pool);
+    }();
+    {
+      latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+      phase_barrier.Wait();
+    }
+    if (!options.bootstrap) {
+      latency_sim::ScopeGuard attach_scope(latency_sim::ScopeKind::kOther);
+      table.table().attach();
+    }
+    std::uint64_t epoch_slots_per_vm = 0;
+    {
+      latency_sim::ScopeGuard layout_scope(latency_sim::ScopeKind::kOther);
+      epoch_slots_per_vm =
+          latency_sim::FixedLatencyMemoryLoad(
+              latency_sim::PoolKind::kHwcc,
+              &pool.static_layout()->epoch_slot_count) /
+          cfg.vm_count;
+    }
     if (epoch_slots_per_vm < cfg.foreground_worker_count_per_vm + 4)
       Fail("pool epoch slots must reserve four SIDLE replica workers per VM");
     auto& thresholds = *sidle::strategy_manager.get_threshold_manager();
@@ -215,21 +240,14 @@ int main(int argc, char** argv) {
         worker_cv.wait(lock, [&] { return start; });
       }
       uint64_t previous = 0;
-      while (!latency_sim::FixedLatencyAtomicLoad(
-          heartbeat_stop, std::memory_order_acquire,
-          latency_sim::AtomicDomain::kLocalDram)) {
+      while (!heartbeat_stop.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lock(heartbeat_mutex);
         heartbeat_cv.wait_for(lock, std::chrono::seconds(1), [&] {
-          return latency_sim::FixedLatencyAtomicLoad(
-              heartbeat_stop, std::memory_order_acquire,
-              latency_sim::AtomicDomain::kLocalDram);
+          return heartbeat_stop.load(std::memory_order_acquire);
         });
-        if (latency_sim::FixedLatencyAtomicLoad(
-                heartbeat_stop, std::memory_order_acquire,
-                latency_sim::AtomicDomain::kLocalDram)) break;
-        const uint64_t current = latency_sim::FixedLatencyAtomicLoad(
-            heartbeat, std::memory_order_relaxed,
-            latency_sim::AtomicDomain::kLocalDram);
+        if (heartbeat_stop.load(std::memory_order_acquire)) break;
+        const uint64_t current =
+            heartbeat.load(std::memory_order_relaxed);
         const uint64_t elapsed = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
         std::cout << "E2E_TRACE_HEARTBEAT phase=" << options.phase << " node=" << options.node << " ops=" << (current - previous) << " total=" << current << " elapsed_s=" << elapsed << '\n' << std::flush;
         previous = current;
@@ -238,8 +256,19 @@ int main(int argc, char** argv) {
     auto replay_worker = [&](uint32_t worker) {
       threadinfo* ti = nullptr;
       try {
-        dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count, options.node); dsidle::ConfigureCurrentReplicaDirectory(replicas);
-        ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+        // Short worker-local binding scope: covers the typed HWCC layout
+        // reads in the binding plus thread initialization, and settles
+        // before the ready/cv handshake or any per-operation scope.  Each
+        // replayed operation establishes its own top-level foreground scope
+        // inside ReplayFile.
+        {
+          latency_sim::ScopeGuard bind_scope(
+              latency_sim::ScopeKind::kForeground);
+          dsidle::ConfigureCurrentSwccAllocator(pool, cfg.vm_count,
+                                                options.node);
+          dsidle::ConfigureCurrentReplicaDirectory(replicas);
+          ti = threadinfo::make(threadinfo::TI_MAIN, worker);
+        }
       } catch (...) {
         std::lock_guard<std::mutex> lock(worker_mutex);
         if (!worker_failure) worker_failure = std::current_exception();
@@ -276,7 +305,10 @@ int main(int argc, char** argv) {
       worker_cv.wait(lock, [&] { return ready == workers; });
     }
     const auto barrier_begin = std::chrono::steady_clock::now();
-    phase_barrier.Wait();
+    {
+      latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+      phase_barrier.Wait();
+    }
     const auto barrier_duration =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - barrier_begin).count();
@@ -292,9 +324,7 @@ int main(int argc, char** argv) {
       worker_cv.wait(lock, [&] { return done == workers; });
     }
     const auto ended = std::chrono::steady_clock::now();
-    latency_sim::FixedLatencyAtomicStore(
-        heartbeat_stop, std::uint64_t{1}, std::memory_order_release,
-        latency_sim::AtomicDomain::kLocalDram);
+    heartbeat_stop.store(std::uint64_t{1}, std::memory_order_release);
     heartbeat_cv.notify_one();
     for (auto& thread : threads) thread.join();
     heartbeat_thread.join();
@@ -303,7 +333,10 @@ int main(int argc, char** argv) {
     // All foreground and local replica workers are drained. Every VM crosses
     // this barrier before the phase is reported complete.
     const auto end_barrier_begin = std::chrono::steady_clock::now();
-    phase_barrier.Wait();
+    {
+      latency_sim::ScopeGuard barrier_scope(latency_sim::ScopeKind::kOther);
+      phase_barrier.Wait();
+    }
     const auto end_barrier_duration =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - end_barrier_begin).count();
@@ -318,6 +351,16 @@ int main(int argc, char** argv) {
               << " phase_id=2 duration_us=" << end_barrier_duration
               << " phase=" << options.phase << "_end\n";
     std::cout << "E2E_TRACE_TIME_US phase=" << options.phase << " node=" << options.node << " ops=" << total << " duration_us=" << duration << " trace_first=" << first << " trace_workers=" << workers << " batch_ops=" << options.batch_ops << '\n';
-    std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << pool.header()->hwcc_bytes << " swcc_bytes=" << pool.header()->swcc_bytes << " replica_bytes=" << replicas.LocalBytes() << '\n';
+    std::uint64_t hwcc_bytes = 0, swcc_bytes = 0;
+    {
+      latency_sim::ScopeGuard stats_scope(latency_sim::ScopeKind::kOther);
+      hwcc_bytes = latency_sim::FixedLatencyMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &pool.header()->hwcc_bytes);
+      swcc_bytes = latency_sim::FixedLatencyMemoryLoad(
+          latency_sim::PoolKind::kHwcc, &pool.header()->swcc_bytes);
+    }
+    std::cout << "DSIDLE_MEMORY_STATS hwcc_bytes=" << hwcc_bytes
+              << " swcc_bytes=" << swcc_bytes
+              << " replica_bytes=" << replicas.LocalBytes() << '\n';
   } catch (const std::exception& error) { std::cerr << "dsidle_e2e_trace_runner: " << error.what() << '\n'; return 1; }
 }
